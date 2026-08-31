@@ -46,4 +46,10 @@ if (CL_BUILD_TESTS)
             ${ENGINE_SOURCES}
     )
     target_include_directories(ExploreTests PRIVATE src tests)
+
+    # so `make test` alone still refreshes clangd's view of tests/
+    add_custom_command(TARGET ExploreTests POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${CMAKE_CURRENT_BINARY_DIR}/compile_commands.json"
+            "${CMAKE_SOURCE_DIR}/")
 endif ()
