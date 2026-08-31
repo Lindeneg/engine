@@ -245,6 +245,20 @@ static void dump_images(const cgltf_data *d) {
 
 namespace gltf {
 
+void canonical_name(char *dst, u64 cap, const char *src) {
+    ASSERT(dst && cap);
+
+    u64 i = 0;
+    if (src) {
+        for (; src[i] && i + 1 < cap; i++) {
+            char c = src[i];
+            b32 alnum = (c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z');
+            dst[i] = alnum ? c : '_';
+        }
+    }
+    dst[i] = 0;
+}
+
 result::Error inspect(memory::Arena *scratch, const char *path) {
     memory::ArenaTemp t = memory::temp_begin(scratch);
 
