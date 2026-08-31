@@ -2,7 +2,9 @@
 
 #include <string.h>
 
+#include "gltf.h"
 #include "logger.h"
+#include "path.h"
 
 #if PLATFORM_WINDOWS
 #define WIN32_LEAN_AND_MEAN
@@ -13,6 +15,7 @@
 #endif
 
 #define ROOT_CAP 512
+#define ASSET_DIR "assets"
 
 namespace asset {
 
@@ -217,6 +220,11 @@ memory::Arena *scope_arena(Manager *m, Scope s) {
     return &m->scopes[s];
 }
 
+memory::Arena *scratch_arena(Manager *m) {
+    ASSERT(m);
+    return m->scratch;
+}
+
 ModelResult create_model(Manager *m, Scope s, const char *name) {
     ASSERT(m);
 
@@ -270,20 +278,36 @@ ModelResult load_model(Manager *m, Scope s, const char *rel_path) {
     if (existing)
         return ModelResult{.val = ModelHandle{*existing}};
 
-    (void)s;
-    // TODO: the glTF interpretation layer lands next and fills this in
-    LOG_ERR("asset: load_model not implemented yet (%s)", rel_path);
-    return ModelResult{.err = result::ERR_UNSUPPORTED};
+    memory::ArenaTemp t = memory::temp_begin(m->scratch);
+    const char *abs = FPATH(m->scratch, m->root, ASSET_DIR, rel_path);
+    ModelResult r = gltf::load_model(m, s, abs, rel_path);
+    memory::temp_end(t);
+
+    if (r.err != result::OK)
+        return r;
+
+    // the dedup key has to outlive its entry, so it lives in the scope arena
+    // beside the model and dies with it
+    memory::Arena *out = scope_arena(m, s);
+    u64 len = strlen(rel_path);
+    char *stored = push_array(out, char, len + 1);
+    memcpy(stored, rel_path, len + 1);
+
+    get(m, r.val)->path = stored;
+    strmap::insert(&m->by_path, stored, r.val.v);
+
+    return r;
 }
 
 ClipResult load_clip(Manager *m, Scope s, const char *rel_path, SkeletonHandle target) {
     ASSERT(m && rel_path);
 
-    (void)s;
-    (void)target;
-    // TODO: same -- needs the interpretation layer
-    LOG_ERR("asset: load_clip not implemented yet (%s)", rel_path);
-    return ClipResult{.err = result::ERR_UNSUPPORTED};
+    memory::ArenaTemp t = memory::temp_begin(m->scratch);
+    const char *abs = FPATH(m->scratch, m->root, ASSET_DIR, rel_path);
+    ClipResult r = gltf::load_clip(m, s, abs, target);
+    memory::temp_end(t);
+
+    return r;
 }
 
 Model *get(Manager *m, ModelHandle h) { return (Model *)resolve(&m->models, h.v, "model"); }

@@ -177,6 +177,9 @@ ManagerResult init(memory::Arena *mgr_arena, memory::Arena *scratch, Config cfg)
 // into this; it dies with unload_scope.
 memory::Arena *scope_arena(Manager *m, Scope s);
 
+// Shared parse/staging space. Anything pushed here must be inside a temp scope.
+memory::Arena *scratch_arena(Manager *m);
+
 // Claim an empty slot. These are what load_model is built from, and they are
 // also the entry point for procedural geometry and for an editor creating an
 // asset from nothing. ERR_EXHAUSTED when the pool is full.
