@@ -3,7 +3,9 @@
 .cache
 out
 vcpkg_installed
+*.md
 cmake-build-*
 build*
 misc
 compile_commands.json
+!README.md
