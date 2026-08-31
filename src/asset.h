@@ -120,6 +120,13 @@ struct Skeleton {
     Joint *joints;
     u32 joint_count;
     strmap::Map by_name; // canonical joint name -> index into joints
+
+    // World transform of the joint hierarchy's parent node. The skin's joint
+    // list often starts below the armature, but the inverse bind matrices were
+    // baked against the full chain, so parentless joints need this on the left.
+    // It is kept separate rather than folded into a root joint's TRS because
+    // animation overwrites that TRS every frame.
+    linalg::Mat4 root;
 };
 
 enum Path { PATH_TRANSLATION, PATH_ROTATION, PATH_SCALE };
@@ -141,6 +148,19 @@ struct Clip {
     Channel *channels;
     u32 channel_count;
     u32 bound_count; // channels that matched a joint; 0 means the bind failed
+
+    // A clip whose file carries no skin was authored against some other rig, so
+    // playing it here is retargeting. Only rotations transfer: translation and
+    // scale encode the source rig's bone lengths in the source file's units,
+    // and applying those to a different skeleton tears it apart.
+    b32 rotation_only;
+};
+
+// Per-asset import settings. A hand-run FBX->glB pipeline produces files in
+// whatever units and up-axis the source tool used, and no two exporters agree.
+struct ImportOptions {
+    f32 scale; // 0 means "as authored"
+    b32 z_up;  // rotate -90 about X to bring a Z-up asset into our Y-up world
 };
 
 struct Model {
@@ -149,6 +169,10 @@ struct Model {
     MeshHandle *meshes; // array, not a range: ranges would forbid interleaved loads
     u32 mesh_count;
     SkeletonHandle skeleton; // SKELETON_FALLBACK (identity) for static models
+
+    // Applied on top of the model matrix rather than baked, so skinning stays
+    // in native space and the joint palette needs no adjustment.
+    linalg::Mat4 import;
 };
 
 struct Config {
@@ -180,6 +204,13 @@ memory::Arena *scope_arena(Manager *m, Scope s);
 // Shared parse/staging space. Anything pushed here must be inside a temp scope.
 memory::Arena *scratch_arena(Manager *m);
 
+// The resolved executable directory that asset paths hang off.
+const char *root(Manager *m);
+
+// Axis-aligned bounds over every vertex of every mesh, in model space. Used to
+// frame a camera now, and by physics broadphase later.
+void model_bounds(Manager *m, ModelHandle h, linalg::Vec3 *out_min, linalg::Vec3 *out_max);
+
 // Claim an empty slot. These are what load_model is built from, and they are
 // also the entry point for procedural geometry and for an editor creating an
 // asset from nothing. ERR_EXHAUSTED when the pool is full.
@@ -192,7 +223,11 @@ ClipResult create_clip(Manager *m, Scope s);
 // Dedups on path: loading the same file twice returns the same handle.
 // Pair with OR_ELSE(..., MODEL_FALLBACK) to keep a missing asset visible in the
 // world instead of fatal; read .err directly when the reason matters.
-ModelResult load_model(Manager *m, Scope s, const char *rel_path);
+ModelResult load_model(Manager *m, Scope s, const char *rel_path, ImportOptions opts);
+
+// Builds the matrix ImportOptions describes. Exposed so physics and the
+// renderer agree on it rather than each deriving their own.
+linalg::Mat4 import_matrix(ImportOptions opts);
 
 // A clip binds to one skeleton at load, matching channels to joints by
 // canonical name. Records the bind rate on the Clip; a rate of 0 warns loudly,

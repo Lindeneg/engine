@@ -16,6 +16,7 @@ find_package(glfw3 CONFIG REQUIRED)
 find_package(glad CONFIG REQUIRED)
 
 set(ENGINE_SOURCES
+        src/anim.cpp
         src/asset.cpp
         src/cgltf_impl.cpp
         src/file.cpp

@@ -167,6 +167,7 @@ static void build_fallbacks(Manager *m) {
     Skeleton *skel = (Skeleton *)pool_at(&m->skeletons, 0);
     skel->joints = push_array(a, Joint, 1);
     skel->joint_count = 1;
+    skel->root = linalg::mat4_identity();
     skel->joints[0].parent = -1;
     skel->joints[0].inverse_bind = linalg::mat4_identity();
     skel->joints[0].bind_r = linalg::quat_identity();
@@ -181,6 +182,7 @@ static void build_fallbacks(Manager *m) {
     Model *model = (Model *)pool_at(&m->models, 0);
     snprintf(model->name, ASSET_NAME_CAP, "<fallback>");
     model->path = "<fallback>";
+    model->import = linalg::mat4_identity();
     model->meshes = push_array(a, MeshHandle, 1);
     model->mesh_count = 1;
     model->meshes[0] = MESH_FALLBACK;
@@ -225,6 +227,46 @@ memory::Arena *scratch_arena(Manager *m) {
     return m->scratch;
 }
 
+const char *root(Manager *m) {
+    ASSERT(m);
+    return m->root;
+}
+
+void model_bounds(Manager *m, ModelHandle h, linalg::Vec3 *out_min, linalg::Vec3 *out_max) {
+    ASSERT(m && out_min && out_max);
+
+    Model *model = get(m, h);
+    linalg::Vec3 lo{1e30f, 1e30f, 1e30f};
+    linalg::Vec3 hi{-1e30f, -1e30f, -1e30f};
+    b32 any = false;
+
+    // post-import, so callers get bounds in the units the world actually uses
+    for (u32 i = 0; i < model->mesh_count; i++) {
+        Mesh *mesh = get(m, model->meshes[i]);
+        for (u32 v = 0; v < mesh->vertex_count; v++) {
+            linalg::Vec3 src = vertex_pos(mesh, v);
+            linalg::Vec4 t4 =
+                linalg::mat4_mul_vec4(model->import, linalg::Vec4{src.x, src.y, src.z, 1.0f});
+            linalg::Vec3 p{t4.x, t4.y, t4.z};
+            lo.x = MIN(lo.x, p.x);
+            lo.y = MIN(lo.y, p.y);
+            lo.z = MIN(lo.z, p.z);
+            hi.x = MAX(hi.x, p.x);
+            hi.y = MAX(hi.y, p.y);
+            hi.z = MAX(hi.z, p.z);
+            any = true;
+        }
+    }
+
+    if (!any) {
+        lo = linalg::Vec3{};
+        hi = linalg::Vec3{};
+    }
+
+    *out_min = lo;
+    *out_max = hi;
+}
+
 ModelResult create_model(Manager *m, Scope s, const char *name) {
     ASSERT(m);
 
@@ -235,6 +277,7 @@ ModelResult create_model(Manager *m, Scope s, const char *name) {
     Model *model = (Model *)pool_at(&m->models, idx);
     snprintf(model->name, ASSET_NAME_CAP, "%s", name ? name : "<unnamed>");
     model->skeleton = SKELETON_FALLBACK;
+    model->import = linalg::mat4_identity(); // zeroed memory would be degenerate
 
     return ModelResult{.val = ModelHandle{make_handle(idx, m->models.slots[idx].epoch)}};
 }
@@ -271,9 +314,21 @@ ClipResult create_clip(Manager *m, Scope s) {
     return ClipResult{.val = ClipHandle{make_handle(idx, m->clips.slots[idx].epoch)}};
 }
 
-ModelResult load_model(Manager *m, Scope s, const char *rel_path) {
+linalg::Mat4 import_matrix(ImportOptions opts) {
+    f32 scale = opts.scale > 0.0f ? opts.scale : 1.0f;
+
+    // -90 degrees about X sends (x, y, z) to (x, z, -y), i.e. Z-up to Y-up
+    linalg::Quat r = opts.z_up ? linalg::Quat{-0.70710678f, 0.0f, 0.0f, 0.70710678f}
+                               : linalg::quat_identity();
+
+    return linalg::mat4_from_trs(linalg::Vec3{}, r, linalg::Vec3{scale, scale, scale});
+}
+
+ModelResult load_model(Manager *m, Scope s, const char *rel_path, ImportOptions opts) {
     ASSERT(m && rel_path);
 
+    // dedup is on path only: a second load with different options returns the
+    // first import rather than a second copy
     u32 *existing = strmap::find(&m->by_path, rel_path);
     if (existing)
         return ModelResult{.val = ModelHandle{*existing}};
@@ -293,7 +348,9 @@ ModelResult load_model(Manager *m, Scope s, const char *rel_path) {
     char *stored = push_array(out, char, len + 1);
     memcpy(stored, rel_path, len + 1);
 
-    get(m, r.val)->path = stored;
+    Model *model = get(m, r.val);
+    model->path = stored;
+    model->import = import_matrix(opts);
     strmap::insert(&m->by_path, stored, r.val.v);
 
     return r;

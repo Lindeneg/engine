@@ -316,17 +316,32 @@ static b32 block_matches(const VertexBlock *b, const cgltf_primitive *p) {
            b->weights == attr(p, cgltf_attribute_type_weights);
 }
 
-static void fill_block(asset::Mesh *mesh, const VertexBlock *b) {
+static linalg::Vec3 xform_point(linalg::Mat4 m, linalg::Vec3 p) {
+    linalg::Vec4 r = linalg::mat4_mul_vec4(m, linalg::Vec4{p.x, p.y, p.z, 1.0f});
+    return linalg::Vec3{r.x, r.y, r.z};
+}
+
+static linalg::Vec3 xform_dir(linalg::Mat4 m, linalg::Vec3 v) {
+    linalg::Vec4 r = linalg::mat4_mul_vec4(m, linalg::Vec4{v.x, v.y, v.z, 0.0f});
+    linalg::Vec3 d{r.x, r.y, r.z};
+    f32 len = linalg::vec3_length(d);
+    return len > 1e-8f ? linalg::vec3_scale(d, 1.0f / len) : linalg::Vec3{0.0f, 1.0f, 0.0f};
+}
+
+static void fill_block(asset::Mesh *mesh, const VertexBlock *b, linalg::Mat4 bake) {
     for (u32 i = 0; i < b->count; i++) {
         f32 pos[3], nrm[3], uv[2];
         read_floats(b->pos, i, pos, 3);
         read_floats(b->nrm, i, nrm, 3);
         read_floats(b->uv, i, uv, 2);
 
+        linalg::Vec3 p = xform_point(bake, linalg::Vec3{pos[0], pos[1], pos[2]});
+        linalg::Vec3 n = xform_dir(bake, linalg::Vec3{nrm[0], nrm[1], nrm[2]});
+
         if (mesh->vertex_kind == asset::VERTEX_SKINNED) {
             asset::VertexSkinned *v = &mesh->vertices.skinned[b->base + i];
-            v->pos = linalg::Vec3{pos[0], pos[1], pos[2]};
-            v->normal = linalg::Vec3{nrm[0], nrm[1], nrm[2]};
+            v->pos = p;
+            v->normal = n;
             v->uv = linalg::Vec2{uv[0], uv[1]};
             read_joints(b->joints, i, v->joints);
             if (b->weights) {
@@ -337,8 +352,8 @@ static void fill_block(asset::Mesh *mesh, const VertexBlock *b) {
             }
         } else {
             asset::VertexStatic *v = &mesh->vertices.statics[b->base + i];
-            v->pos = linalg::Vec3{pos[0], pos[1], pos[2]};
-            v->normal = linalg::Vec3{nrm[0], nrm[1], nrm[2]};
+            v->pos = p;
+            v->normal = n;
             v->uv = linalg::Vec2{uv[0], uv[1]};
         }
     }
@@ -346,7 +361,8 @@ static void fill_block(asset::Mesh *mesh, const VertexBlock *b) {
 
 static void load_mesh(asset::Manager *m, asset::Scope s, memory::Arena *scratch,
                       const cgltf_data *d, const cgltf_mesh *src,
-                      const asset::MaterialHandle *materials, asset::Mesh *mesh) {
+                      const asset::MaterialHandle *materials, linalg::Mat4 bake,
+                      asset::Mesh *mesh) {
     memory::ArenaTemp t = memory::temp_begin(scratch);
     memory::Arena *out = asset::scope_arena(m, s);
 
@@ -397,7 +413,7 @@ static void load_mesh(asset::Manager *m, asset::Scope s, memory::Arena *scratch,
     mesh->submeshes = push_array(out, asset::Submesh, src->primitives_count);
 
     for (u32 b = 0; b < block_count; b++)
-        fill_block(mesh, &blocks[b]);
+        fill_block(mesh, &blocks[b], bake);
 
     u32 index_cursor = 0;
     for (cgltf_size p = 0; p < src->primitives_count; p++) {
@@ -446,6 +462,9 @@ static asset::SkeletonHandle load_skeleton(asset::Manager *m, asset::Scope s,
     skel->joint_count = (u32)skin->joints_count;
     skel->joints = push_array(out, asset::Joint, skel->joint_count);
     skel->by_name = strmap::create(out, skel->joint_count);
+    skel->root = linalg::mat4_identity();
+
+    b32 have_root = false;
 
     for (u32 j = 0; j < skel->joint_count; j++) {
         const cgltf_node *node = skin->joints[j];
@@ -460,6 +479,16 @@ static asset::SkeletonHandle load_skeleton(asset::Manager *m, asset::Scope s,
                     joint->parent = (i32)k;
                     break;
                 }
+            }
+
+            // The node has a parent that is not itself a joint -- an armature
+            // or scene node above the skin. The inverse bind matrices include
+            // it, so we have to as well.
+            if (joint->parent < 0 && !have_root) {
+                cgltf_node_transform_world(node->parent, skel->root.m);
+                have_root = true;
+                LOG_INFO("gltf: skeleton root above \"%s\" is \"%s\"", joint->name,
+                         safe_name(node->parent->name));
             }
         }
 
@@ -614,28 +643,46 @@ asset::ModelResult load_model(asset::Manager *m, asset::Scope s, const char *abs
         return mr;
     }
 
+    // Geometry hangs off nodes, not off the mesh list: the node carries the
+    // transform, and the same mesh can appear under several nodes.
+    u32 node_meshes = 0;
+    for (cgltf_size i = 0; i < d->nodes_count; i++)
+        if (d->nodes[i].mesh)
+            node_meshes++;
+
     // pool slots are fixed arrays, so this stays valid across further creates
     asset::Model *model = asset::get(m, mr.val);
     model->skeleton = skel;
-    model->mesh_count = (u32)d->meshes_count;
-    model->meshes = push_array(asset::scope_arena(m, s), asset::MeshHandle, d->meshes_count);
+    model->meshes = push_array(asset::scope_arena(m, s), asset::MeshHandle, node_meshes);
 
     u32 verts = 0;
     u32 indices = 0;
-    for (cgltf_size i = 0; i < d->meshes_count; i++) {
-        model->meshes[i] = OR_ELSE(asset::create_mesh(m, s), asset::MESH_FALLBACK);
-        if (model->meshes[i].v == 0)
+    for (cgltf_size i = 0; i < d->nodes_count; i++) {
+        const cgltf_node *node = &d->nodes[i];
+        if (!node->mesh)
             continue;
 
-        asset::Mesh *mesh = asset::get(m, model->meshes[i]);
-        load_mesh(m, s, scratch, d, &d->meshes[i], materials, mesh);
+        // A skinned mesh's node transform MUST be ignored per the glTF spec --
+        // the joints define its space. Static geometry bakes the node's world
+        // transform in, so vertices are model-space and physics needs no extra
+        // matrix per mesh.
+        linalg::Mat4 bake = linalg::mat4_identity();
+        if (!node->skin)
+            cgltf_node_transform_world(node, bake.m);
+
+        asset::MeshHandle mh = OR_ELSE(asset::create_mesh(m, s), asset::MESH_FALLBACK);
+        model->meshes[model->mesh_count++] = mh;
+        if (mh.v == 0)
+            continue;
+
+        asset::Mesh *mesh = asset::get(m, mh);
+        load_mesh(m, s, scratch, d, node->mesh, materials, bake, mesh);
         verts += mesh->vertex_count;
         indices += mesh->index_count;
     }
 
-    LOG_INFO("gltf: loaded %s -- %llu mesh(es), %u verts, %u indices, %llu materials, %s",
-             name, (unsigned long long)d->meshes_count, verts, indices,
-             (unsigned long long)d->materials_count,
+    LOG_INFO("gltf: loaded %s -- %u mesh node(s), %u verts, %u indices, %llu materials, %s", name,
+             model->mesh_count, verts, indices, (unsigned long long)d->materials_count,
              skel.v ? "skinned" : "static");
 
     memory::temp_end(t);
@@ -690,6 +737,10 @@ asset::ClipResult load_clip(asset::Manager *m, asset::Scope s, const char *abs_p
 
     snprintf(clip->name, ASSET_NAME_CAP, "%s", src->name ? src->name : "<unnamed>");
     clip->channels = push_array(out, asset::Channel, src->channels_count);
+    clip->rotation_only = d->skins_count == 0;
+
+    f32 max_clip_t = 0.0f;   // largest translation the clip asks for
+    f32 max_bind_t = 0.0f;   // largest the target skeleton actually uses
 
     for (cgltf_size c = 0; c < src->channels_count; c++) {
         const cgltf_animation_channel *ch = &src->channels[c];
@@ -732,6 +783,14 @@ asset::ClipResult load_clip(asset::Manager *m, asset::Scope s, const char *abs_p
             read_floats(val, k, &dst->values[(u64)k * comps], comps);
         }
 
+        if (path == asset::PATH_TRANSLATION) {
+            for (u32 k = 0; k < dst->key_count; k++) {
+                const f32 *v = &dst->values[(u64)k * comps];
+                max_clip_t = MAX(max_clip_t,
+                                 linalg::vec3_length(linalg::Vec3{v[0], v[1], v[2]}));
+            }
+        }
+
         if (in->has_max && in->max[0] > clip->duration)
             clip->duration = in->max[0];
 
@@ -741,13 +800,22 @@ asset::ClipResult load_clip(asset::Manager *m, asset::Scope s, const char *abs_p
             clip->bound_count++;
     }
 
+    for (u32 j = 0; j < skel->joint_count; j++)
+        max_bind_t = MAX(max_bind_t, linalg::vec3_length(skel->joints[j].bind_t));
+
     if (clip->bound_count == 0)
         LOG_ERR("gltf: %s bound 0 of %u channels to skeleton -- name mismatch, clip will not "
                 "animate anything",
                 abs_path, clip->channel_count);
     else
-        LOG_INFO("gltf: loaded clip \"%s\" -- %.3fs, bound %u of %u channels", clip->name,
-                 (f64)clip->duration, clip->bound_count, clip->channel_count);
+        LOG_INFO("gltf: loaded clip \"%s\" -- %.3fs, bound %u of %u channels, %s", clip->name,
+                 (f64)clip->duration, clip->bound_count, clip->channel_count,
+                 clip->rotation_only ? "retargeted (rotation only)" : "native rig");
+
+    // If these disagree by a large factor the two rigs are in different units,
+    // which is exactly why translations cannot be transferred.
+    LOG_INFO("gltf:   max translation: clip %.4f, target skeleton %.4f", (f64)max_clip_t,
+             (f64)max_bind_t);
 
     memory::temp_end(t);
     return cr;

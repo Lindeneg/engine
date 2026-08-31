@@ -41,6 +41,13 @@ void warn(Error e, const char *file, i32 line);
         return r.val;                                                                              \
     }
 
+// Overload for functions that return a bare Error rather than a result struct,
+// so MUST() reads the same either way.
+inline void result_unwrap(result::Error e, const char *file, i32 line) {
+    if (e != result::OK)
+        result::fail(e, file, line);
+}
+
 // expression; aborts if the result carries an error
 #define MUST(expr) result_unwrap((expr), __FILE__, __LINE__)
 
