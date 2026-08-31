@@ -13,6 +13,7 @@ option(CL_BUILD_TESTS "Build the test runner" OFF)
 add_compile_definitions(CL_MEM_STATS=1)
 
 set(ENGINE_SOURCES
+        src/asset.cpp
         src/cgltf_impl.cpp
         src/file.cpp
         src/gltf.cpp

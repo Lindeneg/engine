@@ -11,6 +11,7 @@ int main() {
     memory::Arena scratch = memory::create(MiB(16));
 
     const test::Suite suites[] = {
+        asset_suite(),
         file_suite(),
         gltf_suite(),
         path_suite(),

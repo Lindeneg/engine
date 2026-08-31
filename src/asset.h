@@ -19,9 +19,15 @@
 
 namespace asset {
 
+#define ASSET_EPOCH_SHIFT 24
+#define ASSET_INDEX_MASK ((1u << ASSET_EPOCH_SHIFT) - 1)
+
 // Packed (epoch << 24) | index. Handle 0 is the fallback asset, never
 // "invalid": zeroed memory means "missing", and get() always returns something
-// drawable.
+// drawable. The encoding is public so handles can be serialized and printed.
+inline u32 handle_index(u32 v) { return v & ASSET_INDEX_MASK; }
+inline u8 handle_epoch(u32 v) { return (u8)(v >> ASSET_EPOCH_SHIFT); }
+
 ASSET_HANDLE(ModelHandle);
 ASSET_HANDLE(MeshHandle);
 ASSET_HANDLE(MaterialHandle);
@@ -38,16 +44,32 @@ constexpr ClipHandle CLIP_FALLBACK = {0};
 // resets one arena and invalidates every handle that pointed into it.
 enum Scope { SCOPE_PERSISTENT, SCOPE_TRANSIENT, SCOPE_COUNT };
 
-// One layout for skinned and static meshes alike. A static mesh wastes 24 bytes
-// per vertex on zeroed joints/weights, which at our model sizes costs far less
-// than maintaining two vertex formats and two upload paths.
-struct Vertex {
+struct VertexStatic {
+    linalg::Vec3 pos;
+    linalg::Vec3 normal;
+    linalg::Vec2 uv;
+};
+
+struct VertexSkinned {
     linalg::Vec3 pos;
     linalg::Vec3 normal;
     linalg::Vec2 uv;
     u16 joints[4]; // JOINTS_0 is u16 in our assets, not u8
     f32 weights[4];
 };
+
+enum VertexKind { VERTEX_STATIC, VERTEX_SKINNED };
+
+// Union of pointers, not of elements: a union of the structs themselves would
+// size every element at the larger one and save nothing.
+union VertexArray {
+    VertexStatic *statics;
+    VertexSkinned *skinned;
+};
+
+inline u64 vertex_stride(VertexKind k) {
+    return k == VERTEX_SKINNED ? sizeof(VertexSkinned) : sizeof(VertexStatic);
+}
 
 // A primitive: a range of the parent mesh's index buffer with one material.
 // pistol.glb shares one vertex buffer across 47 primitives, so vertices are
@@ -59,17 +81,24 @@ struct Submesh {
 };
 
 struct Mesh {
-    Vertex *vertices;
+    VertexKind vertex_kind;
+    VertexArray vertices;
     u32 vertex_count;
     u32 *indices; // always u32; u16 sources widen on load
     u32 index_count;
     Submesh *submeshes;
     u32 submesh_count;
-    b32 skinned;
 
     // owned by the renderer, untouched here -- the manager never calls OpenGL
     u32 gpu_vao, gpu_vbo, gpu_ebo;
 };
+
+// Physics raycasts against positions regardless of skinning, and reading through
+// the union directly at every call site would be both noisy and type-punning.
+inline linalg::Vec3 vertex_pos(const Mesh *m, u32 i) {
+    return m->vertex_kind == VERTEX_SKINNED ? m->vertices.skinned[i].pos
+                                            : m->vertices.statics[i].pos;
+}
 
 struct Material {
     char name[ASSET_NAME_CAP];
@@ -116,6 +145,7 @@ struct Clip {
 
 struct Model {
     char name[ASSET_NAME_CAP];
+    const char *path;   // lives in the scope arena; the dedup map keys on it
     MeshHandle *meshes; // array, not a range: ranges would forbid interleaved loads
     u32 mesh_count;
     SkeletonHandle skeleton; // SKELETON_FALLBACK (identity) for static models
@@ -134,11 +164,27 @@ struct Manager;
 
 RESULT_TYPE(Manager *, ManagerResult);
 RESULT_TYPE(ModelHandle, ModelResult);
+RESULT_TYPE(MeshHandle, MeshResult);
+RESULT_TYPE(MaterialHandle, MaterialResult);
+RESULT_TYPE(SkeletonHandle, SkeletonResult);
 RESULT_TYPE(ClipHandle, ClipResult);
 
 // Resolves the asset root from the executable's own path rather than the
 // working directory, and fills slot 0 of every array with its fallback asset.
 ManagerResult init(memory::Arena *mgr_arena, memory::Arena *scratch, Config cfg);
+
+// The arena a scope's payloads live in. Fill a freshly created asset by pushing
+// into this; it dies with unload_scope.
+memory::Arena *scope_arena(Manager *m, Scope s);
+
+// Claim an empty slot. These are what load_model is built from, and they are
+// also the entry point for procedural geometry and for an editor creating an
+// asset from nothing. ERR_EXHAUSTED when the pool is full.
+ModelResult create_model(Manager *m, Scope s, const char *name);
+MeshResult create_mesh(Manager *m, Scope s);
+MaterialResult create_material(Manager *m, Scope s);
+SkeletonResult create_skeleton(Manager *m, Scope s);
+ClipResult create_clip(Manager *m, Scope s);
 
 // Dedups on path: loading the same file twice returns the same handle.
 // Pair with OR_ELSE(..., MODEL_FALLBACK) to keep a missing asset visible in the
