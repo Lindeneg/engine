@@ -13,7 +13,9 @@ option(CL_BUILD_TESTS "Build the test runner" OFF)
 add_compile_definitions(CL_MEM_STATS=1)
 
 set(ENGINE_SOURCES
+        src/cgltf_impl.cpp
         src/file.cpp
+        src/gltf.cpp
         src/logger.cpp
         src/memory.cpp
         src/path.cpp
@@ -25,6 +27,7 @@ add_executable(ExploreApp
         src/main.cpp
         ${ENGINE_SOURCES}
 )
+target_include_directories(ExploreApp PRIVATE src third_party)
 
 add_custom_command(TARGET ExploreApp POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_directory
@@ -45,7 +48,7 @@ if (CL_BUILD_TESTS)
             ${TEST_SOURCES}
             ${ENGINE_SOURCES}
     )
-    target_include_directories(ExploreTests PRIVATE src tests)
+    target_include_directories(ExploreTests PRIVATE src tests third_party)
 
     # so `make test` alone still refreshes clangd's view of tests/
     add_custom_command(TARGET ExploreTests POST_BUILD
