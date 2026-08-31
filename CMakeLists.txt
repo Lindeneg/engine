@@ -12,6 +12,9 @@ option(CL_BUILD_TESTS "Build the test runner" OFF)
 
 add_compile_definitions(CL_MEM_STATS=1)
 
+find_package(glfw3 CONFIG REQUIRED)
+find_package(glad CONFIG REQUIRED)
+
 set(ENGINE_SOURCES
         src/asset.cpp
         src/cgltf_impl.cpp
@@ -20,8 +23,10 @@ set(ENGINE_SOURCES
         src/logger.cpp
         src/memory.cpp
         src/path.cpp
+        src/render.cpp
         src/result.cpp
         src/strmap.cpp
+        src/window.cpp
 )
 
 add_executable(ExploreApp
@@ -29,6 +34,7 @@ add_executable(ExploreApp
         ${ENGINE_SOURCES}
 )
 target_include_directories(ExploreApp PRIVATE src third_party)
+target_link_libraries(ExploreApp PRIVATE glfw glad::glad)
 
 add_custom_command(TARGET ExploreApp POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_directory
@@ -50,6 +56,7 @@ if (CL_BUILD_TESTS)
             ${ENGINE_SOURCES}
     )
     target_include_directories(ExploreTests PRIVATE src tests third_party)
+    target_link_libraries(ExploreTests PRIVATE glfw glad::glad)
 
     # so `make test` alone still refreshes clangd's view of tests/
     add_custom_command(TARGET ExploreTests POST_BUILD
