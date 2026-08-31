@@ -1,5 +1,7 @@
 #include "./memory.h"
 
+#include <string.h>
+
 #include "logger.h"
 
 struct ArenaRoot {
@@ -11,7 +13,6 @@ struct ArenaRoot {
 
 static ArenaRoot g_arena_root;
 
-// is this nessecary given our contents in common.h?
 static f64 to_mib(u64 bytes) { return (f64)bytes / (1024.0 * 1024.0); }
 
 #if PLATFORM_WINDOWS
@@ -105,46 +106,45 @@ Arena create(u64 cap) {
 }
 
 void *push(Arena *a, size_t size, size_t align) {
-    ASSERT_RET(a, NULL);                         // bad arena pointer, bail safely
+    ASSERT(a);
     ASSERT(align && (align & (align - 1)) == 0); // non power-of-two is a code bug
 
     u64 pos = ALIGN_UP_2(a->used, align);
     u64 new_used = pos + size;
-    ASSERT_RET_MSG(new_used <= a->cap, NULL, "arena exhausted: want %llu, cap %llu",
-                   (unsigned long long)new_used, (unsigned long long)a->cap);
+    ASSERT_MSG(new_used <= a->cap, "arena exhausted: want %llu, cap %llu",
+               (unsigned long long)new_used, (unsigned long long)a->cap);
 
     commit_for(a, new_used);
     a->used = new_used;
     if (a->used > a->peak)
         a->peak = a->used;
-    u8 *ptr{a->base + pos};
-    ASSERT_RET(ptr, nullptr);
+    u8 *ptr = a->base + pos;
     memset(ptr, 0, size);
     return ptr;
 }
 
 void reset(Arena *a) {
-    ASSERT_RET_V(a);
+    ASSERT(a);
     a->used = 0;
 }
 
 ArenaTemp temp_begin(Arena *a) {
-    ASSERT_RET(a, (ArenaTemp){0});
-    return (ArenaTemp){.arena = a, .used = a->used};
+    ASSERT(a);
+    return ArenaTemp{.arena = a, .used = a->used};
 }
 
 void temp_end(ArenaTemp t) {
-    ASSERT_RET_V(t.arena);
+    ASSERT(t.arena);
     t.arena->used = t.used;
 }
 
 #if CL_MEM_STATS
 Stats stats(const Arena *a) {
-    return (Stats){.used = a->used, .peak = a->peak, .committed = a->committed, .cap = a->cap};
+    return Stats{.used = a->used, .peak = a->peak, .committed = a->committed, .cap = a->cap};
 }
 
 SysStats sys_stats(void) {
-    return (SysStats){.reserved = g_arena_root.reserved, .carved = g_arena_root.carved};
+    return SysStats{.reserved = g_arena_root.reserved, .carved = g_arena_root.carved};
 }
 
 void log_stats(const Arena *a, const char *name) {

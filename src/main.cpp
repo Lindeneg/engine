@@ -6,6 +6,7 @@
 
 int main() {
 
+    logger::init(NULL);
     logger::set_level(logger::TRACE);
 
     memory::init(MiB(1024));
@@ -33,5 +34,6 @@ int main() {
     memory::log_stats(&arena2, "arena2");
 #endif
 
+    logger::shutdown();
     return EXIT_SUCCESS;
 }

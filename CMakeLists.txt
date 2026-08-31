@@ -5,7 +5,7 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS true)
 
 message("-- Toolchain file: " ${CMAKE_TOOLCHAIN_FILE})
 
-set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 add_compile_definitions(CL_MEM_STATS=1)

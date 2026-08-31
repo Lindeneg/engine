@@ -5,18 +5,16 @@
 #define ARENA_DEFAULT_ALIGN 16
 #define ARENA_COMMIT_CHUNK KiB(64)
 
-#define push_struct(a, T) (T *)arena_push((a), sizeof(T), alignof(T))
-#define push_array(a, T, n) (T *)arena_push((a), sizeof(T) * (n), alignof(T))
+#define push_struct(a, T) (T *)memory::push((a), sizeof(T), alignof(T))
+#define push_array(a, T, n) (T *)memory::push((a), sizeof(T) * (n), alignof(T))
 
 namespace memory {
 struct Arena {
     u8 *base;
     u64 cap;
     u64 used;
-#if CL_MEM_STATS
     u64 committed;
     u64 peak; // high-water mark, survives reset
-#endif
 };
 
 struct ArenaTemp {
