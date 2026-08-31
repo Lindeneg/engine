@@ -1,8 +1,8 @@
 #pragma once
 
 #include <stdint.h>
-#include <stdio.h>
-#include <stdlib.h>
+#include <stdio.h>  // IWYU pragma: export
+#include <stdlib.h> // IWYU pragma: export
 
 #if defined(_WIN32)
 #define PLATFORM_WINDOWS 1
