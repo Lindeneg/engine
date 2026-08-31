@@ -39,12 +39,11 @@ typedef int32_t b32;
 
 #define ALIGN_UP_2(n, p) (((u64)(n) + ((u64)(p) - 1)) & (~((u64)(p) - 1)))
 
-// declared here rather than via logger.h, which includes common.h back
 namespace logger {
 void lassert(b32 fatal, const char *file, i32 line, const char *fmt, ...);
 }
 
-#define ASSERT(expr)                                                                             \
+#define ASSERT(expr)                                                                               \
     do {                                                                                           \
         if (!(expr))                                                                               \
             logger::lassert(true, __FILE__, __LINE__, "ASSERT '%s' failed (%s)", #expr, __func__); \
