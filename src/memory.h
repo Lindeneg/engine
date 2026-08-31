@@ -8,6 +8,11 @@
 #define push_struct(a, T) (T *)memory::push((a), sizeof(T), alignof(T))
 #define push_array(a, T, n) (T *)memory::push((a), sizeof(T) * (n), alignof(T))
 
+// Non-zeroing variants. For bulk buffers that are fully overwritten right after
+// the push (file reads, staging). Contents are undefined on return.
+#define push_struct_nz(a, T) (T *)memory::push_nz((a), sizeof(T), alignof(T))
+#define push_array_nz(a, T, n) (T *)memory::push_nz((a), sizeof(T) * (n), alignof(T))
+
 namespace memory {
 struct Arena {
     u8 *base;
@@ -25,6 +30,7 @@ struct ArenaTemp {
 void init(u64 reserve);
 Arena create(u64 cap);
 void *push(Arena *a, size_t size, size_t align = ARENA_DEFAULT_ALIGN);
+void *push_nz(Arena *a, size_t size, size_t align = ARENA_DEFAULT_ALIGN);
 
 void reset(Arena *a);
 ArenaTemp temp_begin(Arena *a);

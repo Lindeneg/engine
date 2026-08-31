@@ -73,6 +73,25 @@ static void commit_for(memory::Arena *a, u64 needed) {
     a->committed = want;
 }
 
+static void *push_impl(memory::Arena *a, size_t size, size_t align, b32 zero) {
+    ASSERT(a);
+    ASSERT(align && (align & (align - 1)) == 0); // non power-of-two is a code bug
+
+    u64 pos = ALIGN_UP_2(a->used, align);
+    u64 new_used = pos + size;
+    ASSERT_MSG(new_used <= a->cap, "arena exhausted: want %llu, cap %llu",
+               (unsigned long long)new_used, (unsigned long long)a->cap);
+
+    commit_for(a, new_used);
+    a->used = new_used;
+    if (a->used > a->peak)
+        a->peak = a->used;
+    u8 *ptr = a->base + pos;
+    if (zero)
+        memset(ptr, 0, size);
+    return ptr;
+}
+
 namespace memory {
 void init(u64 reserve) {
     ASSERT_MSG(!g_arena_root.base, "memory system already initialized");
@@ -105,23 +124,9 @@ Arena create(u64 cap) {
     return arena;
 }
 
-void *push(Arena *a, size_t size, size_t align) {
-    ASSERT(a);
-    ASSERT(align && (align & (align - 1)) == 0); // non power-of-two is a code bug
+void *push(Arena *a, size_t size, size_t align) { return push_impl(a, size, align, true); }
 
-    u64 pos = ALIGN_UP_2(a->used, align);
-    u64 new_used = pos + size;
-    ASSERT_MSG(new_used <= a->cap, "arena exhausted: want %llu, cap %llu",
-               (unsigned long long)new_used, (unsigned long long)a->cap);
-
-    commit_for(a, new_used);
-    a->used = new_used;
-    if (a->used > a->peak)
-        a->peak = a->used;
-    u8 *ptr = a->base + pos;
-    memset(ptr, 0, size);
-    return ptr;
-}
+void *push_nz(Arena *a, size_t size, size_t align) { return push_impl(a, size, align, false); }
 
 void reset(Arena *a) {
     ASSERT(a);

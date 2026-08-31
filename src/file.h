@@ -11,10 +11,12 @@ char *join(memory::Arena *a, ...);
 
 namespace file {
 
-struct Descriptor {
+struct Blob {
     u8 *data;
     u64 size;
 };
 
-Descriptor read(memory::Arena *a, const char *path);
+inline b32 ok(Blob b) { return b.data != NULL; }
+
+Blob read(memory::Arena *a, const char *path);
 }; // namespace file
