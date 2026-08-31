@@ -120,7 +120,7 @@ Arena create(u64 cap) {
 
     g_arena_root.carved += cap;
 
-    LOG_DEBUG("mem: arena created @ %p (%.0f MiB)", (void *)arena.base, to_mib(cap));
+    LOG_DEBUG("mem: arena created @ %p (%.2f MiB)", (void *)arena.base, to_mib(cap));
     return arena;
 }
 
