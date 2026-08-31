@@ -108,7 +108,12 @@ void init(const char *file_path) {
     if (file_path && !g_file)
         g_file = os_fopen(file_path, "w");
     g_color = os_enable_color();
+    b32 no_file = file_path && !g_file;
     os_unlock(&g_lock);
+
+    // g_lock is not recursive, so this has to happen after the unlock
+    if (no_file)
+        LOG_WARN("logger: cannot open %s, console only", file_path);
 }
 
 void shutdown(void) {

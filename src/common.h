@@ -37,6 +37,8 @@ typedef int32_t b32;
 #define MIN(a, b) (((a) < (b)) ? (a) : (b))
 #define MAX(a, b) (((a) > (b)) ? (a) : (b))
 
+#define ARRAY_COUNT(a) (sizeof(a) / sizeof((a)[0]))
+
 #define ALIGN_UP_2(n, p) (((u64)(n) + ((u64)(p) - 1)) & (~((u64)(p) - 1)))
 
 namespace logger {

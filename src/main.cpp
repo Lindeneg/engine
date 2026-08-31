@@ -1,6 +1,7 @@
 #include "common.h"
 #include "logger.h"
 #include "memory.h"
+#include "result.h"
 #include "strmap.h"
 
 static i32 g_checks = 0;
@@ -14,6 +15,36 @@ static i32 g_fails = 0;
                 LOG_ERR("FAIL %s:%d  %s", __FILE__, __LINE__, #expr);                              \
         }                                                                                          \
     } while (0)
+
+RESULT_TYPE(u32, U32Result);
+
+static U32Result halve(u32 v) {
+    if (v & 1)
+        return U32Result{.err = result::ERR_INVALID};
+    return U32Result{.val = v / 2};
+}
+
+static U32Result quarter(u32 v) {
+    TRY(h, halve(v));
+    return halve(h);
+}
+
+static void test_result() {
+    u32 a{MUST(halve(8))};
+    CHECK(a == 4);
+
+    u32 b{OR_ELSE(halve(7), 99u)}; // logs one WARN, by design
+    CHECK(b == 99);
+
+    U32Result ok = quarter(20);
+    CHECK(ok.err == result::OK && ok.val == 5);
+
+    U32Result first = quarter(5); // fails in the TRY
+    CHECK(first.err == result::ERR_INVALID);
+
+    U32Result second = quarter(6); // TRY passes, tail call fails
+    CHECK(second.err == result::ERR_INVALID);
+}
 
 static const char *mk_key(memory::Arena *a, u64 i) {
     char *buf = push_array(a, char, 32);
@@ -137,6 +168,8 @@ int main() {
 
     memory::init(MiB(64));
     memory::Arena arena = memory::create(MiB(16));
+
+    test_result();
 
     test_basic(&arena);
     test_overwrite(&arena);

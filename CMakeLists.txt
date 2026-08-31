@@ -15,6 +15,7 @@ add_executable(ExploreApp
         src/logger.cpp
         src/memory.cpp
         src/file.cpp
+        src/result.cpp
         src/strmap.cpp
 )
 
