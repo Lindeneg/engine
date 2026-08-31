@@ -1,0 +1,260 @@
+#pragma once
+
+// Conventions match glTF and OpenGL exactly so data moves disk -> RAM -> GPU untouched:
+//   - Mat4 is column-major, m[col * 4 + row]; upload with glUniformMatrix4fv(..., GL_FALSE, ...)
+//   - column vectors, v' = M * v, composition reads right-to-left: proj * view * model
+//   - right-handed, +Y up, camera looks down -Z, clip-space depth -1..1
+//   - Quat is {x, y, z, w}, same component order as glTF rotation accessors
+//   - angles are radians everywhere; DEG2RAD only at call sites
+
+#include <math.h> // IWYU pragma: keep
+
+#include "common.h"
+
+#define PI_F32 3.14159265358979323846f
+#define DEG2RAD(d) ((d) * (PI_F32 / 180.0f))
+#define RAD2DEG(r) ((r) * (180.0f / PI_F32))
+
+namespace linalg {
+
+struct Vec2 {
+    f32 x, y;
+};
+
+struct Vec3 {
+    f32 x, y, z;
+};
+
+struct Vec4 {
+    f32 x, y, z, w;
+};
+
+struct Quat {
+    f32 x, y, z, w;
+};
+
+struct Mat4 {
+    f32 m[16];
+};
+
+static inline f32 f32_lerp(f32 a, f32 b, f32 t) { return a + (b - a) * t; }
+
+static inline Vec2 vec2_add(Vec2 a, Vec2 b) { return Vec2{a.x + b.x, a.y + b.y}; }
+static inline Vec2 vec2_sub(Vec2 a, Vec2 b) { return Vec2{a.x - b.x, a.y - b.y}; }
+static inline Vec2 vec2_scale(Vec2 v, f32 s) { return Vec2{v.x * s, v.y * s}; }
+
+static inline Vec3 vec3_add(Vec3 a, Vec3 b) { return Vec3{a.x + b.x, a.y + b.y, a.z + b.z}; }
+static inline Vec3 vec3_sub(Vec3 a, Vec3 b) { return Vec3{a.x - b.x, a.y - b.y, a.z - b.z}; }
+static inline Vec3 vec3_scale(Vec3 v, f32 s) { return Vec3{v.x * s, v.y * s, v.z * s}; }
+static inline Vec3 vec3_neg(Vec3 v) { return Vec3{-v.x, -v.y, -v.z}; }
+
+static inline f32 vec3_dot(Vec3 a, Vec3 b) { return a.x * b.x + a.y * b.y + a.z * b.z; }
+
+static inline Vec3 vec3_cross(Vec3 a, Vec3 b) {
+    return Vec3{a.y * b.z - a.z * b.y, a.z * b.x - a.x * b.z, a.x * b.y - a.y * b.x};
+}
+
+static inline f32 vec3_length_sq(Vec3 v) { return vec3_dot(v, v); }
+static inline f32 vec3_length(Vec3 v) { return sqrtf(vec3_length_sq(v)); }
+
+static inline Vec3 vec3_normalize(Vec3 v) {
+    f32 len = vec3_length(v);
+    ASSERT_MSG(len > 1e-8f, "normalizing near-zero vector");
+    return vec3_scale(v, 1.0f / len);
+}
+
+static inline Vec3 vec3_lerp(Vec3 a, Vec3 b, f32 t) {
+    return Vec3{f32_lerp(a.x, b.x, t), f32_lerp(a.y, b.y, t), f32_lerp(a.z, b.z, t)};
+}
+
+static inline Vec4 vec4_add(Vec4 a, Vec4 b) {
+    return Vec4{a.x + b.x, a.y + b.y, a.z + b.z, a.w + b.w};
+}
+
+static inline Vec4 vec4_sub(Vec4 a, Vec4 b) {
+    return Vec4{a.x - b.x, a.y - b.y, a.z - b.z, a.w - b.w};
+}
+
+static inline Vec4 vec4_scale(Vec4 v, f32 s) { return Vec4{v.x * s, v.y * s, v.z * s, v.w * s}; }
+
+static inline f32 vec4_dot(Vec4 a, Vec4 b) { return a.x * b.x + a.y * b.y + a.z * b.z + a.w * b.w; }
+
+static inline Quat quat_identity() { return Quat{0.0f, 0.0f, 0.0f, 1.0f}; }
+
+static inline f32 quat_dot(Quat a, Quat b) { return a.x * b.x + a.y * b.y + a.z * b.z + a.w * b.w; }
+
+static inline Quat quat_neg(Quat q) { return Quat{-q.x, -q.y, -q.z, -q.w}; }
+
+// a * b applies b first, matching mat4_mul composition order
+static inline Quat quat_mul(Quat a, Quat b) {
+    return Quat{
+        a.w * b.x + a.x * b.w + a.y * b.z - a.z * b.y,
+        a.w * b.y - a.x * b.z + a.y * b.w + a.z * b.x,
+        a.w * b.z + a.x * b.y - a.y * b.x + a.z * b.w,
+        a.w * b.w - a.x * b.x - a.y * b.y - a.z * b.z,
+    };
+}
+
+static inline Quat quat_normalize(Quat q) {
+    f32 len = sqrtf(quat_dot(q, q));
+    ASSERT_MSG(len > 1e-8f, "normalizing near-zero quaternion");
+    f32 inv = 1.0f / len;
+    return Quat{q.x * inv, q.y * inv, q.z * inv, q.w * inv};
+}
+
+// q and -q are the same rotation; lerp through the nearer neighborhood or joints flip mid-blend
+static inline Quat quat_nlerp(Quat a, Quat b, f32 t) {
+    if (quat_dot(a, b) < 0.0f)
+        b = quat_neg(b);
+    Quat q{
+        f32_lerp(a.x, b.x, t),
+        f32_lerp(a.y, b.y, t),
+        f32_lerp(a.z, b.z, t),
+        f32_lerp(a.w, b.w, t),
+    };
+    return quat_normalize(q);
+}
+
+static inline Mat4 mat4_identity() {
+    Mat4 out{};
+    out.m[0] = out.m[5] = out.m[10] = out.m[15] = 1.0f;
+    return out;
+}
+
+static inline Mat4 mat4_mul(Mat4 a, Mat4 b) {
+    Mat4 out{};
+    for (i32 c = 0; c < 4; ++c) {
+        for (i32 r = 0; r < 4; ++r) {
+            f32 sum = 0.0f;
+            for (i32 k = 0; k < 4; ++k)
+                sum += a.m[k * 4 + r] * b.m[c * 4 + k];
+            out.m[c * 4 + r] = sum;
+        }
+    }
+    return out;
+}
+
+static inline Vec4 mat4_mul_vec4(Mat4 a, Vec4 v) {
+    return Vec4{
+        a.m[0] * v.x + a.m[4] * v.y + a.m[8] * v.z + a.m[12] * v.w,
+        a.m[1] * v.x + a.m[5] * v.y + a.m[9] * v.z + a.m[13] * v.w,
+        a.m[2] * v.x + a.m[6] * v.y + a.m[10] * v.z + a.m[14] * v.w,
+        a.m[3] * v.x + a.m[7] * v.y + a.m[11] * v.z + a.m[15] * v.w,
+    };
+}
+
+static inline Mat4 mat4_transpose(Mat4 a) {
+    Mat4 out;
+    for (i32 c = 0; c < 4; ++c)
+        for (i32 r = 0; r < 4; ++r)
+            out.m[r * 4 + c] = a.m[c * 4 + r];
+    return out;
+}
+
+static inline Mat4 mat4_from_translation(Vec3 t) {
+    Mat4 out = mat4_identity();
+    out.m[12] = t.x;
+    out.m[13] = t.y;
+    out.m[14] = t.z;
+    return out;
+}
+
+// expects a unit quaternion
+static inline Mat4 mat4_from_quat(Quat q) {
+    f32 xx = q.x * q.x, yy = q.y * q.y, zz = q.z * q.z;
+    f32 xy = q.x * q.y, xz = q.x * q.z, yz = q.y * q.z;
+    f32 wx = q.w * q.x, wy = q.w * q.y, wz = q.w * q.z;
+
+    Mat4 out{};
+    out.m[0] = 1.0f - 2.0f * (yy + zz);
+    out.m[1] = 2.0f * (xy + wz);
+    out.m[2] = 2.0f * (xz - wy);
+
+    out.m[4] = 2.0f * (xy - wz);
+    out.m[5] = 1.0f - 2.0f * (xx + zz);
+    out.m[6] = 2.0f * (yz + wx);
+
+    out.m[8] = 2.0f * (xz + wy);
+    out.m[9] = 2.0f * (yz - wx);
+    out.m[10] = 1.0f - 2.0f * (xx + yy);
+
+    out.m[15] = 1.0f;
+    return out;
+}
+
+// T * R * S — glTF node transform order (scale, then rotate, then translate)
+static inline Mat4 mat4_from_trs(Vec3 t, Quat r, Vec3 s) {
+    Mat4 out = mat4_from_quat(r);
+    out.m[0] *= s.x;
+    out.m[1] *= s.x;
+    out.m[2] *= s.x;
+    out.m[4] *= s.y;
+    out.m[5] *= s.y;
+    out.m[6] *= s.y;
+    out.m[8] *= s.z;
+    out.m[9] *= s.z;
+    out.m[10] *= s.z;
+    out.m[12] = t.x;
+    out.m[13] = t.y;
+    out.m[14] = t.z;
+    return out;
+}
+
+// znear/zfar, not near/far — windows.h #defines those away
+static inline Mat4 mat4_perspective(f32 fovy, f32 aspect, f32 znear, f32 zfar) {
+    ASSERT(aspect > 0.0f);
+    ASSERT(zfar > znear && znear > 0.0f);
+    f32 f = 1.0f / tanf(fovy * 0.5f);
+    Mat4 out{};
+    out.m[0] = f / aspect;
+    out.m[5] = f;
+    out.m[10] = (zfar + znear) / (znear - zfar);
+    out.m[11] = -1.0f;
+    out.m[14] = (2.0f * zfar * znear) / (znear - zfar);
+    return out;
+}
+
+static inline Mat4 mat4_look_at(Vec3 eye, Vec3 target, Vec3 up) {
+    Vec3 f = vec3_normalize(vec3_sub(target, eye));
+    Vec3 s = vec3_normalize(vec3_cross(f, up));
+    Vec3 u = vec3_cross(s, f);
+
+    Mat4 out{};
+    out.m[0] = s.x;
+    out.m[4] = s.y;
+    out.m[8] = s.z;
+    out.m[1] = u.x;
+    out.m[5] = u.y;
+    out.m[9] = u.z;
+    out.m[2] = -f.x;
+    out.m[6] = -f.y;
+    out.m[10] = -f.z;
+    out.m[12] = -vec3_dot(s, eye);
+    out.m[13] = -vec3_dot(u, eye);
+    out.m[14] = vec3_dot(f, eye);
+    out.m[15] = 1.0f;
+    return out;
+}
+
+static inline Vec2 operator+(Vec2 a, Vec2 b) { return vec2_add(a, b); }
+static inline Vec2 operator-(Vec2 a, Vec2 b) { return vec2_sub(a, b); }
+static inline Vec2 operator*(Vec2 v, f32 s) { return vec2_scale(v, s); }
+static inline Vec2 operator*(f32 s, Vec2 v) { return vec2_scale(v, s); }
+
+static inline Vec3 operator+(Vec3 a, Vec3 b) { return vec3_add(a, b); }
+static inline Vec3 operator-(Vec3 a, Vec3 b) { return vec3_sub(a, b); }
+static inline Vec3 operator-(Vec3 v) { return vec3_neg(v); }
+static inline Vec3 operator*(Vec3 v, f32 s) { return vec3_scale(v, s); }
+static inline Vec3 operator*(f32 s, Vec3 v) { return vec3_scale(v, s); }
+
+static inline Vec4 operator+(Vec4 a, Vec4 b) { return vec4_add(a, b); }
+static inline Vec4 operator-(Vec4 a, Vec4 b) { return vec4_sub(a, b); }
+static inline Vec4 operator*(Vec4 v, f32 s) { return vec4_scale(v, s); }
+static inline Vec4 operator*(f32 s, Vec4 v) { return vec4_scale(v, s); }
+
+static inline Quat operator*(Quat a, Quat b) { return quat_mul(a, b); }
+
+static inline Mat4 operator*(Mat4 a, Mat4 b) { return mat4_mul(a, b); }
+static inline Vec4 operator*(Mat4 a, Vec4 v) { return mat4_mul_vec4(a, v); }
+
+} // namespace linalg
