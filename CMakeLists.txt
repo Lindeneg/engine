@@ -14,6 +14,7 @@ add_executable(ExploreApp
         src/main.cpp
         src/logger.cpp
         src/memory.cpp
+        src/file.cpp
 )
 
 add_custom_command(TARGET ExploreApp POST_BUILD
