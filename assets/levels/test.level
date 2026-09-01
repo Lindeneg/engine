@@ -5,6 +5,27 @@
 # An instance is the same kind of block as a child: it references a definition
 # and overrides what it needs.
 
+# The camera and the light are entities like everything else. Both are copied
+# from templates/ rather than referenced, because each one wants its own
+# settings and there is no shared behaviour to keep in sync.
+#
+# main.cpp drives this camera's transform each frame to orbit the soldier. That
+# is standing in for a player controller, which is what will own it once there
+# is input -- the camera itself does not care who moves it.
+instance "camera" {
+    definition templates/camera3d
+
+    transform {
+        position 0 1 3
+        rotation 0 0 0
+        scale    1
+    }
+}
+
+instance "sun" {
+    definition templates/directional_light
+}
+
 instance "player" {
     definition soldier
 

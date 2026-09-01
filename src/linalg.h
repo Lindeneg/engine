@@ -121,6 +121,37 @@ static inline Quat quat_from_euler(Vec3 degrees) {
     return quat_mul(quat_mul(qz, qy), qx);
 }
 
+// Rotation whose -Z points along forward, matching mat4_look_at: what an entity
+// needs to face something. Shepperd's method -- the branch picks whichever
+// component is largest, because the direct formula divides by w and loses all
+// its precision as the rotation approaches 180 degrees.
+static inline Quat quat_look_rotation(Vec3 forward, Vec3 up) {
+    Vec3 f = vec3_normalize(forward);
+    Vec3 s = vec3_normalize(vec3_cross(f, up));
+    Vec3 u = vec3_cross(s, f);
+
+    // basis columns are s, u, -f; m[row][col]
+    f32 m00 = s.x, m01 = u.x, m02 = -f.x;
+    f32 m10 = s.y, m11 = u.y, m12 = -f.y;
+    f32 m20 = s.z, m21 = u.z, m22 = -f.z;
+
+    f32 trace = m00 + m11 + m22;
+    if (trace > 0.0f) {
+        f32 k = sqrtf(trace + 1.0f) * 2.0f;
+        return Quat{(m21 - m12) / k, (m02 - m20) / k, (m10 - m01) / k, 0.25f * k};
+    }
+    if (m00 > m11 && m00 > m22) {
+        f32 k = sqrtf(1.0f + m00 - m11 - m22) * 2.0f;
+        return Quat{0.25f * k, (m01 + m10) / k, (m02 + m20) / k, (m21 - m12) / k};
+    }
+    if (m11 > m22) {
+        f32 k = sqrtf(1.0f + m11 - m00 - m22) * 2.0f;
+        return Quat{(m01 + m10) / k, 0.25f * k, (m12 + m21) / k, (m02 - m20) / k};
+    }
+    f32 k = sqrtf(1.0f + m22 - m00 - m11) * 2.0f;
+    return Quat{(m02 + m20) / k, (m12 + m21) / k, 0.25f * k, (m10 - m01) / k};
+}
+
 // q and -q are the same rotation; lerp through the nearer neighborhood or joints flip mid-blend
 static inline Quat quat_nlerp(Quat a, Quat b, f32 t) {
     if (quat_dot(a, b) < 0.0f)
@@ -280,6 +311,46 @@ static inline Mat4 mat4_perspective(f32 fovy, f32 aspect, f32 znear, f32 zfar) {
     out.m[10] = (zfar + znear) / (znear - zfar);
     out.m[11] = -1.0f;
     out.m[14] = (2.0f * zfar * znear) / (znear - zfar);
+    return out;
+}
+
+// View matrix for a camera sitting at a world transform: the inverse of it.
+//
+// Scale is normalized away rather than inverted. A camera parented to anything
+// scaled -- a head joint on a model imported at 0.857 -- would otherwise
+// inherit that scale into the view matrix, which silently resizes the entire
+// world instead of the camera, and looks like a broken projection.
+static inline Mat4 mat4_view_from_world(Mat4 world) {
+    Vec3 x{world.m[0], world.m[1], world.m[2]};
+    Vec3 y{world.m[4], world.m[5], world.m[6]};
+    Vec3 z{world.m[8], world.m[9], world.m[10]};
+    Vec3 t{world.m[12], world.m[13], world.m[14]};
+
+    f32 lx = vec3_length(x);
+    f32 ly = vec3_length(y);
+    f32 lz = vec3_length(z);
+    if (lx < 1e-8f || ly < 1e-8f || lz < 1e-8f)
+        return mat4_identity(); // degenerate basis; identity beats NaNs on screen
+
+    x = vec3_scale(x, 1.0f / lx);
+    y = vec3_scale(y, 1.0f / ly);
+    z = vec3_scale(z, 1.0f / lz);
+
+    // the inverse of an orthonormal basis is its transpose
+    Mat4 out{};
+    out.m[0] = x.x;
+    out.m[4] = x.y;
+    out.m[8] = x.z;
+    out.m[1] = y.x;
+    out.m[5] = y.y;
+    out.m[9] = y.z;
+    out.m[2] = z.x;
+    out.m[6] = z.y;
+    out.m[10] = z.z;
+    out.m[12] = -vec3_dot(x, t);
+    out.m[13] = -vec3_dot(y, t);
+    out.m[14] = -vec3_dot(z, t);
+    out.m[15] = 1.0f;
     return out;
 }
 

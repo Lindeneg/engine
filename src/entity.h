@@ -5,6 +5,7 @@
 #include "linalg.h"
 #include "memory.h"
 #include "result.h"
+#include "shader.h"
 
 // Entities and their components.
 //
@@ -37,6 +38,8 @@ constexpr Handle NONE = {0};
 enum Component {
     COMPONENT_RENDERABLE,
     COMPONENT_ANIMATOR,
+    COMPONENT_CAMERA,
+    COMPONENT_LIGHT,
     COMPONENT_COUNT,
 };
 
@@ -56,12 +59,18 @@ inline Transform transform_identity() {
     };
 }
 
+// Every component begins with the entity that owns it, so a system can walk one
+// dense component pool -- eight cameras rather than four thousand entities --
+// and still get back to a transform. add_component fills it; nothing else
+// should write it.
 struct Renderable {
+    Handle owner;
     asset::ModelHandle model;
     b32 visible;
 };
 
 struct Animator {
+    Handle owner;
     asset::ClipHandle clip;
     asset::SkeletonHandle skeleton;
     f32 time;
@@ -72,6 +81,28 @@ struct Animator {
     // The palettes live in a fixed block indexed by this component's slot, not
     // in the struct: pool::alloc zeroes the payload, so a pointer stored here
     // would be cleared out from under it on every reuse.
+};
+
+struct Camera {
+    Handle owner;
+    f32 fov_y;  // vertical, degrees -- what a person types, converted at use
+    f32 z_near; // too small a near plane is where depth precision goes to die
+    f32 z_far;
+    b32 active; // the world renders through the first active one it finds
+};
+
+enum LightKind { LIGHT_DIRECTIONAL, LIGHT_KIND_COUNT };
+
+struct Light {
+    Handle owner;
+    LightKind kind;
+    linalg::Vec3 color;
+    f32 intensity;
+    f32 ambient; // fraction of color applied regardless of facing
+    b32 active;
+
+    // A directional light has no position: its direction is the entity's
+    // forward, which is -Z, so rotating the entity aims it.
 };
 
 struct Entity {
@@ -99,6 +130,20 @@ struct Config {
     u32 max_entities;
     u32 max_renderables;
     u32 max_animators;
+    u32 max_cameras;
+    u32 max_lights;
+
+    // Simulation rate. Bullet physics has to be exact, and exact means it can
+    // never see a timestep that varies with framerate: the same shot fired on a
+    // 60 Hz and a 144 Hz machine has to land in the same place, and a solver
+    // fed a variable dt cannot promise that. 0 takes the default.
+    f32 fixed_hz;
+
+    // How many fixed steps one frame may run before the backlog is dropped.
+    // Without a cap, a frame that runs long queues more steps, which makes the
+    // next frame longer, which queues more -- the machine walks itself to a
+    // halt. Dropping simulated time is the lesser evil, and it is reported.
+    u32 max_fixed_steps;
 };
 
 struct World;
@@ -126,15 +171,48 @@ void set_parent(World *w, asset::Manager *m, Handle child, Handle parent, const 
 
 Renderable *add_renderable(World *w, Handle h);
 Animator *add_animator(World *w, Handle h);
+Camera *add_camera(World *w, Handle h);
+Light *add_light(World *w, Handle h);
+
 Renderable *renderable(World *w, Handle h); // NULL when absent
 Animator *animator(World *w, Handle h);
+Camera *camera(World *w, Handle h);
+Light *light(World *w, Handle h);
+
+// The first active camera, or NONE. Walks the camera pool, not every entity.
+Handle active_camera(World *w);
+
+// Fills the per-frame constants every shader reads, from the active camera and
+// the first active light. False when there is no camera, leaving out untouched
+// -- a frame with no camera is a level that forgot one, not a crash.
+//
+// This is the one place the world speaks to the renderer besides submit(); it
+// lives here because the camera and the lights are entities, and it moves to a
+// systems module when there are more systems than these.
+b32 build_frame(World *w, f32 aspect, shader::FrameData *out);
 
 // The skinning palette for an entity's animator, or NULL when it has none.
 const linalg::Mat4 *palette(World *w, Handle h, u32 *out_count);
 
-// Advances animators and recomputes world transforms, roots first so a child
-// always reads a parent that is already up to date this frame.
+// One frame. dt is real elapsed time and is used two different ways:
+//
+//   fixed steps    run 0..max_fixed_steps times at exactly fixed_hz. Anything
+//                  whose correctness depends on the timestep goes here --
+//                  physics, and eventually the animation that physics reads.
+//                  Empty today; it exists so the split is not retrofitted
+//                  through every system later.
+//
+//   variable step  runs once, at the real frame time. Anything purely visual:
+//                  animation sampling now, particles and cameras later.
+//
+// World transforms resolve after both, since either can move an entity.
 void update(World *w, asset::Manager *m, memory::Arena *scratch, f32 dt);
+
+// How far the frame sits between the last fixed step and the next, in 0..1.
+// What rendering interpolates on once there is simulated state to interpolate:
+// a body stepped at 120 Hz and drawn at 144 would otherwise judder.
+f32 fixed_alpha(World *w);
+f32 fixed_dt(World *w);
 
 // Queues every visible renderable. The one place this module reaches into the
 // renderer; it moves to a systems module once there is more than one system.

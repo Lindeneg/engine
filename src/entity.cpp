@@ -18,9 +18,18 @@
 
 namespace entity {
 
+#define DEFAULT_FIXED_HZ 120.0f
+#define DEFAULT_MAX_FIXED_STEPS 8
+
 struct World {
     memory::Arena *arena;
     Config cfg;
+
+    f32 fixed_dt;
+    u32 max_fixed_steps;
+    f32 accumulator; // unsimulated time carried between frames
+    f32 alpha;       // where this frame sits between two fixed steps
+    b8 warned_lag;
 
     pool::Pool entities;
     pool::Pool components[COMPONENT_COUNT];
@@ -34,6 +43,14 @@ struct World {
 static const u64 COMPONENT_STRIDE[COMPONENT_COUNT] = {
     sizeof(Renderable),
     sizeof(Animator),
+    sizeof(Camera),
+    sizeof(Light),
+};
+
+// Every component's first field. add_component writes it through this so it
+// does not need a switch over types it would then have to be kept in step with.
+struct ComponentHeader {
+    Handle owner;
 };
 
 WorldResult init(memory::Arena *a, Config cfg) {
@@ -47,12 +64,16 @@ WorldResult init(memory::Arena *a, Config cfg) {
     World *w = push_struct(a, World);
     w->arena = a;
     w->cfg = cfg;
+    w->fixed_dt = 1.0f / (cfg.fixed_hz > 0.0f ? cfg.fixed_hz : DEFAULT_FIXED_HZ);
+    w->max_fixed_steps = cfg.max_fixed_steps ? cfg.max_fixed_steps : DEFAULT_MAX_FIXED_STEPS;
 
     w->entities = pool::create(a, cfg.max_entities, sizeof(Entity));
 
     u32 caps[COMPONENT_COUNT] = {
         MAX(cfg.max_renderables, 1u),
         MAX(cfg.max_animators, 1u),
+        MAX(cfg.max_cameras, 1u),
+        MAX(cfg.max_lights, 1u),
     };
     for (u32 c = 0; c < COMPONENT_COUNT; c++)
         w->components[c] = pool::create(a, caps[c], COMPONENT_STRIDE[c]);
@@ -66,6 +87,8 @@ WorldResult init(memory::Arena *a, Config cfg) {
     LOG_INFO("entity: world with %u entities, %u renderables, %u animators (%.2f MiB palettes)",
              cfg.max_entities, caps[COMPONENT_RENDERABLE], caps[COMPONENT_ANIMATOR],
              (f64)(palette_slots * sizeof(linalg::Mat4) * 2) / (1024.0 * 1024.0));
+    LOG_INFO("entity: simulating at %.1f Hz, at most %u step(s) per frame",
+             (f64)(1.0f / w->fixed_dt), w->max_fixed_steps);
 
     return WorldResult{.val = w};
 }
@@ -228,7 +251,10 @@ static void *add_component(World *w, Handle h, u32 type) {
     }
 
     e->components[type] = idx;
-    return pool::at(&w->components[type], idx);
+
+    void *c = pool::at(&w->components[type], idx);
+    ((ComponentHeader *)c)->owner = h;
+    return c;
 }
 
 static void *component_of(World *w, Handle h, u32 type) {
@@ -254,12 +280,96 @@ Animator *add_animator(World *w, Handle h) {
     return a;
 }
 
+Camera *add_camera(World *w, Handle h) {
+    Camera *c = (Camera *)add_component(w, h, COMPONENT_CAMERA);
+    if (!c)
+        return NULL;
+
+    // The engine defines what a camera means, so the defaults live here and a
+    // definition file states only what it wants to differ.
+    c->fov_y = 60.0f;
+    c->z_near = 0.05f;
+    c->z_far = 500.0f;
+    c->active = true;
+    return c;
+}
+
+Light *add_light(World *w, Handle h) {
+    Light *l = (Light *)add_component(w, h, COMPONENT_LIGHT);
+    if (!l)
+        return NULL;
+
+    l->kind = LIGHT_DIRECTIONAL;
+    l->color = linalg::Vec3{1.0f, 1.0f, 1.0f};
+    l->intensity = 0.72f;
+    l->ambient = 0.28f;
+    l->active = true;
+    return l;
+}
+
 Renderable *renderable(World *w, Handle h) {
     return (Renderable *)component_of(w, h, COMPONENT_RENDERABLE);
 }
 
 Animator *animator(World *w, Handle h) {
     return (Animator *)component_of(w, h, COMPONENT_ANIMATOR);
+}
+
+Camera *camera(World *w, Handle h) { return (Camera *)component_of(w, h, COMPONENT_CAMERA); }
+
+Light *light(World *w, Handle h) { return (Light *)component_of(w, h, COMPONENT_LIGHT); }
+
+Handle active_camera(World *w) {
+    ASSERT(w);
+
+    pool::Pool *p = &w->components[COMPONENT_CAMERA];
+    for (u32 i = pool::first(p); i; i = pool::next(p, i)) {
+        Camera *c = (Camera *)pool::at(p, i);
+        if (c->active && alive(w, c->owner))
+            return c->owner;
+    }
+    return NONE;
+}
+
+b32 build_frame(World *w, f32 aspect, shader::FrameData *out) {
+    ASSERT(w && out);
+
+    Handle h = active_camera(w);
+    Entity *e = get(w, h);
+    if (!e)
+        return false;
+
+    Camera *c = camera(w, h);
+    out->view_proj = linalg::mat4_perspective(DEG2RAD(c->fov_y), aspect, c->z_near, c->z_far) *
+                     linalg::mat4_view_from_world(e->world);
+    out->camera_pos = linalg::Vec4{e->world.m[12], e->world.m[13], e->world.m[14], 0.0f};
+
+    // No light is a legitimate state -- a level being built, or one lit only by
+    // ambient. It reads as pure black rather than as the shader failing.
+    out->light_dir = linalg::Vec4{0.0f, 1.0f, 0.0f, 0.0f};
+    out->light_color = linalg::Vec4{0.0f, 0.0f, 0.0f, 0.0f};
+
+    pool::Pool *p = &w->components[COMPONENT_LIGHT];
+    for (u32 i = pool::first(p); i; i = pool::next(p, i)) {
+        Light *l = (Light *)pool::at(p, i);
+        Entity *le = get(w, l->owner);
+        if (!l->active || !le)
+            continue;
+
+        // A directional light aims along its entity's forward, which is -Z, so
+        // the shader's "toward the light" vector is +Z of the world basis.
+        linalg::Vec3 toward{le->world.m[8], le->world.m[9], le->world.m[10]};
+        if (linalg::vec3_length_sq(toward) < 1e-12f)
+            toward = linalg::Vec3{0.0f, 1.0f, 0.0f};
+
+        toward = linalg::vec3_normalize(toward);
+        out->light_dir = linalg::Vec4{toward.x, toward.y, toward.z, 0.0f};
+        out->light_color = linalg::Vec4{l->color.x * l->intensity, l->color.y * l->intensity,
+                                        l->color.z * l->intensity, l->ambient};
+        break; // one directional light until the shader can loop over more
+    }
+
+    return true;
 }
 
 static linalg::Mat4 *skin_at(World *w, u32 slot) { return w->skin + (u64)slot * SHADER_MAX_JOINTS; }
@@ -296,15 +406,8 @@ Handle next(World *w, Handle h) {
     return idx ? Handle{pool::make_handle(&w->entities, idx)} : NONE;
 }
 
-static void advance_animator(World *w, asset::Manager *m, memory::Arena *scratch, Handle h,
-                             f32 dt) {
-    Entity *e = get(w, h);
-    u32 slot = e->components[COMPONENT_ANIMATOR];
-    if (!slot)
-        return;
-
-    Animator *a = (Animator *)pool::at(&w->components[COMPONENT_ANIMATOR], slot);
-
+static void advance_animator(World *w, asset::Manager *m, memory::Arena *scratch, Animator *a,
+                             u32 slot, f32 dt) {
     asset::Skeleton *skel = asset::get(m, a->skeleton);
     a->joint_count = MIN(skel->joint_count, (u32)SHADER_MAX_JOINTS);
     if (a->joint_count == 0)
@@ -365,32 +468,95 @@ static void resolve_world(World *w, asset::Manager *m, Handle h) {
     }
 }
 
+// Everything whose correctness depends on the timestep. Empty until physics:
+// the accumulator around it is the point, because adding the split later means
+// touching every system that assumed it was called once per frame.
+static void step_fixed(World *w, asset::Manager *m, f32 dt) {
+    (void)w;
+    (void)m;
+    (void)dt;
+}
+
+// Purely visual, at real frame time. Animation is sampled here rather than in
+// the fixed step so it stays smooth at any framerate. That will have to change
+// for anything that shoots at an animated bone: a hit test has to see the same
+// pose the solver did, which means sampling on the fixed clock and
+// interpolating for display.
+static void step_variable(World *w, asset::Manager *m, memory::Arena *scratch, f32 dt) {
+    pool::Pool *p = &w->components[COMPONENT_ANIMATOR];
+    for (u32 i = pool::first(p); i; i = pool::next(p, i))
+        advance_animator(w, m, scratch, (Animator *)pool::at(p, i), i, dt);
+}
+
 void update(World *w, asset::Manager *m, memory::Arena *scratch, f32 dt) {
     ASSERT(w && m && scratch);
 
-    // Animation first: an attachment reads the joint transforms this produces.
-    for (Handle h = first(w); h.v; h = next(w, h))
-        advance_animator(w, m, scratch, h, dt);
+    // A negative or absurd dt comes from a debugger pause or a clock that
+    // stepped backwards, and feeding it to an accumulator strands the loop.
+    if (dt < 0.0f)
+        dt = 0.0f;
 
+    w->accumulator += dt;
+
+    u32 steps = 0;
+    while (w->accumulator >= w->fixed_dt && steps < w->max_fixed_steps) {
+        step_fixed(w, m, w->fixed_dt);
+        w->accumulator -= w->fixed_dt;
+        steps++;
+    }
+
+    // Hit the cap: the remaining backlog is dropped rather than carried, or the
+    // next frame inherits it and falls further behind every frame after.
+    // Simulated time is lost, which is visible as a hitch and is survivable;
+    // the spiral is not.
+    if (w->accumulator >= w->fixed_dt) {
+        if (!w->warned_lag) {
+            w->warned_lag = true;
+            LOG_WARN("entity: could not keep up at %.1f Hz, dropping %.1f ms of simulation",
+                     (f64)(1.0f / w->fixed_dt), (f64)(w->accumulator * 1000.0f));
+        }
+        w->accumulator = 0.0f;
+    }
+
+    w->alpha = w->accumulator / w->fixed_dt;
+
+    step_variable(w, m, scratch, dt);
+
+    // Last, because either step above can move an entity, and roots first so a
+    // child always reads a parent that is already current this frame.
     for (Handle h = first(w); h.v; h = next(w, h))
         if (get(w, h)->parent.v == 0)
             resolve_world(w, m, h);
 }
 
+f32 fixed_alpha(World *w) {
+    ASSERT(w);
+    return w->alpha;
+}
+
+f32 fixed_dt(World *w) {
+    ASSERT(w);
+    return w->fixed_dt;
+}
+
 void submit(World *w, asset::Manager *m) {
     ASSERT(w && m);
 
-    for (Handle h = first(w); h.v; h = next(w, h)) {
-        Entity *e = get(w, h);
-        if (!e->active)
+    // Walks the renderable pool rather than every entity: a level of four
+    // thousand entities where two hundred are drawable should touch two hundred
+    // contiguous structs, not four thousand scattered ones.
+    pool::Pool *p = &w->components[COMPONENT_RENDERABLE];
+    for (u32 i = pool::first(p); i; i = pool::next(p, i)) {
+        Renderable *r = (Renderable *)pool::at(p, i);
+        if (!r->visible)
             continue;
 
-        Renderable *r = renderable(w, h);
-        if (!r || !r->visible)
+        Entity *e = get(w, r->owner);
+        if (!e || !e->active)
             continue;
 
         u32 joint_count = 0;
-        const linalg::Mat4 *pal = palette(w, h, &joint_count);
+        const linalg::Mat4 *pal = palette(w, r->owner, &joint_count);
         render::submit_model(m, r->model, e->world, pal, joint_count);
     }
 }
@@ -514,6 +680,51 @@ static void build_components(World *w, asset::Manager *m, Handle h, config::Node
                           asset::CLIP_FALLBACK);
 }
 
+// Cameras and lights carry no assets, so they read as plain overrides on the
+// defaults add_camera/add_light set.
+static void build_view_components(World *w, Handle h, config::Node *body) {
+    config::Node *cn = config::find(body, "camera");
+    if (cn) {
+        Camera *c = add_camera(w, h);
+        if (c) {
+            config::Node *cb = cn->first_child;
+            c->fov_y = config::value_f32(config::find(cb, "fov"), 0, c->fov_y);
+            c->z_near = config::value_f32(config::find(cb, "near"), 0, c->z_near);
+            c->z_far = config::value_f32(config::find(cb, "far"), 0, c->z_far);
+            c->active = config::value_b32(config::find(cb, "active"), 0, c->active);
+
+            if (c->z_near <= 0.0f || c->z_far <= c->z_near) {
+                LOG_WARN("entity: camera near/far of %.3f/%.3f is not a valid range, using "
+                         "0.05/500",
+                         (f64)c->z_near, (f64)c->z_far);
+                c->z_near = 0.05f;
+                c->z_far = 500.0f;
+            }
+        }
+    }
+
+    config::Node *ln = config::find(body, "light");
+    if (!ln)
+        return;
+
+    Light *l = add_light(w, h);
+    if (!l)
+        return;
+
+    config::Node *lb = ln->first_child;
+    config::Node *col = config::find(lb, "color");
+    if (col)
+        l->color = linalg::Vec3{
+            config::value_f32(col, 0, l->color.x),
+            config::value_f32(col, 1, l->color.y),
+            config::value_f32(col, 2, l->color.z),
+        };
+
+    l->intensity = config::value_f32(config::find(lb, "intensity"), 0, l->intensity);
+    l->ambient = config::value_f32(config::find(lb, "ambient"), 0, l->ambient);
+    l->active = config::value_b32(config::find(lb, "active"), 0, l->active);
+}
+
 static HandleResult instantiate(World *w, asset::Manager *m, const char *name, u32 depth) {
     if (depth >= MAX_DEFINITION_DEPTH) {
         LOG_ERR("entity: definition '%s' nested deeper than %d -- a cycle?", name,
@@ -576,6 +787,7 @@ static Handle build_entity(World *w, asset::Manager *m, config::Node *decl, Hand
         if (!h.v)
             return NONE;
         build_components(w, m, h, body, label ? label : "<unnamed>");
+        build_view_components(w, h, body);
     }
 
     // Overrides, applied the same way whether the components came from a

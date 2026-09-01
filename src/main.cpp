@@ -68,6 +68,10 @@ int main() {
                                                       .max_entities = 4096,
                                                       .max_renderables = 2048,
                                                       .max_animators = 64,
+                                                      .max_cameras = 8,
+                                                      .max_lights = 16,
+                                                      .fixed_hz = 120.0f,
+                                                      .max_fixed_steps = 8,
                                                   }))};
 
     // Everything the world contains comes from here. No model handles, import
@@ -102,7 +106,13 @@ int main() {
         LOG_WARN("camera: the level spawned nothing renderable");
     }
 
-    f32 dist = radius / tanf(DEG2RAD(45.0f) * 0.5f) * 1.15f;
+    // The camera the level declared. Its fov drives the framing distance, so
+    // changing fov in the .entity file reframes the shot without touching this.
+    entity::Handle cam = entity::active_camera(world);
+    f32 fov = cam.v ? entity::camera(world, cam)->fov_y : 60.0f;
+    f32 dist = radius / tanf(DEG2RAD(fov) * 0.5f) * 1.15f;
+
+    b32 warned_no_camera = false;
     f64 last = window::time();
 
     while (!window::should_close(win)) {
@@ -123,25 +133,29 @@ int main() {
         f32 dt = (f32)(now - last);
         last = now;
 
-        f32 t = (f32)now;
-        linalg::Vec3 eye{center.x + sinf(t * 0.4f) * dist, center.y + radius * 0.35f,
-                         center.z + cosf(t * 0.4f) * dist};
+        // Standing in for a player controller. The camera is an entity, and
+        // something has to move it -- when there is input, that something
+        // becomes a controller and this goes away. The camera does not care who
+        // writes its transform.
+        if (cam.v) {
+            f32 t = (f32)now;
+            linalg::Vec3 eye{center.x + sinf(t * 0.4f) * dist, center.y + radius * 0.35f,
+                             center.z + cosf(t * 0.4f) * dist};
 
-        linalg::Mat4 view = linalg::mat4_look_at(eye, center, linalg::Vec3{0.0f, 1.0f, 0.0f});
-        linalg::Mat4 proj = linalg::mat4_perspective(DEG2RAD(45.0f), (f32)fb_w / (f32)fb_h,
-                                                     radius * 0.01f, dist * 4.0f);
-
-        // Lighting is frame state rather than a constant in the fragment
-        // shader. Where these numbers come from is the app's business -- for
-        // now literals here, a scene config file once there is a scene.
-        shader::FrameData frame{
-            .view_proj = proj * view,
-            .camera_pos = linalg::Vec4{eye.x, eye.y, eye.z, 0.0f},
-            .light_dir = linalg::Vec4{0.4f, 0.9f, 0.35f, 0.0f},
-            .light_color = linalg::Vec4{0.72f, 0.72f, 0.72f, 0.28f},
-        };
+            entity::Entity *ce = entity::get(world, cam);
+            ce->local.position = eye;
+            ce->local.rotation =
+                linalg::quat_look_rotation(center - eye, linalg::Vec3{0.0f, 1.0f, 0.0f});
+        }
 
         entity::update(world, assets, &scratch, dt);
+
+        // View, projection and lighting all come from entities now.
+        shader::FrameData frame{};
+        if (!entity::build_frame(world, (f32)fb_w / (f32)fb_h, &frame) && !warned_no_camera) {
+            warned_no_camera = true;
+            LOG_WARN("main: the level has no active camera, nothing will be visible");
+        }
 
         render::begin_frame(&frame, linalg::Vec4{0.10f, 0.11f, 0.13f, 1.0f});
         entity::submit(world, assets);
