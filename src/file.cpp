@@ -67,4 +67,14 @@ BlobResult read(memory::Arena *a, const char *path) {
     buf[len] = 0;
     return BlobResult{.val = Blob{.data = buf, .size = (u64)len}};
 }
+
+b32 exists(const char *path) {
+    ASSERT(path);
+
+    FILE *f = os_fopen(path, "rb");
+    if (!f)
+        return false;
+    fclose(f);
+    return true;
+}
 } // namespace file

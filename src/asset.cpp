@@ -2,17 +2,14 @@
 
 #include <string.h>
 
+#include "anim.h"
+#include "config.h"
+#include "file.h"
 #include "gltf.h"
 #include "logger.h"
 #include "path.h"
 
-#if PLATFORM_WINDOWS
-#define WIN32_LEAN_AND_MEAN
-#define NOMINMAX
-#include <windows.h>
-#elif PLATFORM_LINUX
-#include <unistd.h>
-#endif
+#define MATERIAL_SIDECAR_EXT ".mat.cfg"
 
 #define ROOT_CAP 512
 #define ASSET_DIR "assets"
@@ -23,6 +20,11 @@ struct Slot {
     u8 epoch;
     b8 used;
     u8 scope;
+
+    // A stale handle is usually dereferenced every frame by whatever is holding
+    // it, so reporting it every time buries the first occurrence under
+    // thousands of copies. One line per slot, per epoch.
+    b8 warned;
 };
 
 // One implementation of the slot mechanics for all five asset types; only the
@@ -40,6 +42,7 @@ struct Manager {
     memory::Arena scopes[SCOPE_COUNT];
 
     char root[ROOT_CAP];
+    shader::Handle default_shader;
 
     Pool models;
     Pool meshes;
@@ -72,6 +75,7 @@ static u32 pool_alloc(Pool *p, Scope s) {
         if (!p->slots[i].used) {
             p->slots[i].used = true;
             p->slots[i].scope = (u8)s;
+            p->slots[i].warned = false;
             memset(pool_at(p, i), 0, p->stride);
             return i;
         }
@@ -94,35 +98,16 @@ static void pool_release_scope(Pool *p, Scope s) {
 
 static void *resolve(Pool *p, u32 v, const char *what) {
     u32 idx = handle_index(v);
-    if (idx >= p->cap || !p->slots[idx].used || p->slots[idx].epoch != handle_epoch(v)) {
-        if (v != 0)
-            LOG_WARN("asset: stale %s handle %u, substituting fallback", what, v);
-        return pool_at(p, 0);
-    }
-    return pool_at(p, idx);
-}
+    if (idx < p->cap && p->slots[idx].used && p->slots[idx].epoch == handle_epoch(v))
+        return pool_at(p, idx);
 
-// Assets resolve against the executable's directory, never the working
-// directory: running from an IDE or debugger otherwise breaks every path.
-static b32 resolve_root(char *dst, u64 cap) {
-#if PLATFORM_WINDOWS
-    DWORD n = GetModuleFileNameA(NULL, dst, (DWORD)cap);
-    if (n == 0 || n >= cap)
-        return false;
-#elif PLATFORM_LINUX
-    i64 n = readlink("/proc/self/exe", dst, cap - 1);
-    if (n <= 0 || (u64)n >= cap - 1)
-        return false;
-    dst[n] = 0;
-#endif
-
-    for (i64 i = (i64)strlen(dst) - 1; i >= 0; i--) {
-        if (dst[i] == '/' || dst[i] == '\\') {
-            dst[i] = 0;
-            return true;
-        }
+    // handle 0 is the fallback by design and says nothing; anything else is a
+    // bug worth one line, not one line per frame for as long as it is held
+    if (v != 0 && idx < p->cap && !p->slots[idx].warned) {
+        p->slots[idx].warned = true;
+        LOG_WARN("asset: stale %s handle %u, substituting fallback", what, v);
     }
-    return false;
+    return pool_at(p, 0);
 }
 
 static const linalg::Vec3 CUBE_POS[8] = {
@@ -146,8 +131,12 @@ static void build_fallbacks(Manager *m) {
 
     Material *mat = (Material *)pool_at(&m->materials, 0);
     snprintf(mat->name, ASSET_NAME_CAP, "<fallback>");
+    mat->shader = m->default_shader;
     mat->base_color = linalg::Vec4{1.0f, 0.0f, 1.0f, 1.0f};
     mat->roughness = 1.0f;
+    mat->alpha_mode = ALPHA_OPAQUE;
+    mat->alpha_cutoff = 0.5f;
+    mat->state = gfx::state_default();
 
     Mesh *mesh = (Mesh *)pool_at(&m->meshes, 0);
     mesh->vertex_kind = VERTEX_STATIC;
@@ -183,6 +172,8 @@ static void build_fallbacks(Manager *m) {
     snprintf(model->name, ASSET_NAME_CAP, "<fallback>");
     model->path = "<fallback>";
     model->import = linalg::mat4_identity();
+    model->bounds_min = linalg::Vec3{-0.5f, -0.5f, -0.5f};
+    model->bounds_max = linalg::Vec3{0.5f, 0.5f, 0.5f};
     model->meshes = push_array(a, MeshHandle, 1);
     model->mesh_count = 1;
     model->meshes[0] = MESH_FALLBACK;
@@ -192,13 +183,20 @@ static void build_fallbacks(Manager *m) {
 ManagerResult init(memory::Arena *mgr_arena, memory::Arena *scratch, Config cfg) {
     ASSERT(mgr_arena && scratch);
 
+    if (!cfg.root) {
+        LOG_ERR("asset: init needs a root directory");
+        return ManagerResult{.err = result::ERR_INVALID};
+    }
+
     Manager *m = push_struct(mgr_arena, Manager);
     m->mgr = mgr_arena;
     m->scratch = scratch;
+    m->default_shader = cfg.default_shader;
 
-    if (!resolve_root(m->root, ROOT_CAP)) {
-        LOG_ERR("asset: cannot resolve executable directory");
-        return ManagerResult{.err = result::ERR_IO};
+    i32 root_len = snprintf(m->root, ROOT_CAP, "%s", cfg.root);
+    if (root_len < 0 || root_len >= ROOT_CAP) {
+        LOG_ERR("asset: root path longer than %d bytes: %s", ROOT_CAP, cfg.root);
+        return ManagerResult{.err = result::ERR_INVALID};
     }
 
     for (u32 i = 0; i < SCOPE_COUNT; i++)
@@ -232,39 +230,103 @@ const char *root(Manager *m) {
     return m->root;
 }
 
-void model_bounds(Manager *m, ModelHandle h, linalg::Vec3 *out_min, linalg::Vec3 *out_max) {
-    ASSERT(m && out_min && out_max);
+shader::Handle default_shader(Manager *m) {
+    ASSERT(m);
+    return m->default_shader;
+}
 
+static void grow(linalg::Vec3 *lo, linalg::Vec3 *hi, linalg::Vec3 p) {
+    lo->x = MIN(lo->x, p.x);
+    lo->y = MIN(lo->y, p.y);
+    lo->z = MIN(lo->z, p.z);
+    hi->x = MAX(hi->x, p.x);
+    hi->y = MAX(hi->y, p.y);
+    hi->z = MAX(hi->z, p.z);
+}
+
+// Walks every vertex once, at load. A skinned mesh is measured with the bind
+// palette applied, because its stored positions are pre-skin: measuring them
+// raw is how a 1.8 m soldier reads as 0.14 m tall.
+static void compute_bounds(Manager *m, ModelHandle h) {
     Model *model = get(m, h);
+
+    memory::ArenaTemp t = memory::temp_begin(m->scratch);
+
+    Skeleton *skel = get(m, model->skeleton);
+    linalg::Mat4 *palette = NULL;
+    if (model->skeleton.v != 0 && skel->joint_count > 0) {
+        palette = push_array(m->scratch, linalg::Mat4, skel->joint_count);
+        anim::bind_pose(m->scratch, skel, palette);
+    }
+
     linalg::Vec3 lo{1e30f, 1e30f, 1e30f};
     linalg::Vec3 hi{-1e30f, -1e30f, -1e30f};
     b32 any = false;
 
-    // post-import, so callers get bounds in the units the world actually uses
     for (u32 i = 0; i < model->mesh_count; i++) {
         Mesh *mesh = get(m, model->meshes[i]);
+
         for (u32 v = 0; v < mesh->vertex_count; v++) {
-            linalg::Vec3 src = vertex_pos(mesh, v);
-            linalg::Vec4 t4 =
-                linalg::mat4_mul_vec4(model->import, linalg::Vec4{src.x, src.y, src.z, 1.0f});
-            linalg::Vec3 p{t4.x, t4.y, t4.z};
-            lo.x = MIN(lo.x, p.x);
-            lo.y = MIN(lo.y, p.y);
-            lo.z = MIN(lo.z, p.z);
-            hi.x = MAX(hi.x, p.x);
-            hi.y = MAX(hi.y, p.y);
-            hi.z = MAX(hi.z, p.z);
+            linalg::Vec3 p = vertex_pos(mesh, v);
+            linalg::Vec4 h4{p.x, p.y, p.z, 1.0f};
+
+            if (palette && mesh->vertex_kind == VERTEX_SKINNED) {
+                const VertexSkinned *sv = &mesh->vertices.skinned[v];
+                linalg::Vec4 acc{};
+                f32 wsum = 0.0f;
+                for (u32 k = 0; k < 4; k++) {
+                    f32 w = sv->weights[k];
+                    if (w <= 0.0f || sv->joints[k] >= skel->joint_count)
+                        continue;
+                    wsum += w;
+                    acc = acc + linalg::mat4_mul_vec4(palette[sv->joints[k]], h4) * w;
+                }
+                if (wsum > 1e-4f)
+                    h4 = acc;
+            }
+
+            grow(&lo, &hi, linalg::Vec3{h4.x, h4.y, h4.z});
             any = true;
         }
     }
 
+    memory::temp_end(t);
+
     if (!any) {
+        LOG_WARN("asset: model \"%s\" has no vertices, bounds are empty", model->name);
         lo = linalg::Vec3{};
         hi = linalg::Vec3{};
     }
 
-    *out_min = lo;
-    *out_max = hi;
+    model->bounds_min = lo;
+    model->bounds_max = hi;
+}
+
+void model_bounds(Manager *m, ModelHandle h, linalg::Vec3 *out_min, linalg::Vec3 *out_max) {
+    ASSERT(m && out_min && out_max);
+
+    Model *model = get(m, h);
+    linalg::Vec3 lo = model->bounds_min;
+    linalg::Vec3 hi = model->bounds_max;
+
+    // All eight corners, not the two extremes: import can rotate, and rotating
+    // min and max alone produces a box that no longer contains the model.
+    linalg::Vec3 out_lo{1e30f, 1e30f, 1e30f};
+    linalg::Vec3 out_hi{-1e30f, -1e30f, -1e30f};
+
+    for (u32 c = 0; c < 8; c++) {
+        linalg::Vec4 corner{
+            (c & 1) ? hi.x : lo.x,
+            (c & 2) ? hi.y : lo.y,
+            (c & 4) ? hi.z : lo.z,
+            1.0f,
+        };
+        linalg::Vec4 t4 = linalg::mat4_mul_vec4(model->import, corner);
+        grow(&out_lo, &out_hi, linalg::Vec3{t4.x, t4.y, t4.z});
+    }
+
+    *out_min = out_lo;
+    *out_max = out_hi;
 }
 
 ModelResult create_model(Manager *m, Scope s, const char *name) {
@@ -295,6 +357,12 @@ MaterialResult create_material(Manager *m, Scope s) {
     u32 idx = pool_alloc(&m->materials, s);
     if (!idx)
         return MaterialResult{.err = result::ERR_EXHAUSTED};
+
+    Material *mat = (Material *)pool_at(&m->materials, idx);
+    mat->shader = m->default_shader;
+    mat->alpha_cutoff = 0.5f;                 // the glTF default
+    mat->state = gfx::state_default();        // zeroed would disable depth entirely
+
     return MaterialResult{.val = MaterialHandle{make_handle(idx, m->materials.slots[idx].epoch)}};
 }
 
@@ -322,6 +390,97 @@ linalg::Mat4 import_matrix(ImportOptions opts) {
                                : linalg::quat_identity();
 
     return linalg::mat4_from_trs(linalg::Vec3{}, r, linalg::Vec3{scale, scale, scale});
+}
+
+static config::Node *material_block(config::Node *first, const char *name) {
+    for (config::Node *n = config::find(first, "material"); n; n = config::find_next(n, "material")) {
+        const char *who = config::value(n, 0, NULL);
+        if (who && strcmp(who, name) == 0)
+            return n;
+    }
+    return NULL;
+}
+
+static void apply_override(Material *mat, config::Node *decl) {
+    config::Node *body = decl->first_child;
+
+    const char *shader_name = config::value(config::find(body, "shader"), 0, NULL);
+    if (shader_name) {
+        // find() already reports an unknown name; keeping the current handle is
+        // the only sane recovery, and it is a content error either way
+        shader::HandleResult h = shader::find(shader_name);
+        if (h.err == result::OK)
+            mat->shader = h.val;
+    }
+
+    const char *cull = config::value(config::find(body, "cull"), 0, NULL);
+    if (cull && !gfx::cull_from_name(cull, &mat->state.cull))
+        LOG_WARN("asset: material \"%s\" has unknown cull mode '%s'", mat->name, cull);
+
+    const char *blend = config::value(config::find(body, "blend"), 0, NULL);
+    if (blend && !gfx::blend_from_name(blend, &mat->state.blend))
+        LOG_WARN("asset: material \"%s\" has unknown blend mode '%s'", mat->name, blend);
+
+    mat->state.depth_test =
+        (b8)config::value_b32(config::find(body, "depth_test"), 0, mat->state.depth_test);
+    mat->state.depth_write =
+        (b8)config::value_b32(config::find(body, "depth_write"), 0, mat->state.depth_write);
+
+    config::Node *color = config::find(body, "base_color");
+    if (color) {
+        mat->base_color = linalg::Vec4{
+            config::value_f32(color, 0, mat->base_color.x),
+            config::value_f32(color, 1, mat->base_color.y),
+            config::value_f32(color, 2, mat->base_color.z),
+            config::value_f32(color, 3, mat->base_color.w),
+        };
+    }
+
+    mat->metallic = config::value_f32(config::find(body, "metallic"), 0, mat->metallic);
+    mat->roughness = config::value_f32(config::find(body, "roughness"), 0, mat->roughness);
+    mat->alpha_cutoff = config::value_f32(config::find(body, "alpha_cutoff"), 0, mat->alpha_cutoff);
+}
+
+// A sidecar beside the model -- characters/soldier.glb -> soldier.mat.cfg --
+// overriding what the glTF said. Absent is the normal case and says nothing.
+// This is the editor's channel into a material: the .glb is the author's
+// intent, this file is the user's.
+static void apply_material_sidecar(Manager *m, ModelHandle h, const char *rel_path) {
+    memory::ArenaTemp t = memory::temp_begin(m->scratch);
+
+    const char *rel_cfg = path::swap_ext(m->scratch, rel_path, MATERIAL_SIDECAR_EXT);
+    const char *abs = FPATH(m->scratch, m->root, ASSET_DIR, rel_cfg);
+    if (!file::exists(abs)) {
+        memory::temp_end(t);
+        return;
+    }
+
+    config::DocResult doc = config::load(m->scratch, abs);
+    if (doc.err != result::OK) {
+        memory::temp_end(t);
+        return; // load already logged why
+    }
+
+    Model *model = get(m, h);
+    u32 applied = 0;
+
+    // Reached through the submeshes because that is where materials are
+    // referenced; one shared by several submeshes is written more than once,
+    // which is harmless and cheaper than building a unique set.
+    for (u32 i = 0; i < model->mesh_count; i++) {
+        Mesh *mesh = get(m, model->meshes[i]);
+        for (u32 sm = 0; sm < mesh->submesh_count; sm++) {
+            Material *mat = get(m, mesh->submeshes[sm].material);
+            config::Node *decl = material_block(doc.val->first, mat->name);
+            if (!decl)
+                continue;
+            apply_override(mat, decl);
+            applied++;
+        }
+    }
+
+    LOG_INFO("asset: %s applied to %u submesh material(s)", rel_cfg, applied);
+    memory::temp_end(t);
 }
 
 ModelResult load_model(Manager *m, Scope s, const char *rel_path, ImportOptions opts) {
@@ -353,15 +512,22 @@ ModelResult load_model(Manager *m, Scope s, const char *rel_path, ImportOptions 
     model->import = import_matrix(opts);
     strmap::insert(&m->by_path, stored, r.val.v);
 
+    // after the model exists and before anyone can draw it: overrides can move
+    // a material between passes, and bounds are what the camera and the
+    // transparent sort both read
+    apply_material_sidecar(m, r.val, rel_path);
+    compute_bounds(m, r.val);
+
     return r;
 }
 
-ClipResult load_clip(Manager *m, Scope s, const char *rel_path, SkeletonHandle target) {
+ClipResult load_clip(Manager *m, Scope s, const char *rel_path, SkeletonHandle target,
+                     ClipOptions opts) {
     ASSERT(m && rel_path);
 
     memory::ArenaTemp t = memory::temp_begin(m->scratch);
     const char *abs = FPATH(m->scratch, m->root, ASSET_DIR, rel_path);
-    ClipResult r = gltf::load_clip(m, s, abs, target);
+    ClipResult r = gltf::load_clip(m, s, abs, target, opts);
     memory::temp_end(t);
 
     return r;

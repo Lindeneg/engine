@@ -3,6 +3,7 @@
 #include "test.h"
 
 test::Suite asset_suite();
+test::Suite config_suite();
 test::Suite file_suite();
 test::Suite gltf_suite();
 test::Suite path_suite();

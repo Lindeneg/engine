@@ -16,4 +16,10 @@ namespace anim {
 void sample(memory::Arena *scratch, const asset::Skeleton *skel, const asset::Clip *clip, f32 time,
             linalg::Mat4 *out);
 
+// The palette with no clip applied. Named because it is what bounds are
+// measured against: raw vertex positions of a skinned mesh are pre-skin, in
+// whatever space the inverse bind matrices convert from, so they are not the
+// model's shape.
+void bind_pose(memory::Arena *scratch, const asset::Skeleton *skel, linalg::Mat4 *out);
+
 } // namespace anim

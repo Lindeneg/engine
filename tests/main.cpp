@@ -12,6 +12,7 @@ int main() {
 
     const test::Suite suites[] = {
         asset_suite(),
+        config_suite(),
         file_suite(),
         gltf_suite(),
         path_suite(),

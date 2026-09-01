@@ -1,7 +1,7 @@
 .PHONY: generate build run test format clean
 
 generate:
-	cmake --preset default
+	cmake --preset default -DCL_MEM_STATS=ON
 
 build:
 	cmake --build build --target ExploreApp -j 18
@@ -10,7 +10,7 @@ run:
 	./build/ExploreApp.exe
 
 test:
-	cmake --preset default -DCL_BUILD_TESTS=ON
+	cmake --preset default -DCL_BUILD_TESTS=ON -DCL_MEM_STATS=ON
 	cmake --build build --target ExploreTests -j 18
 	./build/ExploreTests.exe
 

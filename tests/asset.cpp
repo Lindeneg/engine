@@ -6,6 +6,11 @@
 
 static asset::Config small_config() {
     return asset::Config{
+        // Nothing here reads a file, so the root only has to be non-NULL. The
+        // shader handle is never resolved either: these cases build assets
+        // directly and never reach a draw call.
+        .root = ".",
+        .default_shader = shader::Handle{0},
         .max_models = 8,
         .max_meshes = 8,
         .max_materials = 8,

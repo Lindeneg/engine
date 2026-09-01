@@ -617,6 +617,10 @@ asset::ModelResult load_model(asset::Manager *m, asset::Scope s, const char *abs
         asset::Material *mat = asset::get(m, materials[i]);
         snprintf(mat->name, ASSET_NAME_CAP, "%s", src->name ? src->name : "<unnamed>");
 
+        // The manager's configured default. A material override file, which an
+        // editor would write, reassigns this per material later.
+        mat->shader = asset::default_shader(m);
+
         if (src->has_pbr_metallic_roughness) {
             const cgltf_pbr_metallic_roughness *pbr = &src->pbr_metallic_roughness;
             mat->base_color = linalg::Vec4{pbr->base_color_factor[0], pbr->base_color_factor[1],
@@ -626,6 +630,29 @@ asset::ModelResult load_model(asset::Manager *m, asset::Scope s, const char *abs
         } else {
             mat->base_color = linalg::Vec4{1.0f, 1.0f, 1.0f, 1.0f};
             mat->roughness = 1.0f;
+        }
+
+        // Render state defaults from what the author set in the .glb. A sidecar
+        // .mat.cfg overrides these afterwards; this is the floor, not the word.
+        mat->alpha_cutoff = src->alpha_cutoff;
+        mat->state = gfx::state_default();
+        if (src->double_sided)
+            mat->state.cull = gfx::CULL_NONE;
+
+        switch (src->alpha_mode) {
+        case cgltf_alpha_mode_mask:
+            mat->alpha_mode = asset::ALPHA_MASK;
+            break;
+        case cgltf_alpha_mode_blend:
+            mat->alpha_mode = asset::ALPHA_BLEND;
+            mat->state.blend = gfx::BLEND_ALPHA;
+            // blended surfaces must not occlude each other, or the pass sorts
+            // correctly and still renders wrong
+            mat->state.depth_write = false;
+            break;
+        default:
+            mat->alpha_mode = asset::ALPHA_OPAQUE;
+            break;
         }
     }
 
@@ -690,7 +717,7 @@ asset::ModelResult load_model(asset::Manager *m, asset::Scope s, const char *abs
 }
 
 asset::ClipResult load_clip(asset::Manager *m, asset::Scope s, const char *abs_path,
-                            asset::SkeletonHandle target) {
+                            asset::SkeletonHandle target, asset::ClipOptions opts) {
     ASSERT(m && abs_path);
 
     memory::Arena *scratch = asset::scratch_arena(m);
@@ -737,7 +764,7 @@ asset::ClipResult load_clip(asset::Manager *m, asset::Scope s, const char *abs_p
 
     snprintf(clip->name, ASSET_NAME_CAP, "%s", src->name ? src->name : "<unnamed>");
     clip->channels = push_array(out, asset::Channel, src->channels_count);
-    clip->rotation_only = d->skins_count == 0;
+    clip->rotation_only = opts.rotation_only;
 
     f32 max_clip_t = 0.0f;   // largest translation the clip asks for
     f32 max_bind_t = 0.0f;   // largest the target skeleton actually uses
@@ -812,10 +839,16 @@ asset::ClipResult load_clip(asset::Manager *m, asset::Scope s, const char *abs_p
                  (f64)clip->duration, clip->bound_count, clip->channel_count,
                  clip->rotation_only ? "retargeted (rotation only)" : "native rig");
 
-    // If these disagree by a large factor the two rigs are in different units,
-    // which is exactly why translations cannot be transferred.
+    // Measurement, not inference: the setting stands either way. But a
+    // translation range wildly out of step with the target rig's is the
+    // signature of a retarget nobody marked as one, and that is worth saying
+    // out loud rather than letting the skeleton silently tear apart.
     LOG_INFO("gltf:   max translation: clip %.4f, target skeleton %.4f", (f64)max_clip_t,
              (f64)max_bind_t);
+    if (!clip->rotation_only && max_bind_t > 1e-6f && max_clip_t > max_bind_t * 4.0f)
+        LOG_WARN("gltf: %s translates %.1fx further than the target skeleton -- if it was authored "
+                 "for another rig, it needs rotation_only",
+                 abs_path, (f64)(max_clip_t / max_bind_t));
 
     memory::temp_end(t);
     return cr;

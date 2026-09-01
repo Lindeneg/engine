@@ -9,8 +9,7 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 option(CL_BUILD_TESTS "Build the test runner" OFF)
-
-add_compile_definitions(CL_MEM_STATS=1)
+option(CL_MEM_STATS "Log memory stats usage" OFF)
 
 find_package(glfw3 CONFIG REQUIRED)
 find_package(glad CONFIG REQUIRED)
@@ -19,13 +18,16 @@ set(ENGINE_SOURCES
         src/anim.cpp
         src/asset.cpp
         src/cgltf_impl.cpp
+        src/config.cpp
         src/file.cpp
+        src/gfx.cpp
         src/gltf.cpp
         src/logger.cpp
         src/memory.cpp
         src/path.cpp
         src/render.cpp
         src/result.cpp
+        src/shader.cpp
         src/strmap.cpp
         src/window.cpp
 )

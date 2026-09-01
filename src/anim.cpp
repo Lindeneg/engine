@@ -123,4 +123,8 @@ void sample(memory::Arena *scratch, const asset::Skeleton *skel, const asset::Cl
     memory::temp_end(tmp);
 }
 
+void bind_pose(memory::Arena *scratch, const asset::Skeleton *skel, linalg::Mat4 *out) {
+    sample(scratch, skel, NULL, 0.0f, out);
+}
+
 } // namespace anim

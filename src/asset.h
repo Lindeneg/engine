@@ -1,9 +1,11 @@
 #pragma once
 
 #include "common.h"
+#include "gfx.h"
 #include "linalg.h"
 #include "memory.h"
 #include "result.h"
+#include "shader.h"
 #include "strmap.h"
 
 #define ASSET_NAME_CAP 64
@@ -100,11 +102,27 @@ inline linalg::Vec3 vertex_pos(const Mesh *m, u32 i) {
                                             : m->vertices.statics[i].pos;
 }
 
+// glTF alphaMode. Drives which shader variant a submesh draws with, so it is
+// stored rather than collapsed into the base colour at load.
+enum AlphaMode { ALPHA_OPAQUE, ALPHA_MASK, ALPHA_BLEND };
+
 struct Material {
     char name[ASSET_NAME_CAP];
+
+    // Which program draws this. Assigned from the manager's configured default
+    // at load; the point of it living here is that an editor reassigns it per
+    // material without the renderer inferring anything from geometry.
+    shader::Handle shader;
+
     linalg::Vec4 base_color;
     f32 metallic;
     f32 roughness;
+    AlphaMode alpha_mode;
+    f32 alpha_cutoff;
+
+    // How to draw it, not what it looks like. Defaults come from the glTF
+    // (doubleSided, alphaMode) and a sidecar .mat.cfg overrides them.
+    gfx::RenderState state;
 };
 
 struct Joint {
@@ -149,10 +167,19 @@ struct Clip {
     u32 channel_count;
     u32 bound_count; // channels that matched a joint; 0 means the bind failed
 
-    // A clip whose file carries no skin was authored against some other rig, so
-    // playing it here is retargeting. Only rotations transfer: translation and
-    // scale encode the source rig's bone lengths in the source file's units,
-    // and applying those to a different skeleton tears it apart.
+    // Set from ClipOptions, never inferred. See the note there.
+    b32 rotation_only;
+};
+
+// Per-clip import settings. Whether a clip is a retarget is the author's call:
+// it depends on which rig the animation was made for, which is not recoverable
+// from the file. The loader measures and warns when the setting looks wrong,
+// but it does not decide.
+struct ClipOptions {
+    // Transfer rotations only. Translation and scale channels encode the source
+    // rig's bone lengths in the source file's units; applied to a different
+    // skeleton they tear it apart. Costs root motion, which a locomotion clip
+    // has to get back by transferring root translation scaled by hip height.
     b32 rotation_only;
 };
 
@@ -173,9 +200,26 @@ struct Model {
     // Applied on top of the model matrix rather than baked, so skinning stays
     // in native space and the joint palette needs no adjustment.
     linalg::Mat4 import;
+
+    // Local-space AABB, computed once at load, pre-import. For a skinned model
+    // these are bind-pose bounds: raw vertex positions are pre-skin and are not
+    // the model's shape. Cached because the transparent pass needs a center per
+    // object per frame and that cannot be a walk over every vertex.
+    linalg::Vec3 bounds_min;
+    linalg::Vec3 bounds_max;
 };
 
 struct Config {
+    // Directory every asset path hangs off, from path::exe_dir. Passed in
+    // rather than resolved here: the shader system needs the same value before
+    // a manager exists, so one of them would otherwise own it for both.
+    const char *root;
+
+    // What a loaded material binds to. A handle rather than a name so asset::
+    // stays free of the shader registry -- it stores what it was given and
+    // never asks the shader module anything.
+    shader::Handle default_shader;
+
     u32 max_models;
     u32 max_meshes;
     u32 max_materials;
@@ -204,11 +248,16 @@ memory::Arena *scope_arena(Manager *m, Scope s);
 // Shared parse/staging space. Anything pushed here must be inside a temp scope.
 memory::Arena *scratch_arena(Manager *m);
 
-// The resolved executable directory that asset paths hang off.
+// The directory asset paths hang off, as configured.
 const char *root(Manager *m);
 
-// Axis-aligned bounds over every vertex of every mesh, in model space. Used to
-// frame a camera now, and by physics broadphase later.
+// The shader handle new materials are given, as configured.
+shader::Handle default_shader(Manager *m);
+
+// The cached bounds with the import transform applied, so callers get the units
+// the world actually uses. All eight corners are transformed, not just the two
+// extremes, because import can rotate. Used to frame a camera and to sort
+// transparent draws now, and by physics broadphase later.
 void model_bounds(Manager *m, ModelHandle h, linalg::Vec3 *out_min, linalg::Vec3 *out_max);
 
 // Claim an empty slot. These are what load_model is built from, and they are
@@ -232,7 +281,8 @@ linalg::Mat4 import_matrix(ImportOptions opts);
 // A clip binds to one skeleton at load, matching channels to joints by
 // canonical name. Records the bind rate on the Clip; a rate of 0 warns loudly,
 // since an unbound clip plays silently and animates nothing.
-ClipResult load_clip(Manager *m, Scope s, const char *rel_path, SkeletonHandle target);
+ClipResult load_clip(Manager *m, Scope s, const char *rel_path, SkeletonHandle target,
+                     ClipOptions opts);
 
 // Never NULL, and deliberately not a Result: this runs per-object per-frame and
 // a bad handle means a bug elsewhere, not a condition the caller can act on. A

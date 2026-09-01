@@ -14,9 +14,11 @@ asset::ModelResult load_model(asset::Manager *m, asset::Scope s, const char *abs
                               const char *name);
 
 // Channels bind to target's joints by canonical name. Records the bind rate on
-// the Clip and warns when nothing matched.
+// the Clip and warns when nothing matched. Retargeting comes from opts, not
+// from the file: it measures the translation ranges and warns when the setting
+// looks wrong, but it never decides on the author's behalf.
 asset::ClipResult load_clip(asset::Manager *m, asset::Scope s, const char *abs_path,
-                            asset::SkeletonHandle target);
+                            asset::SkeletonHandle target, asset::ClipOptions opts);
 
 // Parses path and logs what it contains. Everything allocated dies with the
 // call; this exists to design the asset structs against real files.

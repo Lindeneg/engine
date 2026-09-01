@@ -4,38 +4,46 @@
 #include "common.h"
 #include "linalg.h"
 #include "memory.h"
-#include "result.h"
+#include "shader.h"
 
 namespace render {
 
-// Shaders are a fixed set known at compile time, not assets: their CPU-side
-// source is throwaway, the GPU program is the real object, and none of the
-// scope/epoch/dedup machinery in the asset manager would earn its keep.
-enum ShaderId { SHADER_STATIC, SHADER_SKINNED, SHADER_COUNT };
+// Queue capacities. Overflow drops draws and warns once -- it is a scale
+// problem, not a broken build, and a dropped object is visible while a hard
+// abort in the middle of a frame is not diagnosable.
+struct Config {
+    u32 max_draw_items;    // one per submesh submitted, not per model
+    u32 max_objects;       // one per submit_model call
+    u32 max_skinned_draws; // palette slots; each costs SHADER_MAX_JOINTS matrices
+};
 
-// must match MAX_JOINTS in skinned.vert
-#define RENDER_MAX_JOINTS 128
-
-// Sets the GL state this engine assumes everywhere: depth testing on, back
-// faces culled, counter-clockwise front faces (glTF's winding).
-void init(i32 fb_width, i32 fb_height);
+// Creates the frame and joint uniform buffers and the queue arrays, which are
+// pushed once and refilled per frame rather than re-pushed. shader::init must
+// already have run: the buffers bind to the points programs were linked
+// against. Per-draw state (cull, blend, depth) is deliberately not set here --
+// it comes from each material.
+void init(memory::Arena *a, Config cfg, i32 fb_width, i32 fb_height);
+void shutdown();
 
 void resize(i32 fb_width, i32 fb_height);
 
-void begin_frame(linalg::Vec4 clear_color);
-
-// Reads and links every shader from <root>/assets/shaders.
-result::Error load_shaders(memory::Arena *scratch, const char *root);
+// Uploads the per-frame constants every program reads, empties the queue, and
+// clears. camera_pos is kept for the transparent pass's distance sort.
+void begin_frame(const shader::FrameData *frame, linalg::Vec4 clear_color);
 
 // Fills the gpu_* fields the asset manager deliberately leaves alone. Safe to
 // call twice: an already-uploaded mesh is skipped.
 void upload_model(asset::Manager *m, asset::ModelHandle h);
 
-// Uploads the joint matrix palette that skinned meshes sample. Call before
-// drawing a skinned model; entries past count keep whatever was there last.
-void set_joint_palette(const linalg::Mat4 *joints, u32 count);
+// Queues one draw per submesh. Issues no GL calls, so submission order carries
+// no meaning -- flush decides the real order. palette is NULL for a static
+// model; when present it is copied, so the caller may reuse its buffer for the
+// next model immediately.
+void submit_model(asset::Manager *m, asset::ModelHandle h, linalg::Mat4 model,
+                  const linalg::Mat4 *palette, u32 joint_count);
 
-void draw_model(asset::Manager *m, asset::ModelHandle h, linalg::Mat4 model,
-                linalg::Mat4 view_proj);
+// Sorts and draws everything submitted since begin_frame: opaque grouped by
+// program and state, then transparent back-to-front.
+void flush(asset::Manager *m);
 
 } // namespace render

@@ -33,6 +33,10 @@ struct Quat {
     f32 x, y, z, w;
 };
 
+struct Mat3 {
+    f32 m[9]; // column-major, m[col * 3 + row], matching Mat4
+};
+
 struct Mat4 {
     f32 m[16];
 };
@@ -149,6 +153,56 @@ static inline Mat4 mat4_transpose(Mat4 a) {
         for (i32 r = 0; r < 4; ++r)
             out.m[r * 4 + c] = a.m[c * 4 + r];
     return out;
+}
+
+static inline Mat3 mat3_identity() {
+    Mat3 out{};
+    out.m[0] = out.m[4] = out.m[8] = 1.0f;
+    return out;
+}
+
+static inline Mat3 mat3_from_mat4(Mat4 a) {
+    return Mat3{
+        a.m[0], a.m[1], a.m[2],  //
+        a.m[4], a.m[5], a.m[6],  //
+        a.m[8], a.m[9], a.m[10], //
+    };
+}
+
+// The matrix that transforms normals: transpose(inverse(upper-left 3x3)).
+// Plain mat3(model) only works under uniform scale -- any non-uniform scale
+// shears normals off the surface and lights the model wrong. Since
+// inverse(M) = adjugate(M)/det and adjugate is the transposed cofactor matrix,
+// the transpose cancels and this is just cofactor(M)/det(M).
+static inline Mat3 mat3_normal_matrix(Mat4 src) {
+    Mat3 u = mat3_from_mat4(src);
+
+    f32 a = u.m[0], d = u.m[1], g = u.m[2];
+    f32 b = u.m[3], e = u.m[4], h = u.m[5];
+    f32 c = u.m[6], f = u.m[7], i = u.m[8];
+
+    f32 c00 = e * i - f * h;
+    f32 c01 = -(d * i - f * g);
+    f32 c02 = d * h - e * g;
+    f32 c10 = -(b * i - c * h);
+    f32 c11 = a * i - c * g;
+    f32 c12 = -(a * h - b * g);
+    f32 c20 = b * f - c * e;
+    f32 c21 = -(a * f - c * d);
+    f32 c22 = a * e - b * d;
+
+    f32 det = a * c00 + b * c01 + c * c02;
+    if (det > -1e-12f && det < 1e-12f)
+        return u; // degenerate (zero scale); the unmodified basis beats NaNs
+
+    // stored column-major, so column 0 is (c00, c10, c20) -- listing the
+    // cofactors row-wise here would silently store the inverse instead
+    f32 inv = 1.0f / det;
+    return Mat3{
+        c00 * inv, c10 * inv, c20 * inv, //
+        c01 * inv, c11 * inv, c21 * inv, //
+        c02 * inv, c12 * inv, c22 * inv, //
+    };
 }
 
 static inline Mat4 mat4_from_translation(Vec3 t) {
