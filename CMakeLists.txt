@@ -19,12 +19,14 @@ set(ENGINE_SOURCES
         src/asset.cpp
         src/cgltf_impl.cpp
         src/config.cpp
+        src/entity.cpp
         src/file.cpp
         src/gfx.cpp
         src/gltf.cpp
         src/logger.cpp
         src/memory.cpp
         src/path.cpp
+        src/pool.cpp
         src/render.cpp
         src/result.cpp
         src/shader.cpp
@@ -39,12 +41,10 @@ add_executable(ExploreApp
 target_include_directories(ExploreApp PRIVATE src third_party)
 target_link_libraries(ExploreApp PRIVATE glfw glad::glad)
 
-add_custom_command(TARGET ExploreApp POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_directory
-        ${CMAKE_SOURCE_DIR}/assets
-        $<TARGET_FILE_DIR:ExploreApp>/assets
-        COMMENT "Copying assets to output folder"
-)
+# The one assets folder is the one in the source tree. Nothing is copied
+# anywhere, so editing a shader, an .entity or a .level and restarting picks the
+# change up with no build in between.
+target_compile_definitions(ExploreApp PRIVATE CL_ASSET_ROOT="${CMAKE_SOURCE_DIR}/assets")
 
 add_custom_command(TARGET ExploreApp POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
@@ -60,6 +60,7 @@ if (CL_BUILD_TESTS)
     )
     target_include_directories(ExploreTests PRIVATE src tests third_party)
     target_link_libraries(ExploreTests PRIVATE glfw glad::glad)
+    target_compile_definitions(ExploreTests PRIVATE CL_ASSET_ROOT="${CMAKE_SOURCE_DIR}/assets")
 
     # so `make test` alone still refreshes clangd's view of tests/
     add_custom_command(TARGET ExploreTests POST_BUILD

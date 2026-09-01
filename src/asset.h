@@ -4,6 +4,7 @@
 #include "gfx.h"
 #include "linalg.h"
 #include "memory.h"
+#include "pool.h"
 #include "result.h"
 #include "shader.h"
 #include "strmap.h"
@@ -21,14 +22,12 @@
 
 namespace asset {
 
-#define ASSET_EPOCH_SHIFT 24
-#define ASSET_INDEX_MASK ((1u << ASSET_EPOCH_SHIFT) - 1)
-
-// Packed (epoch << 24) | index. Handle 0 is the fallback asset, never
-// "invalid": zeroed memory means "missing", and get() always returns something
-// drawable. The encoding is public so handles can be serialized and printed.
-inline u32 handle_index(u32 v) { return v & ASSET_INDEX_MASK; }
-inline u8 handle_epoch(u32 v) { return (u8)(v >> ASSET_EPOCH_SHIFT); }
+// Packed (epoch << 24) | index, from pool::. Handle 0 is the fallback asset
+// here, never "invalid": zeroed memory means "missing", and get() always
+// returns something drawable. Entities use the same encoding but leave slot 0
+// empty, because a fallback entity would be meaningless.
+inline u32 handle_index(u32 v) { return pool_handle_index(v); }
+inline u8 handle_epoch(u32 v) { return pool_handle_epoch(v); }
 
 ASSET_HANDLE(ModelHandle);
 ASSET_HANDLE(MeshHandle);
@@ -210,9 +209,10 @@ struct Model {
 };
 
 struct Config {
-    // Directory every asset path hangs off, from path::exe_dir. Passed in
-    // rather than resolved here: the shader system needs the same value before
-    // a manager exists, so one of them would otherwise own it for both.
+    // The assets folder every path hangs off -- the one in the source tree,
+    // baked in by CMake as CL_ASSET_ROOT. Passed in rather than resolved here:
+    // the shader system needs the same value before a manager exists, so one of
+    // them would otherwise own it for both.
     const char *root;
 
     // What a loaded material binds to. A handle rather than a name so asset::
@@ -272,7 +272,19 @@ ClipResult create_clip(Manager *m, Scope s);
 // Dedups on path: loading the same file twice returns the same handle.
 // Pair with OR_ELSE(..., MODEL_FALLBACK) to keep a missing asset visible in the
 // world instead of fatal; read .err directly when the reason matters.
-ModelResult load_model(Manager *m, Scope s, const char *rel_path, ImportOptions opts);
+//
+// Import settings come from a sidecar beside the asset -- soldier.glb reads
+// soldier.import.cfg -- because they belong to the file, not to whoever loads
+// it. Two entities referencing one model must not each restate its scale.
+ModelResult load_model(Manager *m, Scope s, const char *rel_path);
+
+// The same load with settings supplied directly, for procedural assets and
+// tests. The sidecar form is what the game and the editor use.
+ModelResult load_model_with(Manager *m, Scope s, const char *rel_path, ImportOptions opts);
+
+// Reads rel_path's sidecar, or the defaults when it has none.
+ImportOptions import_options(Manager *m, const char *rel_path);
+ClipOptions clip_options(Manager *m, const char *rel_path);
 
 // Builds the matrix ImportOptions describes. Exposed so physics and the
 // renderer agree on it rather than each deriving their own.
@@ -281,8 +293,9 @@ linalg::Mat4 import_matrix(ImportOptions opts);
 // A clip binds to one skeleton at load, matching channels to joints by
 // canonical name. Records the bind rate on the Clip; a rate of 0 warns loudly,
 // since an unbound clip plays silently and animates nothing.
-ClipResult load_clip(Manager *m, Scope s, const char *rel_path, SkeletonHandle target,
-                     ClipOptions opts);
+ClipResult load_clip(Manager *m, Scope s, const char *rel_path, SkeletonHandle target);
+ClipResult load_clip_with(Manager *m, Scope s, const char *rel_path, SkeletonHandle target,
+                          ClipOptions opts);
 
 // Never NULL, and deliberately not a Result: this runs per-object per-frame and
 // a bad handle means a bug elsewhere, not a condition the caller can act on. A

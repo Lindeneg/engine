@@ -1,0 +1,55 @@
+# An entity definition -- the template an editor writes when you create a new
+# entity type. Instances of it live in a .level file and override what they
+# need; nothing here is per-instance.
+#
+# Import settings are deliberately absent: how soldier.glb enters the world
+# belongs to the asset (characters/soldier.import.cfg), not to every entity
+# that happens to reference it.
+
+entity "soldier" {
+    transform {
+        # rotation is three values: degrees about X, Y, Z, applied in that
+        # order. Four values are read as a raw quaternion instead, which is
+        # there for a tool to round-trip exactly -- do not hand-write them. A
+        # quaternion that is not unit length silently scales as well as
+        # rotating, so this file uses degrees.
+        position 0 0 0
+        rotation 0 0 0
+        scale    1
+    }
+
+    renderable {
+        model characters/soldier.glb
+    }
+
+    animator {
+        clip    animations/pistol_idle.glb
+        speed   1.0
+        playing true
+    }
+
+    # The gun is its own definition, referenced rather than spelled out here.
+    # This block says where it goes and what it is called in this context; what
+    # a pistol *is* lives in pistol.entity.
+    #
+    # It follows the hand, so it attaches to a joint rather than sitting at a
+    # guessed offset. The joint name is canonical -- exporters disagree on the
+    # separator, and gltf::canonical_name maps "mixamorig:RightHand" and
+    # "mixamorig_RightHand" onto this spelling.
+    child "weapon" {
+        definition   pistol
+        attach_joint mixamorig_RightHand
+
+        # Overrides pistol.entity's own transform. This is the offset and
+        # rotation that seats the grip in the hand -- the knob to turn when the
+        # gun points the wrong way, and the reason it is data.
+        #
+        # Degrees about X, Y, Z. Position is in the hand joint's space, so it is
+        # in metres but rotated by whatever the hand is doing.
+        transform {
+            position 0 0.1 0.05
+            rotation 180 0 90
+            scale    1
+        }
+    }
+}

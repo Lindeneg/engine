@@ -1,13 +1,18 @@
-#include "anim.h"
 #include "asset.h"
 #include "common.h"
+#include "entity.h"
 #include "linalg.h"
 #include "logger.h"
 #include "memory.h"
-#include "path.h"
 #include "render.h"
 #include "shader.h"
 #include "window.h"
+
+// CMake defines this as the source tree's assets folder. The fallback only
+// matters for a build that bypasses CMake entirely.
+#ifndef CL_ASSET_ROOT
+#define CL_ASSET_ROOT "assets"
+#endif
 
 int main() {
     logger::init(NULL);
@@ -28,10 +33,11 @@ int main() {
     i32 fb_h = 0;
     window::framebuffer_size(win, &fb_w, &fb_h);
 
-    // Both the shader registry and the asset manager hang off this, so it is
-    // resolved once here and handed to each rather than owned by either.
-    char root[512];
-    ASSERT_MSG(path::exe_dir(root, sizeof(root)), "cannot resolve the executable directory");
+    // The assets folder in the source tree, baked in by CMake. There is exactly
+    // one of them and nothing copies it, so editing a shader, an .entity or a
+    // .level and restarting is enough -- no build in between. A shipped build
+    // would take this from a launch argument instead.
+    const char *root = CL_ASSET_ROOT;
 
     // Shaders before assets: a material is given its program at load, and a
     // shader that will not build means the deployment is broken, so this
@@ -46,69 +52,58 @@ int main() {
                  },
                  fb_w, fb_h);
 
-    asset::Config cfg{
-        .root = root,
-        .default_shader = shader::default_handle(),
-        .max_models = 64,
-        .max_meshes = 256,
-        .max_materials = 256,
-        .max_skeletons = 32,
-        .max_clips = 128,
-        .scope_bytes = {MiB(128), MiB(128)},
-    };
+    asset::Manager *assets{MUST(asset::init(&perm, &scratch,
+                                            asset::Config{
+                                                .root = root,
+                                                .default_shader = shader::default_handle(),
+                                                .max_models = 64,
+                                                .max_meshes = 256,
+                                                .max_materials = 256,
+                                                .max_skeletons = 32,
+                                                .max_clips = 128,
+                                                .scope_bytes = {MiB(128), MiB(128)},
+                                            }))};
 
-    asset::Manager *assets{MUST(asset::init(&perm, &scratch, cfg))};
+    entity::World *world{MUST(entity::init(&perm, entity::Config{
+                                                      .max_entities = 4096,
+                                                      .max_renderables = 2048,
+                                                      .max_animators = 64,
+                                                  }))};
 
-    // The soldier needs almost no import transform: its inverse bind matrices
-    // already carry a 14.71x mesh->skeleton scale and the Z-up to Y-up
-    // rotation, so skinning does that work. Only the raw, unskinned vertices
-    // look small and sideways. 0.143 * 14.71 = 2.10, trimmed to a 1.8m height.
-    asset::ModelHandle soldier{
-        OR_ELSE(asset::load_model(assets, asset::SCOPE_PERSISTENT, "characters/soldier.glb",
-                                  asset::ImportOptions{.scale = 0.857f, .z_up = false}),
-                asset::MODEL_FALLBACK)};
-    asset::ModelHandle pistol{
-        OR_ELSE(asset::load_model(assets, asset::SCOPE_PERSISTENT, "weapons/pistol.glb",
-                                  asset::ImportOptions{.scale = 0.0012f, .z_up = false}),
-                asset::MODEL_FALLBACK)};
+    // Everything the world contains comes from here. No model handles, import
+    // scales or attachment offsets in this file.
+    MUST(entity::load_level(world, assets, "test"));
 
-    render::upload_model(assets, soldier);
-    render::upload_model(assets, pistol);
+    // Frame the camera off the player's real bounds. Guessing a distance is how
+    // you end up staring at a black window wondering which of five things is
+    // broken.
+    linalg::Vec3 center{};
+    f32 radius = 1.0f;
 
-    asset::Skeleton *skel = asset::get(assets, asset::get(assets, soldier)->skeleton);
+    // the first renderable *root*: iterating raw would find the attached weapon
+    // just as readily as the soldier holding it
+    entity::Renderable *player = NULL;
+    for (entity::Handle h = entity::first(world); h.v; h = entity::next(world, h)) {
+        if (entity::get(world, h)->parent.v)
+            continue;
+        player = entity::renderable(world, h);
+        if (player)
+            break;
+    }
 
-    // rotation_only is stated, not guessed: this clip was authored for another
-    // rig, and only its author knows that. See ClipOptions.
-    asset::ClipHandle idle{
-        OR_ELSE(asset::load_clip(assets, asset::SCOPE_PERSISTENT, "animations/pistol_idle.glb",
-                                 asset::get(assets, soldier)->skeleton,
-                                 asset::ClipOptions{.rotation_only = true}),
-                asset::CLIP_FALLBACK)};
-    asset::Clip *clip = asset::get(assets, idle);
+    if (player) {
+        linalg::Vec3 lo, hi;
+        asset::model_bounds(assets, player->model, &lo, &hi);
+        center = (lo + hi) * 0.5f;
+        radius = linalg::vec3_length(hi - lo) * 0.5f;
+        LOG_INFO("camera: framing (%.3f %.3f %.3f) radius %.3f", (f64)center.x, (f64)center.y,
+                 (f64)center.z, (f64)radius);
+    } else {
+        LOG_WARN("camera: the level spawned nothing renderable");
+    }
 
-    linalg::Mat4 palette[SHADER_MAX_JOINTS];
-
-    // Frame the camera off real bounds. Guessing a distance is how you end up
-    // staring at a black window wondering which of five things is broken.
-    // These are bind-pose bounds, cached at load, so they are the model's
-    // actual shape rather than its pre-skin vertex soup.
-    linalg::Vec3 lo, hi;
-    asset::model_bounds(assets, soldier, &lo, &hi);
-    linalg::Vec3 center = (lo + hi) * 0.5f;
-    linalg::Vec3 extent = hi - lo;
-    f32 radius = linalg::vec3_length(extent) * 0.5f;
     f32 dist = radius / tanf(DEG2RAD(45.0f) * 0.5f) * 1.15f;
-
-    LOG_INFO("soldier bounds: (%.3f %.3f %.3f) .. (%.3f %.3f %.3f)  size %.3f x %.3f x %.3f",
-             (f64)lo.x, (f64)lo.y, (f64)lo.z, (f64)hi.x, (f64)hi.y, (f64)hi.z, (f64)extent.x,
-             (f64)extent.y, (f64)extent.z);
-
-    linalg::Vec3 plo, phi;
-    asset::model_bounds(assets, pistol, &plo, &phi);
-    linalg::Vec3 pext = phi - plo;
-    LOG_INFO("pistol  bounds: (%.3f %.3f %.3f) .. (%.3f %.3f %.3f)  size %.3f x %.3f x %.3f",
-             (f64)plo.x, (f64)plo.y, (f64)plo.z, (f64)phi.x, (f64)phi.y, (f64)phi.z, (f64)pext.x,
-             (f64)pext.y, (f64)pext.z);
+    f64 last = window::time();
 
     while (!window::should_close(win)) {
         window::poll(win);
@@ -124,7 +119,11 @@ int main() {
             render::resize(fb_w, fb_h);
         }
 
-        f32 t = (f32)window::time();
+        f64 now = window::time();
+        f32 dt = (f32)(now - last);
+        last = now;
+
+        f32 t = (f32)now;
         linalg::Vec3 eye{center.x + sinf(t * 0.4f) * dist, center.y + radius * 0.35f,
                          center.z + cosf(t * 0.4f) * dist};
 
@@ -142,18 +141,10 @@ int main() {
             .light_color = linalg::Vec4{0.72f, 0.72f, 0.72f, 0.28f},
         };
 
+        entity::update(world, assets, &scratch, dt);
+
         render::begin_frame(&frame, linalg::Vec4{0.10f, 0.11f, 0.13f, 1.0f});
-
-        anim::sample(&scratch, skel, clip, t, palette);
-
-        // Submission order carries no meaning now -- flush sorts. The palette
-        // is copied on submit, so it can be reused for the next model.
-        render::submit_model(assets, soldier, linalg::mat4_identity(), palette,
-                             skel->joint_count);
-        render::submit_model(
-            assets, pistol,
-            linalg::mat4_from_translation(linalg::Vec3{extent.x * 0.9f, center.y, 0.0f}), NULL, 0);
-
+        entity::submit(world, assets);
         render::flush(assets);
 
         window::swap(win);

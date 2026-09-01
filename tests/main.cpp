@@ -15,7 +15,9 @@ int main() {
         config_suite(),
         file_suite(),
         gltf_suite(),
+        linalg_suite(),
         path_suite(),
+        pool_suite(),
         result_suite(),
         strmap_suite(),
     };

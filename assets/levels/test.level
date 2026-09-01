@@ -1,0 +1,29 @@
+# A level: which definitions exist and where they are put. One line per thing in
+# the world, not one file per thing -- a warehouse with 500 crates is 500
+# instance blocks here, all sharing one crate.entity.
+#
+# An instance is the same kind of block as a child: it references a definition
+# and overrides what it needs.
+
+instance "player" {
+    definition soldier
+
+    transform {
+        position 0 0 0
+        rotation 0 0 0
+        scale    1
+    }
+}
+
+# The same pistol.entity the soldier holds, standing on its own. Nothing about
+# it had to be duplicated to put a second one in the world -- which is the point
+# of it being a definition rather than a block inside soldier.entity.
+instance "dropped_pistol" {
+    definition pistol
+
+    transform {
+        position 0.6 0.05 0.2
+        rotation 0 0 0
+        scale    1
+    }
+}

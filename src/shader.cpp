@@ -10,7 +10,7 @@
 #include "logger.h"
 #include "path.h"
 
-#define SHADER_DIR "assets/shaders"
+#define SHADER_DIR "shaders"
 #define SHADER_MANIFEST "shaders.cfg"
 #define UNIFORM_NAME_CAP 96
 #define PREAMBLE_CAP 512

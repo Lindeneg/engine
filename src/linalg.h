@@ -106,6 +106,21 @@ static inline Quat quat_normalize(Quat q) {
     return Quat{q.x * inv, q.y * inv, q.z * inv, q.w * inv};
 }
 
+// Rotation about X, then Y, then Z, in degrees. What a human types when asked
+// to turn something: quaternion components are for tools to write, not people.
+static inline Quat quat_from_euler(Vec3 degrees) {
+    f32 hx = DEG2RAD(degrees.x) * 0.5f;
+    f32 hy = DEG2RAD(degrees.y) * 0.5f;
+    f32 hz = DEG2RAD(degrees.z) * 0.5f;
+
+    Quat qx{sinf(hx), 0.0f, 0.0f, cosf(hx)};
+    Quat qy{0.0f, sinf(hy), 0.0f, cosf(hy)};
+    Quat qz{0.0f, 0.0f, sinf(hz), cosf(hz)};
+
+    // quat_mul applies its right operand first, so this is X then Y then Z
+    return quat_mul(quat_mul(qz, qy), qx);
+}
+
 // q and -q are the same rotation; lerp through the nearer neighborhood or joints flip mid-blend
 static inline Quat quat_nlerp(Quat a, Quat b, f32 t) {
     if (quat_dot(a, b) < 0.0f)

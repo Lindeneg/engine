@@ -10,31 +10,11 @@
 #include "path.h"
 
 #define MATERIAL_SIDECAR_EXT ".mat.cfg"
+#define IMPORT_SIDECAR_EXT ".import.cfg"
 
 #define ROOT_CAP 512
-#define ASSET_DIR "assets"
 
 namespace asset {
-
-struct Slot {
-    u8 epoch;
-    b8 used;
-    u8 scope;
-
-    // A stale handle is usually dereferenced every frame by whatever is holding
-    // it, so reporting it every time buries the first occurrence under
-    // thousands of copies. One line per slot, per epoch.
-    b8 warned;
-};
-
-// One implementation of the slot mechanics for all five asset types; only the
-// element size differs, so a stride beats five copies of the epoch logic.
-struct Pool {
-    u8 *items;
-    Slot *slots;
-    u32 cap;
-    u64 stride;
-};
 
 struct Manager {
     memory::Arena *mgr;
@@ -44,71 +24,14 @@ struct Manager {
     char root[ROOT_CAP];
     shader::Handle default_shader;
 
-    Pool models;
-    Pool meshes;
-    Pool materials;
-    Pool skeletons;
-    Pool clips;
+    pool::Pool models;
+    pool::Pool meshes;
+    pool::Pool materials;
+    pool::Pool skeletons;
+    pool::Pool clips;
 
     strmap::Map by_path; // rel_path -> ModelHandle.v
 };
-
-static void *pool_at(Pool *p, u32 index) { return p->items + (u64)index * p->stride; }
-
-static u32 make_handle(u32 index, u8 epoch) { return ((u32)epoch << ASSET_EPOCH_SHIFT) | index; }
-
-static Pool pool_create(memory::Arena *a, u32 cap, u64 stride) {
-    ASSERT(cap > 0);
-    Pool p = {
-        .items = (u8 *)memory::push(a, (u64)cap * stride),
-        .slots = push_array(a, Slot, cap),
-        .cap = cap,
-        .stride = stride,
-    };
-    p.slots[0].used = true; // slot 0 is the fallback and is never handed out
-    return p;
-}
-
-// index 0 is reserved, so 0 doubles as the "pool full" answer
-static u32 pool_alloc(Pool *p, Scope s) {
-    for (u32 i = 1; i < p->cap; i++) {
-        if (!p->slots[i].used) {
-            p->slots[i].used = true;
-            p->slots[i].scope = (u8)s;
-            p->slots[i].warned = false;
-            memset(pool_at(p, i), 0, p->stride);
-            return i;
-        }
-    }
-    return 0;
-}
-
-static void pool_release(Pool *p, u32 index) {
-    if (index == 0 || index >= p->cap || !p->slots[index].used)
-        return;
-    p->slots[index].used = false;
-    p->slots[index].epoch++; // wraps at 256; stale handles collide only after that many reuses
-}
-
-static void pool_release_scope(Pool *p, Scope s) {
-    for (u32 i = 1; i < p->cap; i++)
-        if (p->slots[i].used && p->slots[i].scope == (u8)s)
-            pool_release(p, i);
-}
-
-static void *resolve(Pool *p, u32 v, const char *what) {
-    u32 idx = handle_index(v);
-    if (idx < p->cap && p->slots[idx].used && p->slots[idx].epoch == handle_epoch(v))
-        return pool_at(p, idx);
-
-    // handle 0 is the fallback by design and says nothing; anything else is a
-    // bug worth one line, not one line per frame for as long as it is held
-    if (v != 0 && idx < p->cap && !p->slots[idx].warned) {
-        p->slots[idx].warned = true;
-        LOG_WARN("asset: stale %s handle %u, substituting fallback", what, v);
-    }
-    return pool_at(p, 0);
-}
 
 static const linalg::Vec3 CUBE_POS[8] = {
     {-0.5f, -0.5f, -0.5f}, {0.5f, -0.5f, -0.5f}, {0.5f, 0.5f, -0.5f}, {-0.5f, 0.5f, -0.5f},
@@ -129,7 +52,7 @@ static const u32 CUBE_IDX[36] = {
 static void build_fallbacks(Manager *m) {
     memory::Arena *a = m->mgr;
 
-    Material *mat = (Material *)pool_at(&m->materials, 0);
+    Material *mat = (Material *)pool::at(&m->materials, 0);
     snprintf(mat->name, ASSET_NAME_CAP, "<fallback>");
     mat->shader = m->default_shader;
     mat->base_color = linalg::Vec4{1.0f, 0.0f, 1.0f, 1.0f};
@@ -138,7 +61,7 @@ static void build_fallbacks(Manager *m) {
     mat->alpha_cutoff = 0.5f;
     mat->state = gfx::state_default();
 
-    Mesh *mesh = (Mesh *)pool_at(&m->meshes, 0);
+    Mesh *mesh = (Mesh *)pool::at(&m->meshes, 0);
     mesh->vertex_kind = VERTEX_STATIC;
     mesh->vertices.statics = push_array(a, VertexStatic, ARRAY_COUNT(CUBE_POS));
     mesh->vertex_count = ARRAY_COUNT(CUBE_POS);
@@ -153,7 +76,7 @@ static void build_fallbacks(Manager *m) {
     mesh->submesh_count = 1;
     mesh->submeshes[0] = Submesh{.index_count = mesh->index_count, .material = MATERIAL_FALLBACK};
 
-    Skeleton *skel = (Skeleton *)pool_at(&m->skeletons, 0);
+    Skeleton *skel = (Skeleton *)pool::at(&m->skeletons, 0);
     skel->joints = push_array(a, Joint, 1);
     skel->joint_count = 1;
     skel->root = linalg::mat4_identity();
@@ -165,10 +88,10 @@ static void build_fallbacks(Manager *m) {
     skel->by_name = strmap::create(a, 1);
     strmap::insert(&skel->by_name, skel->joints[0].name, 0);
 
-    Clip *clip = (Clip *)pool_at(&m->clips, 0);
+    Clip *clip = (Clip *)pool::at(&m->clips, 0);
     snprintf(clip->name, ASSET_NAME_CAP, "<fallback>");
 
-    Model *model = (Model *)pool_at(&m->models, 0);
+    Model *model = (Model *)pool::at(&m->models, 0);
     snprintf(model->name, ASSET_NAME_CAP, "<fallback>");
     model->path = "<fallback>";
     model->import = linalg::mat4_identity();
@@ -202,11 +125,11 @@ ManagerResult init(memory::Arena *mgr_arena, memory::Arena *scratch, Config cfg)
     for (u32 i = 0; i < SCOPE_COUNT; i++)
         m->scopes[i] = memory::create(cfg.scope_bytes[i]);
 
-    m->models = pool_create(mgr_arena, cfg.max_models, sizeof(Model));
-    m->meshes = pool_create(mgr_arena, cfg.max_meshes, sizeof(Mesh));
-    m->materials = pool_create(mgr_arena, cfg.max_materials, sizeof(Material));
-    m->skeletons = pool_create(mgr_arena, cfg.max_skeletons, sizeof(Skeleton));
-    m->clips = pool_create(mgr_arena, cfg.max_clips, sizeof(Clip));
+    m->models = pool::create(mgr_arena, cfg.max_models, sizeof(Model));
+    m->meshes = pool::create(mgr_arena, cfg.max_meshes, sizeof(Mesh));
+    m->materials = pool::create(mgr_arena, cfg.max_materials, sizeof(Material));
+    m->skeletons = pool::create(mgr_arena, cfg.max_skeletons, sizeof(Skeleton));
+    m->clips = pool::create(mgr_arena, cfg.max_clips, sizeof(Clip));
     m->by_path = strmap::create(mgr_arena, cfg.max_models);
 
     build_fallbacks(m);
@@ -332,54 +255,54 @@ void model_bounds(Manager *m, ModelHandle h, linalg::Vec3 *out_min, linalg::Vec3
 ModelResult create_model(Manager *m, Scope s, const char *name) {
     ASSERT(m);
 
-    u32 idx = pool_alloc(&m->models, s);
+    u32 idx = pool::alloc(&m->models, (u8)s);
     if (!idx)
         return ModelResult{.err = result::ERR_EXHAUSTED};
 
-    Model *model = (Model *)pool_at(&m->models, idx);
+    Model *model = (Model *)pool::at(&m->models, idx);
     snprintf(model->name, ASSET_NAME_CAP, "%s", name ? name : "<unnamed>");
     model->skeleton = SKELETON_FALLBACK;
     model->import = linalg::mat4_identity(); // zeroed memory would be degenerate
 
-    return ModelResult{.val = ModelHandle{make_handle(idx, m->models.slots[idx].epoch)}};
+    return ModelResult{.val = ModelHandle{pool::make_handle(&m->models, idx)}};
 }
 
 MeshResult create_mesh(Manager *m, Scope s) {
     ASSERT(m);
-    u32 idx = pool_alloc(&m->meshes, s);
+    u32 idx = pool::alloc(&m->meshes, (u8)s);
     if (!idx)
         return MeshResult{.err = result::ERR_EXHAUSTED};
-    return MeshResult{.val = MeshHandle{make_handle(idx, m->meshes.slots[idx].epoch)}};
+    return MeshResult{.val = MeshHandle{pool::make_handle(&m->meshes, idx)}};
 }
 
 MaterialResult create_material(Manager *m, Scope s) {
     ASSERT(m);
-    u32 idx = pool_alloc(&m->materials, s);
+    u32 idx = pool::alloc(&m->materials, (u8)s);
     if (!idx)
         return MaterialResult{.err = result::ERR_EXHAUSTED};
 
-    Material *mat = (Material *)pool_at(&m->materials, idx);
+    Material *mat = (Material *)pool::at(&m->materials, idx);
     mat->shader = m->default_shader;
     mat->alpha_cutoff = 0.5f;                 // the glTF default
     mat->state = gfx::state_default();        // zeroed would disable depth entirely
 
-    return MaterialResult{.val = MaterialHandle{make_handle(idx, m->materials.slots[idx].epoch)}};
+    return MaterialResult{.val = MaterialHandle{pool::make_handle(&m->materials, idx)}};
 }
 
 SkeletonResult create_skeleton(Manager *m, Scope s) {
     ASSERT(m);
-    u32 idx = pool_alloc(&m->skeletons, s);
+    u32 idx = pool::alloc(&m->skeletons, (u8)s);
     if (!idx)
         return SkeletonResult{.err = result::ERR_EXHAUSTED};
-    return SkeletonResult{.val = SkeletonHandle{make_handle(idx, m->skeletons.slots[idx].epoch)}};
+    return SkeletonResult{.val = SkeletonHandle{pool::make_handle(&m->skeletons, idx)}};
 }
 
 ClipResult create_clip(Manager *m, Scope s) {
     ASSERT(m);
-    u32 idx = pool_alloc(&m->clips, s);
+    u32 idx = pool::alloc(&m->clips, (u8)s);
     if (!idx)
         return ClipResult{.err = result::ERR_EXHAUSTED};
-    return ClipResult{.val = ClipHandle{make_handle(idx, m->clips.slots[idx].epoch)}};
+    return ClipResult{.val = ClipHandle{pool::make_handle(&m->clips, idx)}};
 }
 
 linalg::Mat4 import_matrix(ImportOptions opts) {
@@ -449,7 +372,7 @@ static void apply_material_sidecar(Manager *m, ModelHandle h, const char *rel_pa
     memory::ArenaTemp t = memory::temp_begin(m->scratch);
 
     const char *rel_cfg = path::swap_ext(m->scratch, rel_path, MATERIAL_SIDECAR_EXT);
-    const char *abs = FPATH(m->scratch, m->root, ASSET_DIR, rel_cfg);
+    const char *abs = FPATH(m->scratch, m->root, rel_cfg);
     if (!file::exists(abs)) {
         memory::temp_end(t);
         return;
@@ -483,7 +406,65 @@ static void apply_material_sidecar(Manager *m, ModelHandle h, const char *rel_pa
     memory::temp_end(t);
 }
 
-ModelResult load_model(Manager *m, Scope s, const char *rel_path, ImportOptions opts) {
+// Sidecar beside the asset: characters/soldier.glb -> characters/soldier.import.cfg.
+// Absent is normal and silent -- an asset authored in metres, Y-up, needs none.
+static config::Node *open_sidecar(Manager *m, const char *rel_path, const char *block) {
+    const char *rel_cfg = path::swap_ext(m->scratch, rel_path, IMPORT_SIDECAR_EXT);
+    const char *abs = FPATH(m->scratch, m->root, rel_cfg);
+    if (!file::exists(abs))
+        return NULL;
+
+    config::DocResult doc = config::load(m->scratch, abs);
+    if (doc.err != result::OK)
+        return NULL; // load already logged why
+
+    config::Node *n = config::find(doc.val->first, block);
+    if (!n)
+        LOG_WARN("asset: %s has no '%s' block", rel_cfg, block);
+    return n;
+}
+
+ImportOptions import_options(Manager *m, const char *rel_path) {
+    ASSERT(m && rel_path);
+
+    ImportOptions opts{.scale = 1.0f, .z_up = false};
+
+    memory::ArenaTemp t = memory::temp_begin(m->scratch);
+    config::Node *n = open_sidecar(m, rel_path, "import");
+    if (n) {
+        config::Node *body = n->first_child;
+        opts.scale = config::value_f32(config::find(body, "scale"), 0, opts.scale);
+        opts.z_up = config::value_b32(config::find(body, "z_up"), 0, opts.z_up);
+    }
+    memory::temp_end(t);
+
+    return opts;
+}
+
+ClipOptions clip_options(Manager *m, const char *rel_path) {
+    ASSERT(m && rel_path);
+
+    ClipOptions opts{};
+
+    memory::ArenaTemp t = memory::temp_begin(m->scratch);
+    config::Node *n = open_sidecar(m, rel_path, "clip");
+    if (n)
+        opts.rotation_only =
+            config::value_b32(config::find(n->first_child, "rotation_only"), 0, opts.rotation_only);
+    memory::temp_end(t);
+
+    return opts;
+}
+
+ModelResult load_model(Manager *m, Scope s, const char *rel_path) {
+    return load_model_with(m, s, rel_path, import_options(m, rel_path));
+}
+
+ClipResult load_clip(Manager *m, Scope s, const char *rel_path, SkeletonHandle target) {
+    return load_clip_with(m, s, rel_path, target, clip_options(m, rel_path));
+}
+
+ModelResult load_model_with(Manager *m, Scope s, const char *rel_path, ImportOptions opts) {
     ASSERT(m && rel_path);
 
     // dedup is on path only: a second load with different options returns the
@@ -493,7 +474,7 @@ ModelResult load_model(Manager *m, Scope s, const char *rel_path, ImportOptions 
         return ModelResult{.val = ModelHandle{*existing}};
 
     memory::ArenaTemp t = memory::temp_begin(m->scratch);
-    const char *abs = FPATH(m->scratch, m->root, ASSET_DIR, rel_path);
+    const char *abs = FPATH(m->scratch, m->root, rel_path);
     ModelResult r = gltf::load_model(m, s, abs, rel_path);
     memory::temp_end(t);
 
@@ -521,62 +502,67 @@ ModelResult load_model(Manager *m, Scope s, const char *rel_path, ImportOptions 
     return r;
 }
 
-ClipResult load_clip(Manager *m, Scope s, const char *rel_path, SkeletonHandle target,
-                     ClipOptions opts) {
+ClipResult load_clip_with(Manager *m, Scope s, const char *rel_path, SkeletonHandle target,
+                          ClipOptions opts) {
     ASSERT(m && rel_path);
 
     memory::ArenaTemp t = memory::temp_begin(m->scratch);
-    const char *abs = FPATH(m->scratch, m->root, ASSET_DIR, rel_path);
+    const char *abs = FPATH(m->scratch, m->root, rel_path);
     ClipResult r = gltf::load_clip(m, s, abs, target, opts);
     memory::temp_end(t);
 
     return r;
 }
 
-Model *get(Manager *m, ModelHandle h) { return (Model *)resolve(&m->models, h.v, "model"); }
-Mesh *get(Manager *m, MeshHandle h) { return (Mesh *)resolve(&m->meshes, h.v, "mesh"); }
+Model *get(Manager *m, ModelHandle h) {
+    return (Model *)pool::resolve_or_zero(&m->models, h.v, "model");
+}
+Mesh *get(Manager *m, MeshHandle h) {
+    return (Mesh *)pool::resolve_or_zero(&m->meshes, h.v, "mesh");
+}
 Material *get(Manager *m, MaterialHandle h) {
-    return (Material *)resolve(&m->materials, h.v, "material");
+    return (Material *)pool::resolve_or_zero(&m->materials, h.v, "material");
 }
 Skeleton *get(Manager *m, SkeletonHandle h) {
-    return (Skeleton *)resolve(&m->skeletons, h.v, "skeleton");
+    return (Skeleton *)pool::resolve_or_zero(&m->skeletons, h.v, "skeleton");
 }
-Clip *get(Manager *m, ClipHandle h) { return (Clip *)resolve(&m->clips, h.v, "clip"); }
+Clip *get(Manager *m, ClipHandle h) {
+    return (Clip *)pool::resolve_or_zero(&m->clips, h.v, "clip");
+}
 
 void remove(Manager *m, ModelHandle h) {
     ASSERT(m);
 
-    u32 idx = handle_index(h.v);
-    if (idx == 0 || idx >= m->models.cap || !m->models.slots[idx].used ||
-        m->models.slots[idx].epoch != handle_epoch(h.v))
+    if (!pool::alive(&m->models, h.v))
         return;
 
-    Model *model = (Model *)pool_at(&m->models, idx);
+    u32 idx = handle_index(h.v);
+    Model *model = (Model *)pool::at(&m->models, idx);
     if (model->path)
         strmap::remove(&m->by_path, model->path);
 
     // catalog-only: the bytes stay in the scope arena until unload_scope, which
     // is what makes undo in an editor cheap
-    pool_release(&m->models, idx);
+    pool::release(&m->models, idx);
 }
 
 void unload_scope(Manager *m, Scope s) {
     ASSERT(m && s < SCOPE_COUNT);
 
     // map keys point into the arena we are about to reset, so drop them first
-    for (u32 i = 1; i < m->models.cap; i++) {
-        if (!m->models.slots[i].used || m->models.slots[i].scope != (u8)s)
+    for (u32 i = pool::first(&m->models); i; i = pool::next(&m->models, i)) {
+        if (m->models.slots[i].scope != (u8)s)
             continue;
-        Model *model = (Model *)pool_at(&m->models, i);
+        Model *model = (Model *)pool::at(&m->models, i);
         if (model->path)
             strmap::remove(&m->by_path, model->path);
     }
 
-    pool_release_scope(&m->models, s);
-    pool_release_scope(&m->meshes, s);
-    pool_release_scope(&m->materials, s);
-    pool_release_scope(&m->skeletons, s);
-    pool_release_scope(&m->clips, s);
+    pool::release_scope(&m->models, (u8)s);
+    pool::release_scope(&m->meshes, (u8)s);
+    pool::release_scope(&m->materials, (u8)s);
+    pool::release_scope(&m->skeletons, (u8)s);
+    pool::release_scope(&m->clips, (u8)s);
 
     memory::reset(&m->scopes[s]);
     LOG_INFO("asset: unloaded scope %u", (u32)s);

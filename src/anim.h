@@ -13,8 +13,13 @@ namespace anim {
 // Pass clip == NULL for the bind pose. That case must produce identity
 // matrices: it is the check that a skeleton's local TRS and its inverse bind
 // matrices actually agree with each other.
+// out_skin receives global * inverse_bind, which is what the shader wants and
+// what nothing else does. out_global receives the joints' model-space
+// transforms and may be NULL; it is what an attachment needs, because a gun
+// held in a hand follows the hand's position, not the hand's skinning matrix.
+// Both arrays are skel->joint_count long.
 void sample(memory::Arena *scratch, const asset::Skeleton *skel, const asset::Clip *clip, f32 time,
-            linalg::Mat4 *out);
+            linalg::Mat4 *out_skin, linalg::Mat4 *out_global);
 
 // The palette with no clip applied. Named because it is what bounds are
 // measured against: raw vertex positions of a skinned mesh are pre-skin, in

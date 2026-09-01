@@ -1,6 +1,7 @@
 #include "anim.h"
 
 #include <math.h>
+#include <string.h>
 
 namespace anim {
 
@@ -83,8 +84,8 @@ static void resolve(const asset::Skeleton *skel, const Trs *locals, linalg::Mat4
 }
 
 void sample(memory::Arena *scratch, const asset::Skeleton *skel, const asset::Clip *clip, f32 time,
-            linalg::Mat4 *out) {
-    ASSERT(scratch && skel && out);
+            linalg::Mat4 *out_skin, linalg::Mat4 *out_global) {
+    ASSERT(scratch && skel && out_skin);
 
     u32 n = skel->joint_count;
     if (n == 0)
@@ -118,13 +119,16 @@ void sample(memory::Arena *scratch, const asset::Skeleton *skel, const asset::Cl
         resolve(skel, locals, global, done, (i32)j);
 
     for (u32 j = 0; j < n; j++)
-        out[j] = global[j] * skel->joints[j].inverse_bind;
+        out_skin[j] = global[j] * skel->joints[j].inverse_bind;
+
+    if (out_global)
+        memcpy(out_global, global, sizeof(linalg::Mat4) * n);
 
     memory::temp_end(tmp);
 }
 
 void bind_pose(memory::Arena *scratch, const asset::Skeleton *skel, linalg::Mat4 *out) {
-    sample(scratch, skel, NULL, 0.0f, out);
+    sample(scratch, skel, NULL, 0.0f, out, NULL);
 }
 
 } // namespace anim
