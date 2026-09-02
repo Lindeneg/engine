@@ -19,26 +19,30 @@ find_package(glfw3 CONFIG REQUIRED)
 find_package(glad CONFIG REQUIRED)
 
 set(ENGINE_SOURCES
-        src/anim.cpp
-        src/asset.cpp
-        src/cgltf_impl.cpp
-        src/config.cpp
-        src/drawkey.cpp
-        src/entity.cpp
-        src/file.cpp
-        src/gfx.cpp
-        src/gltf.cpp
-        src/logger.cpp
-        src/memory.cpp
-        src/path.cpp
-        src/platform.cpp
-        src/pool.cpp
-        src/render.cpp
-        src/result.cpp
-        src/shader.cpp
-        src/str.cpp
-        src/strmap.cpp
-        src/window.cpp
+        src/core/config.cpp
+        src/core/logger.cpp
+        src/core/memory.cpp
+        src/core/pool.cpp
+        src/core/result.cpp
+        src/core/str.cpp
+        src/core/strmap.cpp
+
+        src/platform/file.cpp
+        src/platform/path.cpp
+        src/platform/platform.cpp
+        src/platform/window.cpp
+
+        src/gfx/drawkey.cpp
+        src/gfx/gfx.cpp
+        src/gfx/render.cpp
+        src/gfx/shader.cpp
+
+        src/asset/anim.cpp
+        src/asset/asset.cpp
+        src/asset/cgltf_impl.cpp
+        src/asset/gltf.cpp
+
+        src/scene/entity.cpp
 )
 
 add_executable(ExploreApp
@@ -56,7 +60,10 @@ add_custom_command(TARGET ExploreApp POST_BUILD
         "${CMAKE_SOURCE_DIR}/")
 
 if (CL_BUILD_TESTS)
-    file(GLOB TEST_SOURCES CONFIGURE_DEPENDS ${CMAKE_SOURCE_DIR}/tests/*.cpp)
+    # tests/ mirrors src/: the runner and framework at the root, one folder per src/ folder
+    file(GLOB TEST_SOURCES CONFIGURE_DEPENDS
+            ${CMAKE_SOURCE_DIR}/tests/*.cpp
+            ${CMAKE_SOURCE_DIR}/tests/*/*.cpp)
 
     add_executable(ExploreTests
             ${TEST_SOURCES}

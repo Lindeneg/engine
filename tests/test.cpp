@@ -1,6 +1,6 @@
 #include "test.h"
 
-#include "logger.h"
+#include "core/logger.h"
 
 #define REPORT_LIMIT 10
 

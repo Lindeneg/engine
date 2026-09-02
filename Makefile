@@ -1,5 +1,8 @@
 .PHONY: generate build run test format clean
 
+FORMAT_FILES := $(wildcard src/*.cpp src/*.h src/*/*.cpp src/*/*.h \
+                           tests/*.cpp tests/*.h tests/*/*.cpp tests/*/*.h)
+
 generate:
 	cmake --preset default -DCL_MEM_STATS=ON
 
@@ -15,7 +18,7 @@ test:
 	./build/ExploreTests.exe
 
 format:
-	clang-format -i ./src/*.cpp ./src/*.h ./tests/*.cpp ./tests/*.h
+	clang-format -i $(FORMAT_FILES)
 
 clean:
 	rm -rf build compile_commands.json .cache

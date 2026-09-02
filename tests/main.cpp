@@ -1,6 +1,6 @@
-#include "common.h"
-#include "logger.h"
-#include "memory.h"
+#include "core/common.h"
+#include "core/logger.h"
+#include "core/memory.h"
 #include "suites.h"
 
 int main() {

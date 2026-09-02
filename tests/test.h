@@ -1,7 +1,7 @@
 #pragma once
 
-#include "common.h"
-#include "memory.h"
+#include "core/common.h"
+#include "core/memory.h"
 
 namespace test {
 

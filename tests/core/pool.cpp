@@ -1,0 +1,165 @@
+#include <string.h>
+
+#include "core/pool.h"
+#include "suites.h"
+
+struct Item {
+    u32 id;
+    f32 value;
+};
+
+static pool::Pool make(memory::Arena *a, u32 cap) {
+    return pool::create(a, cap, sizeof(Item));
+}
+
+// index 0 is never handed out: handle 0 means "nothing", and alloc returns 0 for full
+static void slot_zero_is_never_handed_out(memory::Arena *a) {
+    pool::Pool p = make(a, 4);
+
+    for (u32 i = 0; i < 3; i++)
+        CHECK(pool::alloc(&p, 0) != 0);
+
+    CHECK(pool::alloc(&p, 0) == 0); // cap 4 minus the reserved slot
+    CHECK(pool::alive(&p, 0) == false);
+}
+
+static void handles_resolve_to_their_payload(memory::Arena *a) {
+    pool::Pool p = make(a, 8);
+
+    u32 i1 = pool::alloc(&p, 0);
+    u32 i2 = pool::alloc(&p, 0);
+    ((Item *)pool::at(&p, i1))->id = 111;
+    ((Item *)pool::at(&p, i2))->id = 222;
+
+    u32 h1 = pool::make_handle(&p, i1);
+    u32 h2 = pool::make_handle(&p, i2);
+    CHECK(h1 != h2);
+
+    CHECK(((Item *)pool::resolve(&p, h1))->id == 111);
+    CHECK(((Item *)pool::resolve(&p, h2))->id == 222);
+}
+
+// Fills the pool so the next alloc can only return the slot just released.
+static u32 release_and_realloc(pool::Pool *p, u32 idx) {
+    while (pool::alloc(p, 0))
+        ;
+    pool::release(p, idx);
+    return pool::alloc(p, 0);
+}
+
+static void alloc_zeroes_the_payload(memory::Arena *a) {
+    pool::Pool p = make(a, 4);
+
+    u32 i = pool::alloc(&p, 0);
+    ((Item *)pool::at(&p, i))->id = 0xABCD;
+
+    u32 again = release_and_realloc(&p, i);
+    CHECK(again == i);
+    CHECK(((Item *)pool::at(&p, again))->id == 0);
+}
+
+// the whole reason slots carry a generation
+static void recycled_slots_reject_stale_handles(memory::Arena *a) {
+    pool::Pool p = make(a, 4);
+
+    u32 idx = pool::alloc(&p, 0);
+    u32 old = pool::make_handle(&p, idx);
+    u32 fresh = pool::make_handle(&p, release_and_realloc(&p, idx));
+
+    CHECK(pool::handle_index(old) == pool::handle_index(fresh));
+    CHECK(pool::handle_epoch(old) != pool::handle_epoch(fresh));
+
+    CHECK(pool::alive(&p, fresh) == true);
+    CHECK(pool::alive(&p, old) == false);
+    CHECK(pool::resolve(&p, old) == NULL);
+}
+
+// a freed slot goes to the back of the line, so churn does not hammer one slot's epoch
+static void freed_slots_are_reused_last(memory::Arena *a) {
+    pool::Pool p = make(a, 4);
+
+    u32 first = pool::alloc(&p, 0);
+    pool::release(&p, first);
+
+    CHECK(pool::alloc(&p, 0) != first);
+    CHECK(pool::alloc(&p, 0) != first);
+    CHECK(pool::alloc(&p, 0) == first);
+    CHECK(pool::alloc(&p, 0) == 0);
+}
+
+static void scopes_release_independently(memory::Arena *a) {
+    pool::Pool p = make(a, 8);
+
+    u32 keep = pool::make_handle(&p, pool::alloc(&p, 1));
+    u32 drop = pool::make_handle(&p, pool::alloc(&p, 2));
+
+    pool::release_scope(&p, 2);
+
+    CHECK(pool::alive(&p, keep) == true);
+    CHECK(pool::alive(&p, drop) == false);
+}
+
+// asset:: wants a drawable fallback; entity:: wants NULL. Both come from here.
+static void resolve_or_zero_substitutes_and_warns_once(memory::Arena *a) {
+    pool::Pool p = make(a, 4);
+    ((Item *)pool::at(&p, 0))->id = 999;
+
+    u32 idx = pool::alloc(&p, 0);
+    u32 stale = pool::make_handle(&p, idx);
+    pool::release(&p, idx);
+
+    test::mute();
+    CHECK(((Item *)pool::resolve_or_zero(&p, stale, "item"))->id == 999);
+    CHECK(((Item *)pool::resolve_or_zero(&p, stale, "item"))->id == 999);
+    CHECK(p.slots[pool::handle_index(stale)].warned == true);
+
+    // handle 0 means "unset" rather than "broken", so it must stay silent
+    pool::Pool q = make(a, 4);
+    CHECK(pool::resolve_or_zero(&q, 0, "item") == pool::at(&q, 0));
+    CHECK(q.slots[0].warned == false);
+
+    // past the capacity there is no slot to flag, so the pool flags once itself
+    CHECK(pool::resolve_or_zero(&q, 77, "item") == pool::at(&q, 0));
+    CHECK(pool::resolve_or_zero(&q, 78, "item") == pool::at(&q, 0));
+    CHECK(test::unmute() == 2); // one stale, one out of range
+}
+
+static void iteration_visits_live_slots_only(memory::Arena *a) {
+    pool::Pool p = make(a, 8);
+
+    u32 idx[4];
+    for (u32 i = 0; i < 4; i++) {
+        idx[i] = pool::alloc(&p, 0);
+        ((Item *)pool::at(&p, idx[i]))->id = i;
+    }
+    pool::release(&p, idx[1]);
+
+    u32 seen = 0;
+    u32 sum = 0;
+    for (u32 i = pool::first(&p); i; i = pool::next(&p, i)) {
+        seen++;
+        sum += ((Item *)pool::at(&p, i))->id;
+    }
+
+    CHECK(seen == 3);
+    CHECK(sum == 0 + 2 + 3);
+    CHECK(p.live == 3);
+
+    // an empty pool terminates immediately rather than spinning
+    pool::Pool empty = make(a, 4);
+    CHECK(pool::first(&empty) == 0);
+}
+
+test::Suite pool_suite() {
+    static const test::Case cases[] = {
+        CASE(slot_zero_is_never_handed_out),
+        CASE(handles_resolve_to_their_payload),
+        CASE(alloc_zeroes_the_payload),
+        CASE(recycled_slots_reject_stale_handles),
+        CASE(freed_slots_are_reused_last),
+        CASE(scopes_release_independently),
+        CASE(resolve_or_zero_substitutes_and_warns_once),
+        CASE(iteration_visits_live_slots_only),
+    };
+    return test::Suite{.name = "pool", .cases = cases, .count = ARRAY_COUNT(cases)};
+}
