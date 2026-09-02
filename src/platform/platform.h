@@ -26,7 +26,7 @@ i32 file_seek(FILE *f, i64 offset, i32 origin); // 64-bit offsets on both platfo
 i64 file_tell(FILE *f);
 
 void local_time(struct tm *out, const time_t *t);
-b32 enable_console_color();          // true when stdout can take ANSI colour
+b32 enable_console_color();         // true when stdout can take ANSI colour
 void debug_print(const char *text); // the debugger's output pane, where one exists
 
 } // namespace platform

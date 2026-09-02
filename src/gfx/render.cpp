@@ -1,12 +1,11 @@
 #include "gfx/render.h"
 
 #include <glad/glad.h>
-
 #include <stddef.h> // offsetof
 #include <string.h>
 
-#include "gfx/drawkey.h"
 #include "core/logger.h"
+#include "gfx/drawkey.h"
 
 namespace render {
 
@@ -35,7 +34,8 @@ static_assert(sizeof(shader::FrameData) == 112, "FrameData no longer matches the
 Config config_from(config::Node *block) {
     config::Node *body = block ? block->first_child : NULL;
     linalg::Vec4 dflt = DEFAULT_CLEAR_COLOR;
-    linalg::Vec3 rgb = config::value_vec3(config::find(body, "clear_color"), linalg::vec3_from(dflt));
+    linalg::Vec3 rgb =
+        config::value_vec3(config::find(body, "clear_color"), linalg::vec3_from(dflt));
     return Config{
         .max_draw_items = (u32)config::get_i32(body, "max_draw_items", DEFAULT_MAX_DRAW_ITEMS),
         .max_objects = (u32)config::get_i32(body, "max_objects", DEFAULT_MAX_OBJECTS),
@@ -319,8 +319,7 @@ void submit_model(asset::Manager *m, asset::ModelHandle h, linalg::Mat4 model_ma
 
             o->joint_offset = g.joint_count++ * g.joint_stride;
             o->skinned = true;
-            memcpy(g.joint_staging + o->joint_offset, palette,
-                   sizeof(linalg::Mat4) * joint_count);
+            memcpy(g.joint_staging + o->joint_offset, palette, sizeof(linalg::Mat4) * joint_count);
         } else {
             LOG_WARN_ONCE("render: more than %u skinned draws in a frame, the rest draw unskinned",
                           g.cfg.max_skinned_draws);
@@ -368,11 +367,12 @@ void submit_model(asset::Manager *m, asset::ModelHandle h, linalg::Mat4 model_ma
             u32 pid = shader::program_id(mat->shader, features);
             u32 pass = mat->state.blend == gfx::BLEND_NONE ? PASS_OPAQUE : PASS_TRANSPARENT;
 
-            u64 key = pass == PASS_OPAQUE
-                          ? drawkey::opaque(pid, gfx::state_key(it->state),
-                                            asset::handle_index(model->meshes[i].v),
-                                            asset::handle_index(sub->material.v), dist)
-                          : drawkey::transparent(pid, asset::handle_index(model->meshes[i].v), dist);
+            u64 key =
+                pass == PASS_OPAQUE
+                    ? drawkey::opaque(pid, gfx::state_key(it->state),
+                                      asset::handle_index(model->meshes[i].v),
+                                      asset::handle_index(sub->material.v), dist)
+                    : drawkey::transparent(pid, asset::handle_index(model->meshes[i].v), dist);
 
             g.pass[pass][g.pass_count[pass]++] = drawkey::Entry{.key = key, .item = g.item_count};
             g.item_count++;

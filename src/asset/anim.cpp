@@ -5,7 +5,7 @@
 
 namespace anim {
 
-// keys closer than this are one key; dividing by the span would be noise
+// keys closer than this are one key
 #define MIN_KEY_SPAN 1e-8f
 
 struct Trs {
@@ -14,7 +14,6 @@ struct Trs {
     linalg::Vec3 s;
 };
 
-// Largest i with times[i] <= t, or 0 when t precedes the first key.
 static u32 lower_key(const f32 *times, u32 count, f32 t) {
     u32 lo = 0;
     u32 hi = count - 1;
@@ -61,8 +60,6 @@ static void sample_channel(const asset::Channel *ch, f32 t, Trs *local) {
     }
 }
 
-// skin.joints is not parent-first (our soldier lists Spine2 before Spine1), so
-// globals resolve on demand, each once
 static void resolve(const asset::Skeleton *skel, const Trs *locals, linalg::Mat4 *global, b8 *done,
                     i32 j) {
     if (done[j])

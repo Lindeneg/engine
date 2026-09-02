@@ -3,8 +3,8 @@
 #include <stdarg.h>
 #include <time.h>
 
-#include "platform/platform.h"
 #include "core/str.h"
+#include "platform/platform.h"
 
 #define TIMESTAMP_CAP 16
 #define MESSAGE_CAP 1024

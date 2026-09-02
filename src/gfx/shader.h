@@ -2,10 +2,10 @@
 
 #include "core/common.h"
 #include "core/config.h"
-#include "math/linalg.h"
 #include "core/memory.h"
 #include "core/result.h"
 #include "core/strmap.h"
+#include "math/linalg.h"
 
 // GPU programs, kept out of asset:: since it never calls GL. Which shaders exist
 // is data: shaders.cfg names the sources, the features each claims, and the
@@ -35,7 +35,8 @@ enum Feature {
 #define SHADER_FEATURE_BITS 2
 #define SHADER_VARIANT_COUNT (1u << SHADER_FEATURE_BITS)
 
-// uniforms the engine sets every draw, resolved once at link; everything else goes through uniform_loc
+// uniforms the engine sets every draw, resolved once at link; everything else goes through
+// uniform_loc
 enum Builtin {
     BUILTIN_MODEL,        // mat4  u_model
     BUILTIN_NORMAL_MAT,   // mat3  u_normal_mat
@@ -47,9 +48,9 @@ enum Builtin {
 // std140 per-frame constants; the GLSL side is assets/shaders/common.glsl and changes with this
 struct FrameData {
     linalg::Mat4 view_proj;
-    linalg::Vec4 camera_pos;   // xyz; w unused
-    linalg::Vec4 light_dir;    // xyz, normalized, pointing toward the light
-    linalg::Vec4 light_color;  // rgb; w is ambient strength
+    linalg::Vec4 camera_pos;  // xyz; w unused
+    linalg::Vec4 light_dir;   // xyz, normalized, pointing toward the light
+    linalg::Vec4 light_color; // rgb; w is ambient strength
 };
 
 struct Handle {

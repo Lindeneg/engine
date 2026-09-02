@@ -1,4 +1,5 @@
 #include "gfx/gfx.h"
+
 #include "suites.h"
 
 // every combination has its own key and fits the draw key's 6 bits

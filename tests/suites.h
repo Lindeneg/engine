@@ -9,6 +9,7 @@ test::Suite drawkey_suite();
 test::Suite entity_suite();
 test::Suite file_suite();
 test::Suite gfx_suite();
+test::Suite intersect_suite();
 test::Suite linalg_suite();
 test::Suite memory_suite();
 test::Suite path_suite();

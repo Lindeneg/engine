@@ -1,6 +1,7 @@
+#include "core/memory.h"
+
 #include <string.h>
 
-#include "core/memory.h"
 #include "platform/platform.h"
 #include "suites.h"
 
@@ -97,12 +98,8 @@ static void string_helpers_copy(memory::Arena *a) {
 
 test::Suite memory_suite() {
     static const test::Case cases[] = {
-        CASE(push_respects_alignment),
-        CASE(push_zeroes_reused_bytes),
-        CASE(temp_scopes_nest),
-        CASE(reset_keeps_peak),
-        CASE(commit_grows_in_chunks),
-        CASE(cap_is_page_aligned),
+        CASE(push_respects_alignment), CASE(push_zeroes_reused_bytes), CASE(temp_scopes_nest),
+        CASE(reset_keeps_peak),        CASE(commit_grows_in_chunks),   CASE(cap_is_page_aligned),
         CASE(string_helpers_copy),
     };
     return test::Suite{.name = "memory", .cases = cases, .count = ARRAY_COUNT(cases)};

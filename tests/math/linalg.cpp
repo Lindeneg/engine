@@ -1,6 +1,7 @@
+#include "math/linalg.h"
+
 #include <math.h>
 
-#include "math/linalg.h"
 #include "suites.h"
 
 #define NEAR(a, b) (fabsf((a) - (b)) < 1e-4f)

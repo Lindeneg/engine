@@ -1,6 +1,7 @@
+#include "platform/file.h"
+
 #include <string.h>
 
-#include "platform/file.h"
 #include "suites.h"
 
 // these read a file from the repo root, so the runner has to be invoked from there

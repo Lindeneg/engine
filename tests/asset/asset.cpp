@@ -1,6 +1,7 @@
+#include "asset/asset.h"
+
 #include <string.h>
 
-#include "asset/asset.h"
 #include "suites.h"
 
 static asset::Config small_config() {
@@ -13,14 +14,13 @@ static asset::Config small_config() {
         .max_materials = 8,
         .max_skeletons = 4,
         .max_clips = 4,
-        // small: init carves these from the global reserve for good, and every case builds a manager
+        // small: init carves these from the global reserve for good, and every case builds a
+        // manager
         .scope_bytes = {KiB(256), KiB(256)},
     };
 }
 
-static asset::Manager *make(memory::Arena *a) {
-    return MUST(asset::init(a, a, small_config()));
-}
+static asset::Manager *make(memory::Arena *a) { return MUST(asset::init(a, a, small_config())); }
 
 static void fallbacks_are_drawable(memory::Arena *a) {
     asset::Manager *m = make(a);

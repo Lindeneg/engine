@@ -1,14 +1,17 @@
+#include <string.h>
+
 #include "asset/asset.h"
 #include "core/common.h"
 #include "core/config.h"
-#include "scene/entity.h"
-#include "math/linalg.h"
 #include "core/logger.h"
 #include "core/memory.h"
-#include "platform/path.h"
+#include "game/player.h"
 #include "gfx/render.h"
 #include "gfx/shader.h"
+#include "platform/input.h"
+#include "platform/path.h"
 #include "platform/window.h"
+#include "scene/entity.h"
 
 // the assets folder in the source tree, baked in by CMake; a shipped build would
 // take a launch argument instead
@@ -27,9 +30,16 @@
 #define DEFAULT_LEVEL "test"
 #define DEFAULT_PERM_MIB 64
 #define DEFAULT_SCRATCH_MIB 64
-#define DEFAULT_ORBIT_SPEED 0.4f
-#define DEFAULT_ORBIT_HEIGHT 0.35f
-#define DEFAULT_ORBIT_DISTANCE 1.15f
+#define DEFAULT_PLAYER_BODY "player"
+
+static entity::Handle find_root(entity::World *w, const char *name) {
+    for (entity::Handle h = entity::first(w); h.v; h = entity::next(w, h)) {
+        entity::Entity *e = entity::get(w, h);
+        if (e && !e->parent.v && strcmp(e->name, name) == 0)
+            return h;
+    }
+    return entity::NONE;
+}
 
 int main() {
     logger::init(NULL);
@@ -58,6 +68,8 @@ int main() {
     window::Window *win{
         MUST(window::create(&perm, window::config_from(config::find(cfg, "window"))))};
 
+    input::State *in{MUST(input::init(&perm, &scratch, root))};
+
     i32 fb_w = 0;
     i32 fb_h = 0;
     window::framebuffer_size(win, &fb_w, &fb_h);
@@ -74,56 +86,49 @@ int main() {
 
     render::attach_assets(&perm, assets);
 
-    entity::World *world{MUST(entity::init(&perm, entity::config_from(config::find(cfg, "world"))))};
+    entity::World *world{
+        MUST(entity::init(&perm, entity::config_from(config::find(cfg, "world"))))};
 
     // everything in the world comes from the level file
     MUST(entity::load_level(world, assets, config::get(cfg, "level", DEFAULT_LEVEL)));
 
-    // frame the camera off real bounds rather than a guessed distance
-    linalg::Vec3 center{};
-    f32 radius = 1.0f;
+    // The player is game code driving an entity the level placed. The engine
+    // knows nothing about it beyond the handle it is given.
+    config::Node *player_cfg = config::find(cfg, "player");
+    const char *body_name =
+        config::get(player_cfg ? player_cfg->first_child : NULL, "body", DEFAULT_PLAYER_BODY);
 
-    // the first renderable root: iterating raw could find the attached weapon first
-    entity::Renderable *player = NULL;
-    for (entity::Handle h = entity::first(world); h.v; h = entity::next(world, h)) {
-        if (entity::get(world, h)->parent.v)
-            continue;
-        player = entity::renderable(world, h);
-        if (player)
-            break;
-    }
+    entity::Handle body = find_root(world, body_name);
+    if (!body.v)
+        LOG_WARN("main: the level has no root entity named \"%s\", so nothing is driven",
+                 body_name);
 
-    if (player) {
-        linalg::Vec3 lo, hi;
-        asset::model_bounds(assets, player->model, &lo, &hi);
-        center = (lo + hi) * 0.5f;
-        radius = linalg::vec3_length(hi - lo) * 0.5f;
-        LOG_INFO("camera: framing (%.3f %.3f %.3f) radius %.3f", (f64)center.x, (f64)center.y,
-                 (f64)center.z, (f64)radius);
-    } else {
-        LOG_WARN("camera: the level spawned nothing renderable");
-    }
+    game::Player player = game::create(player_cfg, in, body);
 
-    // stand-in for a player controller: orbit the level's camera around the
-    // player, its fov driving the distance
-    config::Node *orbit = config::find(cfg, "camera_orbit");
-    config::Node *orbit_body = orbit ? orbit->first_child : NULL;
-    f32 orbit_speed = config::get_f32(orbit_body, "speed", DEFAULT_ORBIT_SPEED);
-    f32 orbit_height = config::get_f32(orbit_body, "height", DEFAULT_ORBIT_HEIGHT);
-    f32 orbit_distance = config::get_f32(orbit_body, "distance", DEFAULT_ORBIT_DISTANCE);
+    input::Map gameplay = input::find_map(in, "gameplay");
+    input::Action quit = input::find(in, "quit");
+    input::Action toggle_look = input::find(in, "toggle_mouse_look");
 
-    entity::Handle cam = entity::active_camera(world);
-    const entity::Camera *cam_defaults =
-        (const entity::Camera *)entity::component_desc(entity::COMPONENT_CAMERA)->defaults;
-    f32 fov = cam.v ? entity::camera(world, cam)->fov_y : cam_defaults->fov_y;
-    f32 dist = radius / tanf(DEG2RAD(fov) * 0.5f) * orbit_distance;
+    // playable without a click to start; the toggle hands the cursor back
+    input::set_mouse_look(in, win, true);
 
     f64 last = window::time();
 
     while (!window::should_close(win)) {
         window::poll(win);
-        if (window::key_down(win, window::KEY_ESCAPE))
+        input::update(in, win);
+
+        if (input::pressed(in, quit))
             break;
+
+        if (input::pressed(in, toggle_look)) {
+            b32 look = !input::mouse_look(in);
+            input::set_mouse_look(in, win, look);
+
+            // With the cursor loose, gameplay stops receiving anything. This is
+            // the same seam an editor panel will use when it takes focus.
+            input::set_map_enabled(in, gameplay, look);
+        }
 
         i32 w = 0;
         i32 h = 0;
@@ -138,18 +143,19 @@ int main() {
         f32 dt = (f32)(now - last);
         last = now;
 
-        if (cam.v) {
-            f32 t = (f32)now * orbit_speed;
-            linalg::Vec3 eye{center.x + sinf(t) * dist, center.y + radius * orbit_height,
-                             center.z + cosf(t) * dist};
+        // aim first, so the fixed steps below move in the direction being looked
+        game::aim(&player, in);
 
-            entity::Entity *ce = entity::get(world, cam);
-            ce->local.position = eye;
-            entity::set_rotation(&ce->local, linalg::quat_look_rotation(
-                                                 center - eye, linalg::Vec3{0.0f, 1.0f, 0.0f}));
+        u32 steps = entity::begin_frame(world, dt);
+        for (u32 i = 0; i < steps; i++) {
+            game::step(&player, world, assets, in, entity::fixed_dt(world));
+            entity::step_fixed(world, assets);
         }
 
-        entity::update(world, assets, &scratch, dt);
+        // after the body has moved, before end_frame rebuilds world transforms
+        game::place_camera(&player, world);
+
+        entity::end_frame(world, assets, &scratch, dt);
 
         shader::FrameData frame{};
         if (!entity::build_frame(world, (f32)fb_w / (f32)fb_h, &frame))

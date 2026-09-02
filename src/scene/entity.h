@@ -5,10 +5,10 @@
 #include "asset/asset.h"
 #include "core/common.h"
 #include "core/config.h"
-#include "math/linalg.h"
 #include "core/memory.h"
 #include "core/result.h"
 #include "gfx/shader.h"
+#include "math/linalg.h"
 
 // An entity is a fat struct holding one slot index per component type. Adding
 // a component type is engine code: a line in COMPONENT_LIST, a struct whose
@@ -26,9 +26,9 @@
 #define ENTITY_PATH_CAP 128
 
 #define COMPONENT_LIST(X)                                                                          \
-    X(RENDERABLE, Renderable, "renderable")                                                       \
-    X(ANIMATOR, Animator, "animator")                                                             \
-    X(CAMERA, Camera, "camera")                                                                   \
+    X(RENDERABLE, Renderable, "renderable")                                                        \
+    X(ANIMATOR, Animator, "animator")                                                              \
+    X(CAMERA, Camera, "camera")                                                                    \
     X(LIGHT, Light, "light")
 
 namespace entity {
@@ -59,8 +59,11 @@ struct Transform {
 
 inline Transform transform_identity() {
     return Transform{
-        linalg::Vec3{0.0f, 0.0f, 0.0f}, linalg::quat_identity(), linalg::Vec3{1.0f, 1.0f, 1.0f},
-        linalg::Vec3{0.0f, 0.0f, 0.0f}, true,
+        linalg::Vec3{0.0f, 0.0f, 0.0f},
+        linalg::quat_identity(),
+        linalg::Vec3{1.0f, 1.0f, 1.0f},
+        linalg::Vec3{0.0f, 0.0f, 0.0f},
+        true,
     };
 }
 
@@ -211,6 +214,12 @@ Animator *animator(World *w, Handle h);
 Camera *camera(World *w, Handle h);
 Light *light(World *w, Handle h);
 
+// Walking one component's live slots, for the systems and tools that live
+// outside this file. 0 ends the walk, as with a pool index.
+u32 component_first(World *w, Component c);
+u32 component_next(World *w, Component c, u32 slot);
+void *component_at(World *w, Component c, u32 slot);
+
 // The first active camera, or NONE.
 Handle active_camera(World *w);
 
@@ -221,8 +230,25 @@ b32 build_frame(World *w, f32 aspect, shader::FrameData *out);
 // The skinning palette for an entity's animator, or NULL when it has none.
 const linalg::Mat4 *palette(World *w, Handle h, u32 *out_count);
 
-// 0..max_fixed_steps fixed steps, one variable step at dt, then world transforms.
-void update(World *w, asset::Manager *m, memory::Arena *scratch, f32 dt);
+// A frame in three parts, because the fixed clock is the engine's but what runs
+// on it is not. begin_frame banks dt and answers how many fixed steps are owed;
+// the caller runs that many, doing its own simulation alongside step_fixed;
+// end_frame does the frame-rate work and rebuilds world transforms.
+//
+//     u32 steps = entity::begin_frame(world, dt);
+//     for (u32 i = 0; i < steps; i++) {
+//         game_step(entity::fixed_dt(world));
+//         entity::step_fixed(world, assets);
+//     }
+//     entity::end_frame(world, assets, &scratch, dt);
+//
+// Running zero steps is normal and running several is normal; what is not
+// allowed is running game code at frame rate and calling it simulation. A
+// caller that wants no simulation at all -- an editor holding a level still --
+// simply skips the loop and calls end_frame, and the world still draws.
+u32 begin_frame(World *w, f32 dt);
+void step_fixed(World *w, asset::Manager *m);
+void end_frame(World *w, asset::Manager *m, memory::Arena *scratch, f32 dt);
 
 // How far the frame sits between the last fixed step and the next, in 0..1.
 f32 fixed_alpha(World *w);

@@ -1,12 +1,11 @@
 #include "asset/gltf.h"
 
+#include <cgltf.h>
 #include <string.h>
 
-#include <cgltf.h>
-
-#include "platform/file.h"
 #include "core/logger.h"
 #include "core/str.h"
+#include "platform/file.h"
 
 // a clip translating this many times further than the target's bones is likely
 // for another rig; warn only, rotation_only stays the author's call
@@ -212,8 +211,7 @@ static void dump_animations(memory::Arena *arena, const cgltf_data *d) {
                  (unsigned long long)a->samplers_count, (f64)duration);
         LOG_INFO("gltf:     translate=%u rotate=%u scale=%u weights=%u",
                  paths[cgltf_animation_path_type_translation],
-                 paths[cgltf_animation_path_type_rotation],
-                 paths[cgltf_animation_path_type_scale],
+                 paths[cgltf_animation_path_type_rotation], paths[cgltf_animation_path_type_scale],
                  paths[cgltf_animation_path_type_weights]);
         LOG_INFO("gltf:     linear=%u step=%u cubic=%u", interps[cgltf_interpolation_type_linear],
                  interps[cgltf_interpolation_type_step],
@@ -240,8 +238,8 @@ static void dump_animations(memory::Arena *arena, const cgltf_data *d) {
 static void dump_images(const cgltf_data *d) {
     for (cgltf_size i = 0; i < d->images_count; i++) {
         const cgltf_image *img = &d->images[i];
-        LOG_INFO("gltf:   image[%llu] \"%s\" mime=\"%s\" embedded=%s uri=%s",
-                 (unsigned long long)i, safe_name(img->name), img->mime_type ? img->mime_type : "?",
+        LOG_INFO("gltf:   image[%llu] \"%s\" mime=\"%s\" embedded=%s uri=%s", (unsigned long long)i,
+                 safe_name(img->name), img->mime_type ? img->mime_type : "?",
                  img->buffer_view ? "yes" : "no", img->uri ? img->uri : "<none>");
     }
 }
@@ -283,7 +281,8 @@ static result::Error parse_glb(memory::Arena *scratch, const char *path, cgltf_d
     return result::OK;
 }
 
-// an absent accessor reads as zeros and is fine; one cgltf refuses is a failure, counted for one log
+// an absent accessor reads as zeros and is fine; one cgltf refuses is a failure, counted for one
+// log
 static b32 read_floats(const cgltf_accessor *a, cgltf_size i, f32 *out, cgltf_size n) {
     if (!a) {
         memset(out, 0, n * sizeof(f32));
@@ -503,8 +502,7 @@ static asset::SkeletonHandle load_skeleton(asset::Manager *m, asset::Scope s,
         return asset::SKELETON_FALLBACK;
     }
 
-    asset::SkeletonHandle h{
-        OR_ELSE(asset::create_skeleton(m, s), asset::SKELETON_FALLBACK)};
+    asset::SkeletonHandle h{OR_ELSE(asset::create_skeleton(m, s), asset::SKELETON_FALLBACK)};
     if (h.v == 0)
         return h;
 
@@ -535,7 +533,8 @@ static asset::SkeletonHandle load_skeleton(asset::Manager *m, asset::Scope s,
                 }
             }
 
-            // a parent that is not a joint: the armature above the skin, which the inverse binds include
+            // a parent that is not a joint: the armature above the skin, which the inverse binds
+            // include
             if (joint->parent < 0 && !have_root) {
                 cgltf_node_transform_world(node->parent, skel->root.m);
                 have_root = true;
@@ -544,7 +543,8 @@ static asset::SkeletonHandle load_skeleton(asset::Manager *m, asset::Scope s,
             }
         }
 
-        // identity, not the zero matrix read_floats leaves: zero collapses every vertex the joint touches
+        // identity, not the zero matrix read_floats leaves: zero collapses every vertex the joint
+        // touches
         if (!skin->inverse_bind_matrices ||
             !read_floats(skin->inverse_bind_matrices, j, joint->inverse_bind.m, 16)) {
             ibm_failures += skin->inverse_bind_matrices != NULL;
@@ -556,8 +556,8 @@ static asset::SkeletonHandle load_skeleton(asset::Manager *m, asset::Scope s,
         joint->bind_s = linalg::Vec3{1.0f, 1.0f, 1.0f};
         if (node) {
             if (node->has_translation)
-                joint->bind_t = linalg::Vec3{node->translation[0], node->translation[1],
-                                             node->translation[2]};
+                joint->bind_t =
+                    linalg::Vec3{node->translation[0], node->translation[1], node->translation[2]};
             if (node->has_rotation)
                 joint->bind_r = linalg::Quat{node->rotation[0], node->rotation[1],
                                              node->rotation[2], node->rotation[3]};
@@ -604,9 +604,8 @@ result::Error inspect(memory::Arena *scratch, const char *path) {
              (unsigned long long)d->scenes_count, (unsigned long long)d->nodes_count,
              (unsigned long long)d->meshes_count, (unsigned long long)d->materials_count,
              (unsigned long long)d->textures_count, (unsigned long long)d->images_count);
-    LOG_INFO("gltf:   skins=%llu animations=%llu buffers=%llu",
-             (unsigned long long)d->skins_count, (unsigned long long)d->animations_count,
-             (unsigned long long)d->buffers_count);
+    LOG_INFO("gltf:   skins=%llu animations=%llu buffers=%llu", (unsigned long long)d->skins_count,
+             (unsigned long long)d->animations_count, (unsigned long long)d->buffers_count);
 
     dump_meshes(d);
     dump_skins(scratch, d);
@@ -811,8 +810,8 @@ asset::ClipResult load_clip(asset::Manager *m, asset::Scope s, const char *abs_p
     clip->channels = push_array(out, asset::Channel, src->channels_count);
     clip->rotation_only = opts.rotation_only;
 
-    f32 max_clip_t = 0.0f;   // largest translation the clip asks for
-    f32 max_bind_t = 0.0f;   // largest the target skeleton actually uses
+    f32 max_clip_t = 0.0f; // largest translation the clip asks for
+    f32 max_bind_t = 0.0f; // largest the target skeleton actually uses
     u32 read_failures = 0;
 
     for (cgltf_size c = 0; c < src->channels_count; c++) {
@@ -842,7 +841,7 @@ asset::ClipResult load_clip(asset::Manager *m, asset::Scope s, const char *abs_p
                           : asset::INTERP_LINEAR;
 
         str::canonical_name(dst->target, ASSET_NAME_CAP,
-                             ch->target_node ? ch->target_node->name : NULL);
+                            ch->target_node ? ch->target_node->name : NULL);
 
         const cgltf_accessor *in = ch->sampler->input;
         const cgltf_accessor *val = ch->sampler->output;
@@ -864,8 +863,7 @@ asset::ClipResult load_clip(asset::Manager *m, asset::Scope s, const char *abs_p
         if (path == asset::PATH_TRANSLATION) {
             for (u32 k = 0; k < dst->key_count; k++) {
                 const f32 *v = &dst->values[(u64)k * comps];
-                max_clip_t = MAX(max_clip_t,
-                                 linalg::vec3_length(linalg::Vec3{v[0], v[1], v[2]}));
+                max_clip_t = MAX(max_clip_t, linalg::vec3_length(linalg::Vec3{v[0], v[1], v[2]}));
             }
         }
 

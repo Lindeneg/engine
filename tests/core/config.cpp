@@ -1,14 +1,16 @@
+#include "core/config.h"
+
 #include <string.h>
 
-#include "core/config.h"
 #include "suites.h"
 
 // parse tokenizes in place, so the text has to be writable and outlive the Doc.
 static char *text(memory::Arena *a, const char *src) { return memory::push_str(a, src); }
 
 static void flat_keys_and_values(memory::Arena *a) {
-    config::Doc *d = MUST(config::parse(a, text(a, "name mesh\n"
-                                                  "size 4 8 15\n"),
+    config::Doc *d = MUST(config::parse(a,
+                                        text(a, "name mesh\n"
+                                                "size 4 8 15\n"),
                                         "test"));
 
     config::Node *name = config::find(d->first, "name");
@@ -23,11 +25,12 @@ static void flat_keys_and_values(memory::Arena *a) {
 }
 
 static void blocks_nest(memory::Arena *a) {
-    config::Doc *d = MUST(config::parse(a, text(a, "shader \"mesh\" {\n"
-                                                  "    vert mesh.vert\n"
-                                                  "    frag mesh.frag\n"
-                                                  "}\n"
-                                                  "after 1\n"),
+    config::Doc *d = MUST(config::parse(a,
+                                        text(a, "shader \"mesh\" {\n"
+                                                "    vert mesh.vert\n"
+                                                "    frag mesh.frag\n"
+                                                "}\n"
+                                                "after 1\n"),
                                         "test"));
 
     config::Node *sh = config::find(d->first, "shader");
@@ -43,13 +46,14 @@ static void blocks_nest(memory::Arena *a) {
 
 // the manifest declares one block per shader, so scanning repeats matters
 static void repeated_keys_are_walkable(memory::Arena *a) {
-    config::Doc *d = MUST(config::parse(a, text(a, "shader a {\n"
-                                                  "    x 1\n"
-                                                  "}\n"
-                                                  "shader b {\n"
-                                                  "}\n"
-                                                  "shader c {\n"
-                                                  "}\n"),
+    config::Doc *d = MUST(config::parse(a,
+                                        text(a, "shader a {\n"
+                                                "    x 1\n"
+                                                "}\n"
+                                                "shader b {\n"
+                                                "}\n"
+                                                "shader c {\n"
+                                                "}\n"),
                                         "test"));
 
     u32 n = 0;
@@ -74,17 +78,19 @@ static void quotes_keep_spaces(memory::Arena *a) {
 }
 
 static void escapes_inside_quotes(memory::Arena *a) {
-    config::Doc *d = MUST(config::parse(a, text(a, "say \"he said \\\"hi\\\" \\\\ done\"\n"), "test"));
+    config::Doc *d =
+        MUST(config::parse(a, text(a, "say \"he said \\\"hi\\\" \\\\ done\"\n"), "test"));
 
     CHECK(strcmp(config::get(d->first, "say", "?"), "he said \"hi\" \\ done") == 0);
     CHECK(d->problems == 0);
 }
 
 static void comments_and_blank_lines_are_kept_but_not_keys(memory::Arena *a) {
-    config::Doc *d = MUST(config::parse(a, text(a, "# leading comment\n"
-                                                  "\n"
-                                                  "keep 1 # trailing comment\n"
-                                                  "#keep 2\n"),
+    config::Doc *d = MUST(config::parse(a,
+                                        text(a, "# leading comment\n"
+                                                "\n"
+                                                "keep 1 # trailing comment\n"
+                                                "#keep 2\n"),
                                         "test"));
 
     config::Node *k = config::find(d->first, "keep");
@@ -107,17 +113,19 @@ static void comments_and_blank_lines_are_kept_but_not_keys(memory::Arena *a) {
 
 // the editor will write these files on Windows
 static void crlf_is_handled(memory::Arena *a) {
-    config::Doc *d = MUST(config::parse(a, text(a, "vert mesh.vert\r\nfrag mesh.frag\r\n"), "test"));
+    config::Doc *d =
+        MUST(config::parse(a, text(a, "vert mesh.vert\r\nfrag mesh.frag\r\n"), "test"));
 
     CHECK(strcmp(config::get(d->first, "vert", "?"), "mesh.vert") == 0);
     CHECK(strcmp(config::get(d->first, "frag", "?"), "mesh.frag") == 0);
 }
 
 static void typed_reads_fall_back(memory::Arena *a) {
-    config::Doc *d = MUST(config::parse(a, text(a, "scale 0.857\n"
-                                                  "z_up yes\n"
-                                                  "flat off\n"
-                                                  "junk hello\n"),
+    config::Doc *d = MUST(config::parse(a,
+                                        text(a, "scale 0.857\n"
+                                                "z_up yes\n"
+                                                "flat off\n"
+                                                "junk hello\n"),
                                         "test"));
 
     CHECK(config::get_f32(d->first, "scale", 0.0f) == 0.857f);
@@ -136,10 +144,11 @@ static void typed_reads_fall_back(memory::Arena *a) {
 
 // a file a newer editor wrote must still parse: unknown keys are skipped, not rejected
 static void unknown_keys_are_ignored(memory::Arena *a) {
-    config::Doc *d = MUST(config::parse(a, text(a, "shader mesh {\n"
-                                                  "    vert mesh.vert\n"
-                                                  "    tessellation_domain quads\n"
-                                                  "}\n"),
+    config::Doc *d = MUST(config::parse(a,
+                                        text(a, "shader mesh {\n"
+                                                "    vert mesh.vert\n"
+                                                "    tessellation_domain quads\n"
+                                                "}\n"),
                                         "test"));
 
     config::Node *sh = config::find(d->first, "shader");
@@ -175,13 +184,14 @@ static void malformed_input_survives_and_is_counted(memory::Arena *a) {
 // a rejected block's body is skipped, not hoisted, or its '}' would close the parent
 static void rejected_blocks_are_skipped_whole(memory::Arena *a) {
     test::mute();
-    config::Doc *d = MUST(config::parse(a, text(a, "outer {\n"
-                                                  "    {\n"
-                                                  "        stray 1\n"
-                                                  "    }\n"
-                                                  "    inner 2\n"
-                                                  "}\n"
-                                                  "after 3\n"),
+    config::Doc *d = MUST(config::parse(a,
+                                        text(a, "outer {\n"
+                                                "    {\n"
+                                                "        stray 1\n"
+                                                "    }\n"
+                                                "    inner 2\n"
+                                                "}\n"
+                                                "after 3\n"),
                                         "test"));
     CHECK(test::unmute() == 1);
 
@@ -193,9 +203,10 @@ static void rejected_blocks_are_skipped_whole(memory::Arena *a) {
 }
 
 static void quoted_braces_are_values(memory::Arena *a) {
-    config::Doc *d = MUST(config::parse(a, text(a, "open \"{\"\n"
-                                                  "close \"}\"\n"
-                                                  "next 1\n"),
+    config::Doc *d = MUST(config::parse(a,
+                                        text(a, "open \"{\"\n"
+                                                "close \"}\"\n"
+                                                "next 1\n"),
                                         "test"));
 
     CHECK(strcmp(config::get(d->first, "open", "?"), "{") == 0);
@@ -205,9 +216,10 @@ static void quoted_braces_are_values(memory::Arena *a) {
 }
 
 static void numbers_reject_trailing_junk(memory::Arena *a) {
-    config::Doc *d = MUST(config::parse(a, text(a, "f 1.5x\n"
-                                                  "i 12abc\n"
-                                                  "big 99999999999\n"),
+    config::Doc *d = MUST(config::parse(a,
+                                        text(a, "f 1.5x\n"
+                                                "i 12abc\n"
+                                                "big 99999999999\n"),
                                         "test"));
 
     test::mute();
@@ -228,12 +240,13 @@ static void vectors_fall_back_per_component(memory::Arena *a) {
 }
 
 static void nodes_know_their_line_and_parent(memory::Arena *a) {
-    config::Doc *d = MUST(config::parse(a, text(a, "\n"
-                                                  "outer {\n"
-                                                  "    inner {\n"
-                                                  "        leaf 1\n"
-                                                  "    }\n"
-                                                  "}\n"),
+    config::Doc *d = MUST(config::parse(a,
+                                        text(a, "\n"
+                                                "outer {\n"
+                                                "    inner {\n"
+                                                "        leaf 1\n"
+                                                "    }\n"
+                                                "}\n"),
                                         "test"));
 
     config::Node *outer = config::find(d->first, "outer");
@@ -286,8 +299,9 @@ static void round_trip_is_stable(memory::Arena *a) {
 }
 
 static void edits_append_and_unlink(memory::Arena *a) {
-    config::Doc *d = MUST(config::parse(a, text(a, "keep 1\n"
-                                                  "drop 2\n"),
+    config::Doc *d = MUST(config::parse(a,
+                                        text(a, "keep 1\n"
+                                                "drop 2\n"),
                                         "test"));
 
     const char *vals[] = {"has space", "plain"};

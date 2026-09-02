@@ -1,9 +1,9 @@
 #pragma once
 
 #include "core/common.h"
-#include "math/linalg.h"
 #include "core/memory.h"
 #include "core/result.h"
+#include "math/linalg.h"
 
 // The block-structured text format for everything configured at edit time. The
 // editor writes these files and the engine reads them, both through here, so a
@@ -81,8 +81,8 @@ linalg::Vec4 value_vec4(Node *n, linalg::Vec4 fallback);
 // Editing. Strings are copied into a. Appending under a parent makes it a
 // block; unlink leaves the node's bytes until the arena resets.
 Doc *create(memory::Arena *a, const char *name);
-Node *append(memory::Arena *a, Doc *doc, Node *parent, const char *key,
-             const char *const *values, u32 count);
+Node *append(memory::Arena *a, Doc *doc, Node *parent, const char *key, const char *const *values,
+             u32 count);
 void set_values(memory::Arena *a, Node *n, const char *const *values, u32 count);
 void unlink(Doc *doc, Node *n);
 

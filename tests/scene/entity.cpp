@@ -1,9 +1,11 @@
+#include "scene/entity.h"
+
 #include <string.h>
 
-#include "scene/entity.h"
 #include "suites.h"
 
-// one manager for the suite: scope arenas never return to the reserve, and the real soldier needs room
+// one manager for the suite: scope arenas never return to the reserve, and the real soldier needs
+// room
 static asset::Manager *shared_assets(memory::Arena *scratch) {
     static asset::Manager *m = NULL;
     if (m)
@@ -102,7 +104,8 @@ static void fields_read_every_type(memory::Arena *a) {
     CHECK(strcmp(e->name, "probe") == 0);
     CHECK(e->definition[0] == 0);
 
-    CHECK(e->local.position.x == 1.0f && e->local.position.y == 2.0f && e->local.position.z == 3.0f);
+    CHECK(e->local.position.x == 1.0f && e->local.position.y == 2.0f &&
+          e->local.position.z == 3.0f);
     CHECK(e->local.scale.x == 2.0f && e->local.scale.y == 2.0f && e->local.scale.z == 2.0f);
     CHECK(e->local.use_euler && e->local.euler.y == 90.0f);
 

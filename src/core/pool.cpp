@@ -85,9 +85,7 @@ b32 alive(const Pool *p, u32 handle) {
            p->slots[idx].epoch == handle_epoch(handle);
 }
 
-void *resolve(Pool *p, u32 handle) {
-    return alive(p, handle) ? at(p, handle_index(handle)) : NULL;
-}
+void *resolve(Pool *p, u32 handle) { return alive(p, handle) ? at(p, handle_index(handle)) : NULL; }
 
 void *resolve_or_zero(Pool *p, u32 handle, const char *what) {
     ASSERT(p);

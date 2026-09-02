@@ -1,6 +1,7 @@
+#include "gfx/shader.h"
+
 #include <string.h>
 
-#include "gfx/shader.h"
 #include "suites.h"
 
 static config::Doc *manifest(memory::Arena *a, const char *text) {
@@ -51,8 +52,9 @@ static result::Error parse_bad(memory::Arena *a, const char *text, u32 cap) {
 }
 
 static void broken_manifests_are_refused(memory::Arena *a) {
-    CHECK(parse_bad(a, "default_shader x\nshader x {\n    vert a\n    frag b\n    features GLOW\n}\n", 4) ==
-          result::ERR_PARSE);
+    CHECK(parse_bad(a,
+                    "default_shader x\nshader x {\n    vert a\n    frag b\n    features GLOW\n}\n",
+                    4) == result::ERR_PARSE);
     CHECK(parse_bad(a, "default_shader x\nshader x {\n    vert a\n}\n", 4) == result::ERR_PARSE);
     CHECK(parse_bad(a, "default_shader x\nshader {\n    vert a\n    frag b\n}\n", 4) ==
           result::ERR_PARSE);

@@ -83,8 +83,8 @@ i32 run(const Suite *suites, u64 count, memory::Arena *scratch) {
     }
 
     if (failed)
-        LOG_ERR("tests: %d of %d cases failed, %d of %d checks failed", failed, cases, g_total_fails,
-                g_total_checks);
+        LOG_ERR("tests: %d of %d cases failed, %d of %d checks failed", failed, cases,
+                g_total_fails, g_total_checks);
     else
         LOG_INFO("tests: %d cases passed, %d checks", cases, g_total_checks);
 

@@ -1,4 +1,5 @@
 #include "gfx/drawkey.h"
+
 #include "suites.h"
 
 static void sort_entries(memory::Arena *a, drawkey::Entry *e, u32 n) {
@@ -87,10 +88,8 @@ static void tiny_inputs_are_no_ops(memory::Arena *a) {
 
 test::Suite drawkey_suite() {
     static const test::Case cases[] = {
-        CASE(transparent_sorts_far_to_near),
-        CASE(opaque_groups_program_then_state_then_depth),
-        CASE(opaque_depth_only_breaks_ties),
-        CASE(radix_sort_is_stable_and_complete),
+        CASE(transparent_sorts_far_to_near), CASE(opaque_groups_program_then_state_then_depth),
+        CASE(opaque_depth_only_breaks_ties), CASE(radix_sort_is_stable_and_complete),
         CASE(tiny_inputs_are_no_ops),
     };
     return test::Suite{.name = "drawkey", .cases = cases, .count = ARRAY_COUNT(cases)};

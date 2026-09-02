@@ -9,9 +9,9 @@
 # from templates/ rather than referenced, because each one wants its own
 # settings and there is no shared behaviour to keep in sync.
 #
-# main.cpp drives this camera's transform each frame to orbit the soldier. That
-# is standing in for a player controller, which is what will own it once there
-# is input -- the camera itself does not care who moves it.
+# The player in src/game places this camera every frame, from the body's
+# position and the eye_offset in engine.cfg. The camera itself does not care who
+# moves it, which is why it is an ordinary entity and not a special case.
 instance "camera" {
     definition templates/camera3d
 

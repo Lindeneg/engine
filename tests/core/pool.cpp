@@ -1,6 +1,7 @@
+#include "core/pool.h"
+
 #include <string.h>
 
-#include "core/pool.h"
 #include "suites.h"
 
 struct Item {
@@ -8,9 +9,7 @@ struct Item {
     f32 value;
 };
 
-static pool::Pool make(memory::Arena *a, u32 cap) {
-    return pool::create(a, cap, sizeof(Item));
-}
+static pool::Pool make(memory::Arena *a, u32 cap) { return pool::create(a, cap, sizeof(Item)); }
 
 // index 0 is never handed out: handle 0 means "nothing", and alloc returns 0 for full
 static void slot_zero_is_never_handed_out(memory::Arena *a) {

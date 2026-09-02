@@ -12,6 +12,9 @@ build:
 run:
 	./build/ExploreApp.exe
 
+lines:
+	cloc ./src/
+
 test:
 	cmake --preset default -DCL_BUILD_TESTS=ON -DCL_MEM_STATS=ON
 	cmake --build build --target ExploreTests -j 18

@@ -1,7 +1,8 @@
+#include "asset/anim.h"
+
 #include <math.h>
 #include <string.h>
 
-#include "asset/anim.h"
 #include "suites.h"
 
 #define NEAR(a, b) (fabsf((a) - (b)) < 1e-4f)
@@ -112,7 +113,8 @@ static void keys_interpolate_linearly(memory::Arena *a) {
 static void time_wraps_on_duration(memory::Arena *a) {
     asset::Skeleton s = skeleton(a, 1);
     linalg::Quat keys[] = {linalg::quat_identity(), z_rotation(90.0f)};
-    asset::Clip c = clip_of(a, rotation_channel(a, 0, TWO_KEYS, keys, 2, asset::INTERP_LINEAR), 1.0f);
+    asset::Clip c =
+        clip_of(a, rotation_channel(a, 0, TWO_KEYS, keys, 2, asset::INTERP_LINEAR), 1.0f);
 
     CHECK(vec3_near(x_axis_of(a, &s, &c, 1.5f), x_axis_of(a, &s, &c, 0.5f)));
     CHECK(vec3_near(x_axis_of(a, &s, &c, 1.0f), x_axis_of(a, &s, &c, 0.0f)));
@@ -128,7 +130,8 @@ static void time_wraps_on_duration(memory::Arena *a) {
 static void rotation_keys_take_the_short_path(memory::Arena *a) {
     asset::Skeleton s = skeleton(a, 1);
     linalg::Quat keys[] = {linalg::quat_identity(), linalg::quat_neg(z_rotation(90.0f))};
-    asset::Clip c = clip_of(a, rotation_channel(a, 0, TWO_KEYS, keys, 2, asset::INTERP_LINEAR), 1.0f);
+    asset::Clip c =
+        clip_of(a, rotation_channel(a, 0, TWO_KEYS, keys, 2, asset::INTERP_LINEAR), 1.0f);
 
     CHECK(vec3_near(x_axis_of(a, &s, &c, 0.5f), linalg::Vec3{H, H, 0.0f}));
 }
@@ -184,7 +187,8 @@ static void zero_duration_and_unbound_channels_play_bind_pose(memory::Arena *a) 
     asset::Skeleton s = skeleton(a, 1);
     linalg::Quat keys[] = {z_rotation(90.0f), z_rotation(90.0f)};
 
-    asset::Clip empty = clip_of(a, rotation_channel(a, 0, TWO_KEYS, keys, 2, asset::INTERP_LINEAR), 0.0f);
+    asset::Clip empty =
+        clip_of(a, rotation_channel(a, 0, TWO_KEYS, keys, 2, asset::INTERP_LINEAR), 0.0f);
     CHECK(vec3_near(x_axis_of(a, &s, &empty, 0.5f), linalg::Vec3{1.0f, 0.0f, 0.0f}));
 
     asset::Clip unbound =

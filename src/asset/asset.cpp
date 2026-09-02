@@ -3,10 +3,10 @@
 #include <string.h>
 
 #include "asset/anim.h"
-#include "core/config.h"
-#include "platform/file.h"
 #include "asset/gltf.h"
+#include "core/config.h"
 #include "core/logger.h"
+#include "platform/file.h"
 #include "platform/path.h"
 
 #define MATERIAL_SIDECAR_EXT ".mat.cfg"
@@ -290,7 +290,8 @@ void model_bounds(Manager *m, ModelHandle h, linalg::Vec3 *out_min, linalg::Vec3
     linalg::Vec3 lo = model->bounds_min;
     linalg::Vec3 hi = model->bounds_max;
 
-    // all eight corners: import can rotate, and rotating min/max alone gives a box that misses the model
+    // all eight corners: import can rotate, and rotating min/max alone gives a box that misses the
+    // model
     linalg::Vec3 out_lo{BOUNDS_EMPTY, BOUNDS_EMPTY, BOUNDS_EMPTY};
     linalg::Vec3 out_hi{-BOUNDS_EMPTY, -BOUNDS_EMPTY, -BOUNDS_EMPTY};
 
@@ -368,7 +369,8 @@ linalg::Mat4 import_matrix(ImportOptions opts) {
 }
 
 static config::Node *material_block(config::Node *first, const char *name) {
-    for (config::Node *n = config::find(first, "material"); n; n = config::find_next(n, "material")) {
+    for (config::Node *n = config::find(first, "material"); n;
+         n = config::find_next(n, "material")) {
         const char *who = config::value(n, 0, NULL);
         if (who && strcmp(who, name) == 0)
             return n;

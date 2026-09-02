@@ -1,6 +1,7 @@
+#include "platform/path.h"
+
 #include <string.h>
 
-#include "platform/path.h"
 #include "suites.h"
 
 static void joins_segments(memory::Arena *a) {
@@ -46,10 +47,8 @@ static void swaps_the_extension(memory::Arena *a) {
 
 test::Suite path_suite() {
     static const test::Case cases[] = {
-        CASE(joins_segments),
-        CASE(single_segment_gets_no_separator),
-        CASE(does_not_normalize),
-        CASE(result_is_nul_terminated),
+        CASE(joins_segments),      CASE(single_segment_gets_no_separator),
+        CASE(does_not_normalize),  CASE(result_is_nul_terminated),
         CASE(swaps_the_extension),
     };
     return test::Suite{.name = "path", .cases = cases, .count = ARRAY_COUNT(cases)};

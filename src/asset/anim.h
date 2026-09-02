@@ -2,8 +2,8 @@
 
 #include "asset/asset.h"
 #include "core/common.h"
-#include "math/linalg.h"
 #include "core/memory.h"
+#include "math/linalg.h"
 
 namespace anim {
 
@@ -14,7 +14,7 @@ namespace anim {
 void sample(memory::Arena *scratch, const asset::Skeleton *skel, const asset::Clip *clip, f32 time,
             linalg::Mat4 *out_skin, linalg::Mat4 *out_global);
 
-// The palette with no clip; what bounds are measured against, since raw skinned
+// the palette with no clip; what bounds are measured against, since raw skinned
 // positions are pre-skin.
 void bind_pose(memory::Arena *scratch, const asset::Skeleton *skel, linalg::Mat4 *out);
 

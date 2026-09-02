@@ -6,11 +6,11 @@
 #include "asset/anim.h"
 #include "core/config.h"
 #include "core/logger.h"
-#include "platform/path.h"
 #include "core/pool.h"
+#include "core/str.h"
 #include "gfx/render.h"
 #include "gfx/shader.h"
-#include "core/str.h"
+#include "platform/path.h"
 
 #define ENTITY_DIR "entities"
 #define ENTITY_EXT ".entity"
@@ -47,22 +47,29 @@ Config config_from(config::Node *block) {
 // enough for anything a person types; a computed value may lose its last bits on a round trip
 #define F32_WRITE_FMT "%.6g"
 
-#define FIELD(T, member) (u32)offsetof(T, member)
+#define FIELD(T, member) (u32) offsetof(T, member)
 
 static const Renderable RENDERABLE_DEFAULTS = {.visible = true};
 static const FieldDesc RENDERABLE_FIELDS[] = {
-    {.key = "model", .type = FIELD_STRING, .offset = FIELD(Renderable, model_path), .cap = ENTITY_PATH_CAP},
+    {.key = "model",
+     .type = FIELD_STRING,
+     .offset = FIELD(Renderable, model_path),
+     .cap = ENTITY_PATH_CAP},
     {.key = "visible", .type = FIELD_B32, .offset = FIELD(Renderable, visible)},
 };
 
 static const Animator ANIMATOR_DEFAULTS = {.speed = 1.0f, .playing = true};
 static const FieldDesc ANIMATOR_FIELDS[] = {
-    {.key = "clip", .type = FIELD_STRING, .offset = FIELD(Animator, clip_path), .cap = ENTITY_PATH_CAP},
+    {.key = "clip",
+     .type = FIELD_STRING,
+     .offset = FIELD(Animator, clip_path),
+     .cap = ENTITY_PATH_CAP},
     {.key = "speed", .type = FIELD_F32, .offset = FIELD(Animator, speed)},
     {.key = "playing", .type = FIELD_B32, .offset = FIELD(Animator, playing)},
 };
 
-static const Camera CAMERA_DEFAULTS = {.fov_y = 60.0f, .z_near = 0.05f, .z_far = 500.0f, .active = true};
+static const Camera CAMERA_DEFAULTS = {
+    .fov_y = 60.0f, .z_near = 0.05f, .z_far = 500.0f, .active = true};
 static const FieldDesc CAMERA_FIELDS[] = {
     {.key = "fov", .type = FIELD_F32, .offset = FIELD(Camera, fov_y)},
     {.key = "near", .type = FIELD_F32, .offset = FIELD(Camera, z_near)},
@@ -81,7 +88,11 @@ static const Light LIGHT_DEFAULTS = {
     .active = true,
 };
 static const FieldDesc LIGHT_FIELDS[] = {
-    {.key = "kind", .type = FIELD_ENUM, .offset = FIELD(Light, kind), .names = LIGHT_KIND_NAMES, .name_count = LIGHT_KIND_COUNT},
+    {.key = "kind",
+     .type = FIELD_ENUM,
+     .offset = FIELD(Light, kind),
+     .names = LIGHT_KIND_NAMES,
+     .name_count = LIGHT_KIND_COUNT},
     {.key = "color", .type = FIELD_VEC3, .offset = FIELD(Light, color)},
     {.key = "intensity", .type = FIELD_F32, .offset = FIELD(Light, intensity)},
     {.key = "ambient", .type = FIELD_F32, .offset = FIELD(Light, ambient)},
@@ -121,7 +132,8 @@ struct World {
     linalg::Mat4 *global; // same, joint model-space transforms for attachments
 };
 
-// every component's first field; add_component writes owner through this instead of a per-type switch
+// every component's first field; add_component writes owner through this instead of a per-type
+// switch
 struct ComponentHeader {
     Handle owner;
 };
@@ -382,6 +394,21 @@ Camera *add_camera(World *w, Handle h) { return (Camera *)add_component(w, h, CO
 
 Light *add_light(World *w, Handle h) { return (Light *)add_component(w, h, COMPONENT_LIGHT); }
 
+u32 component_first(World *w, Component c) {
+    ASSERT(w && c < COMPONENT_COUNT);
+    return pool::first(&w->components[c]);
+}
+
+u32 component_next(World *w, Component c, u32 slot) {
+    ASSERT(w && c < COMPONENT_COUNT);
+    return pool::next(&w->components[c], slot);
+}
+
+void *component_at(World *w, Component c, u32 slot) {
+    ASSERT(w && c < COMPONENT_COUNT);
+    return slot ? pool::at(&w->components[c], slot) : NULL;
+}
+
 Renderable *renderable(World *w, Handle h) {
     return (Renderable *)component_of(w, h, COMPONENT_RENDERABLE);
 }
@@ -497,15 +524,15 @@ static void resolve_world(World *w, asset::Manager *m, Handle h) {
     if (!e)
         return;
 
-    linalg::Mat4 local = linalg::mat4_from_trs(e->local.position, e->local.rotation, e->local.scale);
+    linalg::Mat4 local =
+        linalg::mat4_from_trs(e->local.position, e->local.rotation, e->local.scale);
     Entity *pe = get(w, e->parent);
 
     if (!pe) {
         e->world = local;
     } else if (e->attach_joint_index >= 0) {
         u32 slot = pe->components[COMPONENT_ANIMATOR];
-        Animator *pa =
-            slot ? (Animator *)pool::at(&w->components[COMPONENT_ANIMATOR], slot) : NULL;
+        Animator *pa = slot ? (Animator *)pool::at(&w->components[COMPONENT_ANIMATOR], slot) : NULL;
 
         // the parent may have an animator but no renderable to take an import transform from
         Renderable *pr = renderable(w, e->parent);
@@ -514,7 +541,8 @@ static void resolve_world(World *w, asset::Manager *m, Handle h) {
             // model-space joint, not the skinning matrix, which carries the inverse bind
             linalg::Mat4 joint = global_at(w, slot)[e->attach_joint_index];
 
-            // the joint is in the parent's native space, so it passes through the parent's import too
+            // the joint is in the parent's native space, so it passes through the parent's import
+            // too
             asset::Model *pm = asset::get(m, pr->model);
             e->world = pe->world * pm->import * joint * local;
         } else {
@@ -533,23 +561,8 @@ static void resolve_world(World *w, asset::Manager *m, Handle h) {
     }
 }
 
-// everything whose correctness depends on the timestep; empty until physics
-static void step_fixed(World *w, asset::Manager *m, f32 dt) {
-    (void)w;
-    (void)m;
-    (void)dt;
-}
-
-// visual only, at frame time. Animation samples here for smoothness; hit tests
-// against bones will need it sampled on the fixed clock instead.
-static void step_variable(World *w, asset::Manager *m, memory::Arena *scratch, f32 dt) {
-    pool::Pool *p = &w->components[COMPONENT_ANIMATOR];
-    for (u32 i = pool::first(p); i; i = pool::next(p, i))
-        advance_animator(w, m, scratch, (Animator *)pool::at(p, i), i, dt);
-}
-
-void update(World *w, asset::Manager *m, memory::Arena *scratch, f32 dt) {
-    ASSERT(w && m && scratch);
+u32 begin_frame(World *w, f32 dt) {
+    ASSERT(w);
 
     // a clock that stepped backwards must not strand the accumulator
     if (dt < 0.0f)
@@ -559,7 +572,6 @@ void update(World *w, asset::Manager *m, memory::Arena *scratch, f32 dt) {
 
     u32 steps = 0;
     while (w->accumulator >= w->fixed_dt && steps < w->max_fixed_steps) {
-        step_fixed(w, m, w->fixed_dt);
         w->accumulator -= w->fixed_dt;
         steps++;
     }
@@ -572,10 +584,23 @@ void update(World *w, asset::Manager *m, memory::Arena *scratch, f32 dt) {
     }
 
     w->alpha = w->accumulator / w->fixed_dt;
+    return steps;
+}
 
-    step_variable(w, m, scratch, dt);
+// everything of the engine's own whose correctness depends on the timestep;
+// empty until there is engine-side physics to run here
+void step_fixed(World *w, asset::Manager *m) { ASSERT(w && m); }
 
-    // after both steps, since either can move an entity
+void end_frame(World *w, asset::Manager *m, memory::Arena *scratch, f32 dt) {
+    ASSERT(w && m && scratch);
+
+    // visual only, at frame time. Animation samples here for smoothness; hit
+    // tests against bones will need it sampled on the fixed clock instead.
+    pool::Pool *p = &w->components[COMPONENT_ANIMATOR];
+    for (u32 i = pool::first(p); i; i = pool::next(p, i))
+        advance_animator(w, m, scratch, (Animator *)pool::at(p, i), i, dt);
+
+    // after both clocks, since either can move an entity
     for (Handle h = first(w); h.v; h = next(w, h))
         if (get(w, h)->parent.v == 0)
             resolve_world(w, m, h);
@@ -618,8 +643,8 @@ static void after_read_RENDERABLE(World *, asset::Manager *m, Handle, void *c) {
         r->model = asset::MODEL_FALLBACK;
         return;
     }
-    r->model =
-        OR_ELSE(asset::load_model(m, asset::SCOPE_PERSISTENT, r->model_path), asset::MODEL_FALLBACK);
+    r->model = OR_ELSE(asset::load_model(m, asset::SCOPE_PERSISTENT, r->model_path),
+                       asset::MODEL_FALLBACK);
 }
 
 static void after_read_ANIMATOR(World *w, asset::Manager *m, Handle h, void *c) {
@@ -652,7 +677,8 @@ static void after_read_CAMERA(World *, asset::Manager *, Handle, void *c) {
 
 static void after_read_LIGHT(World *, asset::Manager *, Handle, void *) {}
 
-// absent keys keep what is there: the default for a fresh component, the definition's value for an override
+// absent keys keep what is there: the default for a fresh component, the definition's value for an
+// override
 static void read_fields(const ComponentDesc *d, config::Node *body, void *c) {
     for (u32 i = 0; i < d->field_count; i++) {
         const FieldDesc *f = &d->fields[i];
@@ -731,7 +757,7 @@ static void write_fields(memory::Arena *a, config::Doc *doc, config::Node *block
             vals[0] = (const char *)at;
             break;
         case FIELD_ENUM: {
-            u32 idx = (u32)*(const i32 *)at;
+            u32 idx = (u32) * (const i32 *)at;
             vals[0] = idx < f->name_count ? f->names[idx] : f->names[0];
             break;
         }
@@ -802,7 +828,8 @@ static void write_transform(memory::Arena *a, config::Doc *doc, config::Node *pa
     config::append(a, doc, block, "position", pos, 3);
 
     if (t->use_euler) {
-        const char *rot[] = {fmt_f32(a, t->euler.x), fmt_f32(a, t->euler.y), fmt_f32(a, t->euler.z)};
+        const char *rot[] = {fmt_f32(a, t->euler.x), fmt_f32(a, t->euler.y),
+                             fmt_f32(a, t->euler.z)};
         config::append(a, doc, block, "rotation", rot, 3);
     } else {
         const char *rot[] = {fmt_f32(a, t->rotation.x), fmt_f32(a, t->rotation.y),

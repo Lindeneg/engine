@@ -139,6 +139,14 @@ static inline Quat quat_from_euler(Vec3 degrees) {
     return quat_mul(quat_mul(qz, qy), qx);
 }
 
+// v + 2 * cross(q.xyz, cross(q.xyz, v) + q.w * v); cheaper than building a
+// matrix for one vector, and it does not care whether q is exactly unit.
+static inline Vec3 quat_rotate(Quat q, Vec3 v) {
+    Vec3 u{q.x, q.y, q.z};
+    Vec3 t = vec3_add(vec3_cross(u, v), vec3_scale(v, q.w));
+    return vec3_add(v, vec3_scale(vec3_cross(u, t), 2.0f));
+}
+
 // right-handed (side, up, forward) basis along forward. When forward is parallel
 // to up (a camera pitched straight up), the hint is replaced by the world axis
 // furthest from forward.
@@ -226,8 +234,12 @@ static inline Vec4 mat4_mul_vec4(Mat4 a, Vec4 v) {
 
 // Point (w = 1) and direction (w = 0) transforms. Directions come back
 // unnormalized: a scaled matrix scales them.
-static inline Vec3 mat4_mul_point(Mat4 m, Vec3 p) { return vec3_from(mat4_mul_vec4(m, vec4_from(p, 1.0f))); }
-static inline Vec3 mat4_mul_dir(Mat4 m, Vec3 d) { return vec3_from(mat4_mul_vec4(m, vec4_from(d, 0.0f))); }
+static inline Vec3 mat4_mul_point(Mat4 m, Vec3 p) {
+    return vec3_from(mat4_mul_vec4(m, vec4_from(p, 1.0f)));
+}
+static inline Vec3 mat4_mul_dir(Mat4 m, Vec3 d) {
+    return vec3_from(mat4_mul_vec4(m, vec4_from(d, 0.0f)));
+}
 
 static inline Vec3 mat4_translation(Mat4 m) { return Vec3{m.m[12], m.m[13], m.m[14]}; }
 

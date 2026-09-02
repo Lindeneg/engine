@@ -1,6 +1,7 @@
+#include "core/str.h"
+
 #include <string.h>
 
-#include "core/str.h"
 #include "suites.h"
 
 static void separators_collapse_to_underscore(memory::Arena *) {

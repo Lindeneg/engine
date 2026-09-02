@@ -1,4 +1,5 @@
 #include "core/strmap.h"
+
 #include "suites.h"
 
 static const char *mk_key(memory::Arena *a, u64 i) {

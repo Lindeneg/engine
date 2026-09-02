@@ -1,15 +1,14 @@
 #include "gfx/shader.h"
 
 #include <glad/glad.h>
-
 #include <stdarg.h>
 #include <string.h>
 
 #include "core/config.h"
-#include "platform/file.h"
 #include "core/logger.h"
-#include "platform/path.h"
 #include "core/str.h"
+#include "platform/file.h"
+#include "platform/path.h"
 
 #define SHADER_DIR "shaders"
 #define SHADER_MANIFEST "shaders.cfg"
@@ -17,8 +16,8 @@
 #define PREAMBLE_CAP 512
 #define MAX_CHUNKS 64
 #define MAX_INCLUDE_DEPTH 8
-#define FMT_CAP 128                            // one generated #line or #define
-#define INFO_LOG_CAP 2048                      // driver compile/link messages
+#define FMT_CAP 128                              // one generated #line or #define
+#define INFO_LOG_CAP 2048                        // driver compile/link messages
 #define VARIANT_LABEL_CAP (SHADER_NAME_CAP + 64) // "name[FEATURE|FEATURE]"
 
 namespace shader {
@@ -168,8 +167,8 @@ static b32 add_file(Chunks *c, memory::Arena *scratch, const char *root, const c
 // #version must come first, so this is chunk 0; MAX_JOINTS comes from the C++ constant
 static b32 add_preamble(Chunks *c, memory::Arena *a, u32 features) {
     char buf[PREAMBLE_CAP];
-    i32 n = snprintf(buf, sizeof(buf), "#version 330 core\n#define MAX_JOINTS %d\n",
-                     SHADER_MAX_JOINTS);
+    i32 n =
+        snprintf(buf, sizeof(buf), "#version 330 core\n#define MAX_JOINTS %d\n", SHADER_MAX_JOINTS);
     ASSERT(n > 0);
 
     for (u32 b = 0; b < SHADER_FEATURE_BITS; b++) {
@@ -372,7 +371,8 @@ result::Error parse_manifest(config::Doc *doc, Decl *out, u32 cap, u32 *out_coun
             supported |= bit;
         }
 
-        out[n++] = Decl{.name = name_, .vert = vert_file, .frag = frag_file, .supported = supported};
+        out[n++] =
+            Decl{.name = name_, .vert = vert_file, .frag = frag_file, .supported = supported};
     }
 
     if (n == 0) {

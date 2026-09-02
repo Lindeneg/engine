@@ -1,4 +1,5 @@
 #include "core/result.h"
+
 #include "suites.h"
 
 RESULT_TYPE(u32, U32Result);
@@ -44,8 +45,13 @@ static void try_propagates(memory::Arena *) {
 
 static void str_covers_every_code(memory::Arena *) {
     const result::Error codes[] = {
-        result::OK,          result::ERR_NOT_FOUND, result::ERR_IO,        result::ERR_PARSE,
-        result::ERR_UNSUPPORTED, result::ERR_INVALID, result::ERR_EXHAUSTED,
+        result::OK,
+        result::ERR_NOT_FOUND,
+        result::ERR_IO,
+        result::ERR_PARSE,
+        result::ERR_UNSUPPORTED,
+        result::ERR_INVALID,
+        result::ERR_EXHAUSTED,
     };
     for (u64 i = 0; i < ARRAY_COUNT(codes); i++) {
         const char *s = result::str(codes[i]);

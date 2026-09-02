@@ -18,9 +18,7 @@ struct RenderState {
 };
 
 // not the zeroed struct: that disables depth test and write
-inline RenderState state_default() {
-    return RenderState{CULL_BACK, BLEND_NONE, true, true};
-}
+inline RenderState state_default() { return RenderState{CULL_BACK, BLEND_NONE, true, true}; }
 
 // 6 bits for the draw queue's sort key
 inline u32 state_key(RenderState s) {

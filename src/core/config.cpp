@@ -3,8 +3,8 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "platform/file.h"
 #include "core/logger.h"
+#include "platform/file.h"
 
 #define INDENT "    "
 
@@ -181,8 +181,8 @@ DocResult parse(memory::Arena *a, char *text, const char *name) {
             continue;
 
         if (depth == CONFIG_MAX_DEPTH) {
-            LOG_WARN("config: %s:%u nested deeper than %d, the block's body is ignored",
-                     doc->name, line_no, CONFIG_MAX_DEPTH);
+            LOG_WARN("config: %s:%u nested deeper than %d, the block's body is ignored", doc->name,
+                     line_no, CONFIG_MAX_DEPTH);
             doc->problems++;
             skip_depth = 1;
             continue;
@@ -219,9 +219,7 @@ Node *find(Node *first, const char *key) {
     return NULL;
 }
 
-Node *find_next(Node *from, const char *key) {
-    return from ? find(from->next_sibling, key) : NULL;
-}
+Node *find_next(Node *from, const char *key) { return from ? find(from->next_sibling, key) : NULL; }
 
 const char *value(Node *n, u32 index, const char *fallback) {
     if (!n || index >= n->value_count)
@@ -324,8 +322,8 @@ void set_values(memory::Arena *a, Node *n, const char *const *values, u32 count)
         n->values[i] = memory::push_str(a, values[i]);
 }
 
-Node *append(memory::Arena *a, Doc *doc, Node *parent, const char *key,
-             const char *const *values, u32 count) {
+Node *append(memory::Arena *a, Doc *doc, Node *parent, const char *key, const char *const *values,
+             u32 count) {
     ASSERT(a && doc && key);
 
     Node *n = push_struct(a, Node);
@@ -361,9 +359,7 @@ struct Out {
     memory::Arena *a;
 };
 
-static void put(Out *o, const char *s, u64 n) {
-    memcpy(memory::push_nz(o->a, n, 1), s, n);
-}
+static void put(Out *o, const char *s, u64 n) { memcpy(memory::push_nz(o->a, n, 1), s, n); }
 
 static void put_str(Out *o, const char *s) { put(o, s, strlen(s)); }
 
