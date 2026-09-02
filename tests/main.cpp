@@ -13,14 +13,19 @@ int main() {
     memory::Arena scratch = memory::create(MiB(16));
 
     const test::Suite suites[] = {
+        anim_suite(),
         asset_suite(),
         config_suite(),
+        drawkey_suite(),
         entity_suite(),
         file_suite(),
+        gfx_suite(),
         linalg_suite(),
+        memory_suite(),
         path_suite(),
         pool_suite(),
         result_suite(),
+        shader_suite(),
         str_suite(),
         strmap_suite(),
     };

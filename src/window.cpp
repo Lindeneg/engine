@@ -9,11 +9,26 @@
 
 #include "logger.h"
 
+#define DEFAULT_WIDTH 1280
+#define DEFAULT_HEIGHT 720
+#define DEFAULT_TITLE "explore"
+#define DEFAULT_VSYNC true
+
 namespace window {
 
 struct Window {
     GLFWwindow *handle;
 };
+
+Config config_from(config::Node *block) {
+    config::Node *body = block ? block->first_child : NULL;
+    return Config{
+        .width = config::get_i32(body, "width", DEFAULT_WIDTH),
+        .height = config::get_i32(body, "height", DEFAULT_HEIGHT),
+        .title = config::get(body, "title", DEFAULT_TITLE),
+        .vsync = config::get_b32(body, "vsync", DEFAULT_VSYNC),
+    };
+}
 
 static const i32 KEY_CODES[KEY_COUNT] = {
     GLFW_KEY_ESCAPE, GLFW_KEY_W, GLFW_KEY_A, GLFW_KEY_S, GLFW_KEY_D, GLFW_KEY_SPACE,

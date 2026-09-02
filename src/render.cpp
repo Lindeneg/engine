@@ -5,6 +5,7 @@
 #include <stddef.h> // offsetof
 #include <string.h>
 
+#include "drawkey.h"
 #include "logger.h"
 
 namespace render {
@@ -21,19 +22,29 @@ static_assert(offsetof(asset::VertexStatic, pos) == offsetof(asset::VertexSkinne
 // The std140 block in common.glsl is laid out to exactly this size.
 static_assert(sizeof(shader::FrameData) == 112, "FrameData no longer matches the Frame block");
 
-// The sort keys below give mesh and material indices 16 bits; pool indices
-// have 24, so this is the cap on those pools that keeps ordering exact.
-#define KEY_INDEX_BITS 16
-#define KEY_INDEX_MAX ((1u << KEY_INDEX_BITS) - 1)
-
-// Opaque keys bucket depth in whole units up to this, as an early-Z tiebreaker
-#define KEY_DEPTH_MAX 255u
-
 // A driver-neutral fallback if GL_UNIFORM_BUFFER_OFFSET_ALIGNMENT cannot be read
 #define UBO_ALIGN_FALLBACK 256
 
 // "nothing bound yet" for the per-pass state caches; no real value is ever this
 #define UNBOUND 0xFFFFFFFFu
+
+#define DEFAULT_MAX_DRAW_ITEMS 4096
+#define DEFAULT_MAX_OBJECTS 512
+#define DEFAULT_MAX_SKINNED_DRAWS 32
+#define DEFAULT_CLEAR_COLOR linalg::Vec4{0.10f, 0.11f, 0.13f, 1.0f}
+
+Config config_from(config::Node *block) {
+    config::Node *body = block ? block->first_child : NULL;
+    linalg::Vec4 dflt = DEFAULT_CLEAR_COLOR;
+    linalg::Vec3 rgb = config::value_vec3(config::find(body, "clear_color"), linalg::vec3_from(dflt));
+    return Config{
+        .max_draw_items = (u32)config::get_i32(body, "max_draw_items", DEFAULT_MAX_DRAW_ITEMS),
+        .max_objects = (u32)config::get_i32(body, "max_objects", DEFAULT_MAX_OBJECTS),
+        .max_skinned_draws =
+            (u32)config::get_i32(body, "max_skinned_draws", DEFAULT_MAX_SKINNED_DRAWS),
+        .clear_color = linalg::vec4_from(rgb, 1.0f),
+    };
+}
 
 // Opaque draws group by the most expensive state change first; depth lands in
 // the low bits so it only breaks ties, front-to-back, which feeds early-Z.
@@ -60,11 +71,6 @@ struct ObjectData {
     b32 skinned;
 };
 
-struct SortEntry {
-    u64 key;
-    u32 item;
-};
-
 // The GPU side of one mesh slot. epoch is the handle generation it was
 // uploaded for, so a recycled slot re-uploads instead of drawing stale buffers.
 struct GpuMesh {
@@ -84,9 +90,9 @@ static struct {
     ObjectData *objects;
     u32 object_count;
 
-    SortEntry *pass[PASS_COUNT];
+    drawkey::Entry *pass[PASS_COUNT];
     u32 pass_count[PASS_COUNT];
-    SortEntry *sort_tmp;
+    drawkey::Entry *sort_tmp;
 
     u32 frame_ubo;
     u32 joint_ubo;
@@ -140,8 +146,8 @@ void init(memory::Arena *a, Config cfg, i32 fb_width, i32 fb_height) {
     g.items = push_array(a, DrawItem, cfg.max_draw_items);
     g.objects = push_array(a, ObjectData, cfg.max_objects);
     for (u32 p = 0; p < PASS_COUNT; p++)
-        g.pass[p] = push_array(a, SortEntry, cfg.max_draw_items);
-    g.sort_tmp = push_array(a, SortEntry, cfg.max_draw_items);
+        g.pass[p] = push_array(a, drawkey::Entry, cfg.max_draw_items);
+    g.sort_tmp = push_array(a, drawkey::Entry, cfg.max_draw_items);
 
     glEnable(GL_DEPTH_TEST);
     glDepthFunc(GL_LESS);
@@ -302,33 +308,6 @@ static u32 material_features(const asset::Material *mat) {
     return mat->alpha_mode == asset::ALPHA_MASK ? shader::FEATURE_ALPHA_MASK : shader::FEATURE_NONE;
 }
 
-// Positive floats order the same way as their bit patterns read as integers, so
-// this is an exact, range-free ordering -- no far plane to normalise against.
-static u32 depth_bits(f32 d) {
-    u32 bits;
-    memcpy(&bits, &d, sizeof(bits));
-    return d > 0.0f ? bits : 0;
-}
-
-static u64 opaque_key(u32 program, u32 state, u32 mesh, u32 material, f32 dist) {
-    ASSERT_MSG(mesh <= KEY_INDEX_MAX && material <= KEY_INDEX_MAX,
-               "render: pool index past the %d bits the sort key holds", KEY_INDEX_BITS);
-
-    // one-unit buckets out to KEY_DEPTH_MAX: a tiebreaker for early-Z, not a sort
-    u64 depth = (u64)MIN((u32)MAX(dist, 0.0f), KEY_DEPTH_MAX);
-    return ((u64)(program & 0xFFFF) << 48) | ((u64)(state & 0xFF) << 40) |
-           ((u64)(mesh & KEY_INDEX_MAX) << 24) | ((u64)(material & KEY_INDEX_MAX) << 8) | depth;
-}
-
-static u64 transparent_key(u32 program, u32 mesh, f32 dist) {
-    ASSERT_MSG(mesh <= KEY_INDEX_MAX, "render: pool index past the %d bits the sort key holds",
-               KEY_INDEX_BITS);
-
-    // inverted so ascending order comes out far-to-near
-    u64 depth = ~(u64)depth_bits(dist) & 0xFFFFFFFFull;
-    return (depth << 32) | ((u64)(program & 0xFFFF) << 16) | (u64)(mesh & KEY_INDEX_MAX);
-}
-
 void submit_model(asset::Manager *m, asset::ModelHandle h, linalg::Mat4 model_mat,
                   const linalg::Mat4 *palette, u32 joint_count) {
     asset::Model *model = asset::get(m, h);
@@ -412,54 +391,15 @@ void submit_model(asset::Manager *m, asset::ModelHandle h, linalg::Mat4 model_ma
             u32 pass = mat->state.blend == gfx::BLEND_NONE ? PASS_OPAQUE : PASS_TRANSPARENT;
 
             u64 key = pass == PASS_OPAQUE
-                          ? opaque_key(pid, gfx::state_key(it->state),
-                                       asset::handle_index(model->meshes[i].v),
-                                       asset::handle_index(sub->material.v), dist)
-                          : transparent_key(pid, asset::handle_index(model->meshes[i].v), dist);
+                          ? drawkey::opaque(pid, gfx::state_key(it->state),
+                                            asset::handle_index(model->meshes[i].v),
+                                            asset::handle_index(sub->material.v), dist)
+                          : drawkey::transparent(pid, asset::handle_index(model->meshes[i].v), dist);
 
-            g.pass[pass][g.pass_count[pass]++] = SortEntry{.key = key, .item = g.item_count};
+            g.pass[pass][g.pass_count[pass]++] = drawkey::Entry{.key = key, .item = g.item_count};
             g.item_count++;
         }
     }
-}
-
-// LSD radix on the full 64-bit key: linear, stable, and it needs no comparator.
-// Byte passes whose values are all identical are skipped, which is the common
-// case for the high bytes.
-static void radix_sort(SortEntry *a, SortEntry *tmp, u32 n) {
-    if (n < 2)
-        return;
-
-    SortEntry *src = a;
-    SortEntry *dst = tmp;
-
-    for (u32 shift = 0; shift < 64; shift += 8) {
-        u32 counts[256] = {};
-        for (u32 i = 0; i < n; i++)
-            counts[(src[i].key >> shift) & 0xFF]++;
-
-        // every key shares this byte, so the pass would only copy
-        if (counts[(src[0].key >> shift) & 0xFF] == n)
-            continue;
-
-        u32 sum = 0;
-        for (u32 b = 0; b < 256; b++) {
-            u32 c = counts[b];
-            counts[b] = sum;
-            sum += c;
-        }
-
-        for (u32 i = 0; i < n; i++)
-            dst[counts[(src[i].key >> shift) & 0xFF]++] = src[i];
-
-        SortEntry *swap = src;
-        src = dst;
-        dst = swap;
-    }
-
-    // an odd number of passes leaves the result in tmp
-    if (src != a)
-        memcpy(a, src, sizeof(SortEntry) * n);
 }
 
 static void apply_state(gfx::RenderState s) {
@@ -504,7 +444,7 @@ static void flush_pass(asset::Manager *m, u32 pass) {
     if (n == 0)
         return;
 
-    radix_sort(g.pass[pass], g.sort_tmp, n);
+    drawkey::sort(g.pass[pass], g.sort_tmp, n);
 
     u32 bound_program = 0;
     u32 bound_vao = 0;

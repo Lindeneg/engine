@@ -1,6 +1,7 @@
 #pragma once
 
 #include "common.h"
+#include "config.h"
 #include "gfx.h"
 #include "linalg.h"
 #include "memory.h"
@@ -225,6 +226,10 @@ struct Config {
     u32 max_clips;
     u64 scope_bytes[SCOPE_COUNT];
 };
+
+// The `assets` block of engine.cfg; NULL or missing keys take the defaults.
+// root and default_shader are not file settings and come from the caller.
+Config config_from(config::Node *block, const char *root, shader::Handle default_shader);
 
 struct Manager;
 

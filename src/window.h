@@ -1,6 +1,7 @@
 #pragma once
 
 #include "common.h"
+#include "config.h"
 #include "memory.h"
 #include "result.h"
 
@@ -12,9 +13,12 @@ enum Key { KEY_ESCAPE, KEY_W, KEY_A, KEY_S, KEY_D, KEY_SPACE, KEY_COUNT };
 struct Config {
     i32 width;
     i32 height;
-    const char *title;
+    const char *title; // must outlive the window
     b32 vsync;
 };
+
+// The `window` block of engine.cfg; NULL or missing keys take the defaults.
+Config config_from(config::Node *block);
 
 struct Window;
 

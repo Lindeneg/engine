@@ -343,63 +343,98 @@ static void variant_label(char *dst, u64 cap, const char *name_, u32 features) {
         snprintf(dst + n, cap - (u64)n, "]");
 }
 
-static result::Error load_one(memory::Arena *a, memory::Arena *scratch, const char *root,
-                              config::Node *decl) {
-    const char *name_ = config::value(decl, 0, NULL);
-    if (!name_) {
-        LOG_ERR("shader: a 'shader' block has no name");
-        return result::ERR_PARSE;
-    }
-    // refused rather than truncated: a clipped name would later fail the
-    // default_shader lookup with a misleading "no shader named"
-    if (strlen(name_) >= SHADER_NAME_CAP) {
-        LOG_ERR("shader: name '%s' is longer than the %d bytes allowed", name_, SHADER_NAME_CAP - 1);
-        return result::ERR_PARSE;
-    }
-    if (g_reg.count >= SHADER_MAX_COUNT) {
-        LOG_ERR("shader: more than %d shaders declared, '%s' dropped", SHADER_MAX_COUNT, name_);
-        return result::ERR_EXHAUSTED;
-    }
+result::Error parse_manifest(config::Doc *doc, Decl *out, u32 cap, u32 *out_count,
+                             const char **out_default) {
+    ASSERT(doc && out && out_count && out_default);
 
-    const char *vert_file = config::get(decl->first_child, "vert", NULL);
-    const char *frag_file = config::get(decl->first_child, "frag", NULL);
-    if (!vert_file || !frag_file) {
-        LOG_ERR("shader: '%s' needs both a vert and a frag", name_);
-        return result::ERR_PARSE;
-    }
-
-    u32 supported = FEATURE_NONE;
-    config::Node *feats = config::find(decl->first_child, "features");
-    for (u32 i = 0; feats && i < feats->value_count; i++) {
-        u32 bit = feature_from_name(feats->values[i]);
-        if (!bit) {
-            LOG_ERR("shader: '%s' claims unknown feature '%s'", name_, feats->values[i]);
+    u32 n = 0;
+    for (config::Node *decl = config::find(doc->first, "shader"); decl;
+         decl = config::find_next(decl, "shader")) {
+        const char *name_ = config::value(decl, 0, NULL);
+        if (!name_) {
+            LOG_ERR("shader: %s:%u: a 'shader' block has no name", doc->name, decl->line);
             return result::ERR_PARSE;
         }
-        supported |= bit;
+        // refused rather than truncated: a clipped name would later fail the
+        // default_shader lookup with a misleading "no shader named"
+        if (strlen(name_) >= SHADER_NAME_CAP) {
+            LOG_ERR("shader: name '%s' is longer than the %d bytes allowed", name_,
+                    SHADER_NAME_CAP - 1);
+            return result::ERR_PARSE;
+        }
+        if (n >= cap) {
+            LOG_ERR("shader: more than %u shaders declared, '%s' dropped", cap, name_);
+            return result::ERR_EXHAUSTED;
+        }
+
+        const char *vert_file = config::get(decl->first_child, "vert", NULL);
+        const char *frag_file = config::get(decl->first_child, "frag", NULL);
+        if (!vert_file || !frag_file) {
+            LOG_ERR("shader: '%s' needs both a vert and a frag", name_);
+            return result::ERR_PARSE;
+        }
+
+        u32 supported = FEATURE_NONE;
+        config::Node *feats = config::find(decl->first_child, "features");
+        for (u32 i = 0; feats && i < feats->value_count; i++) {
+            u32 bit = feature_from_name(feats->values[i]);
+            if (!bit) {
+                LOG_ERR("shader: '%s' claims unknown feature '%s'", name_, feats->values[i]);
+                return result::ERR_PARSE;
+            }
+            supported |= bit;
+        }
+
+        out[n++] = Decl{.name = name_, .vert = vert_file, .frag = frag_file, .supported = supported};
     }
 
+    if (n == 0) {
+        LOG_ERR("shader: %s declares no shaders", doc->name);
+        return result::ERR_PARSE;
+    }
+
+    const char *dflt = config::get(doc->first, "default_shader", NULL);
+    if (!dflt) {
+        LOG_ERR("shader: %s has no default_shader", doc->name);
+        return result::ERR_PARSE;
+    }
+
+    b32 declared = false;
+    for (u32 i = 0; i < n && !declared; i++)
+        declared = strcmp(out[i].name, dflt) == 0;
+    if (!declared) {
+        LOG_ERR("shader: default_shader '%s' is not declared in %s", dflt, doc->name);
+        return result::ERR_NOT_FOUND;
+    }
+
+    *out_count = n;
+    *out_default = dflt;
+    return result::OK;
+}
+
+static result::Error build_one(memory::Arena *a, memory::Arena *scratch, const char *root,
+                               const Decl *d) {
     // zeroed first: a previous init's or a failed build's program ids must not
     // survive in the variants this manifest does not claim
     Shader *sh = &g_reg.items[g_reg.count];
     memset(sh, 0, sizeof(*sh));
-    snprintf(sh->name, SHADER_NAME_CAP, "%s", name_);
-    sh->supported = supported;
+    snprintf(sh->name, SHADER_NAME_CAP, "%s", d->name);
+    sh->supported = d->supported;
 
     u32 wanted = 0;
     for (u32 v = 0; v < SHADER_VARIANT_COUNT; v++) {
-        if (v & ~supported)
+        if (v & ~d->supported)
             continue; // this shader does not claim that combination
         wanted++;
 
         char label[VARIANT_LABEL_CAP];
-        variant_label(label, sizeof(label), name_, v);
-        if (!build_variant(a, scratch, root, vert_file, frag_file, v, label, &sh->variants[v]))
+        variant_label(label, sizeof(label), d->name, v);
+        if (!build_variant(a, scratch, root, d->vert, d->frag, v, label, &sh->variants[v]))
             return result::ERR_INVALID;
     }
 
     g_reg.count++;
-    LOG_INFO("shader: '%s' = %s + %s, %u variant(s)", name_, vert_file, frag_file, wanted);
+    LOG_INFO("shader: '%s' = %s + %s, %u variant(s)", d->name, d->vert, d->frag, wanted);
     return result::OK;
 }
 
@@ -425,38 +460,23 @@ result::Error init(memory::Arena *a, memory::Arena *scratch, const char *root) {
         return result::ERR_PARSE;
     }
 
-    for (config::Node *n = config::find(doc.val->first, "shader"); n;
-         n = config::find_next(n, "shader")) {
-        result::Error e = load_one(a, scratch, root, n);
-        if (e != result::OK) {
-            memory::temp_end(t);
-            return e;
-        }
-    }
+    Decl decls[SHADER_MAX_COUNT];
+    u32 count = 0;
+    const char *dflt = NULL;
+    result::Error e = parse_manifest(doc.val, decls, SHADER_MAX_COUNT, &count, &dflt);
+    for (u32 i = 0; i < count && e == result::OK; i++)
+        e = build_one(a, scratch, root, &decls[i]);
 
-    if (g_reg.count == 0) {
-        LOG_ERR("shader: %s declares no shaders", manifest);
+    if (e != result::OK) {
         memory::temp_end(t);
-        return result::ERR_PARSE;
+        return e;
     }
 
-    const char *dflt = config::get(doc.val->first, "default_shader", NULL);
-    if (!dflt) {
-        LOG_ERR("shader: %s has no default_shader", manifest);
-        memory::temp_end(t);
-        return result::ERR_PARSE;
-    }
-
-    HandleResult h = find(dflt);
+    // parse_manifest checked the name is declared, so this cannot fail
+    g_reg.dflt = MUST(find(dflt));
     memory::temp_end(t);
-    if (h.err != result::OK)
-        return h.err;
 
-    g_reg.dflt = h.val;
-
-    // name(), not dflt: dflt points into the manifest text, which the temp_end
-    // above just rolled back out from under it.
-    LOG_INFO("shader: %u shader(s) loaded, default '%s'", g_reg.count, name(h.val));
+    LOG_INFO("shader: %u shader(s) loaded, default '%s'", g_reg.count, name(g_reg.dflt));
     return result::OK;
 }
 

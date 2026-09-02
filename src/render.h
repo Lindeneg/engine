@@ -2,6 +2,7 @@
 
 #include "asset.h"
 #include "common.h"
+#include "config.h"
 #include "linalg.h"
 #include "memory.h"
 #include "shader.h"
@@ -15,7 +16,11 @@ struct Config {
     u32 max_draw_items;    // one per submesh submitted, not per model
     u32 max_objects;       // one per submit_model call
     u32 max_skinned_draws; // palette slots; each costs SHADER_MAX_JOINTS matrices
+    linalg::Vec4 clear_color;
 };
+
+// The `render` block of engine.cfg; NULL or missing keys take the defaults.
+Config config_from(config::Node *block);
 
 // Creates the frame and joint uniform buffers and the queue arrays, which are
 // pushed once and refilled per frame rather than re-pushed. shader::init must

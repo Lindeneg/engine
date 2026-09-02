@@ -4,6 +4,7 @@
 #include <time.h>
 
 #include "platform.h"
+#include "str.h"
 
 #define TIMESTAMP_CAP 16
 #define MESSAGE_CAP 1024
@@ -15,22 +16,14 @@ static logger::Level g_min = logger::TRACE;
 static b32 g_color = false; // true when stdout is an ANSI-capable console
 static u32 g_counts[logger::FATAL + 1];
 
+// index == Level; the lower-case form is what engine.cfg uses
+static const char *LEVEL_NAMES[logger::FATAL + 1] = {"trace", "debug", "info",
+                                                     "warn",  "error", "fatal"};
+static const char *LEVEL_TAGS[logger::FATAL + 1] = {"TRACE", "DEBUG", "INFO",
+                                                    "WARN",  "ERROR", "FATAL"};
+
 static const char *level_name(logger::Level level) {
-    switch (level) {
-    case logger::TRACE:
-        return "TRACE";
-    case logger::DEBUG:
-        return "DEBUG";
-    case logger::INFO:
-        return "INFO";
-    case logger::WARN:
-        return "WARN";
-    case logger::ERR:
-        return "ERROR";
-    case logger::FATAL:
-        return "FATAL";
-    }
-    return "?????";
+    return level <= logger::FATAL ? LEVEL_TAGS[level] : "?????";
 }
 
 static const char *level_color(logger::Level level) {
@@ -77,6 +70,15 @@ void shutdown(void) {
 
 void set_level(Level min) { g_min = min; }
 Level level() { return g_min; }
+
+b32 level_from_name(const char *name, Level *out) {
+    ASSERT(out);
+    i32 i = str::name_index(LEVEL_NAMES, ARRAY_COUNT(LEVEL_NAMES), name);
+    if (i < 0)
+        return false;
+    *out = (Level)i;
+    return true;
+}
 u32 count(Level level) { return level <= FATAL ? g_counts[level] : 0; }
 
 void write(Level level, const char *file, i32 line, const char *fmt, ...) {

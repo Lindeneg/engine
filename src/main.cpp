@@ -1,84 +1,89 @@
 #include "asset.h"
 #include "common.h"
+#include "config.h"
 #include "entity.h"
 #include "linalg.h"
 #include "logger.h"
 #include "memory.h"
+#include "path.h"
 #include "render.h"
 #include "shader.h"
 #include "window.h"
 
-// CMake defines this as the source tree's assets folder. The fallback only
-// matters for a build that bypasses CMake entirely.
+// The assets folder in the source tree, baked in by CMake. There is exactly
+// one of them and nothing copies it, so editing a file and restarting is
+// enough. A shipped build would take this from a launch argument instead.
 #ifndef CL_ASSET_ROOT
-#define CL_ASSET_ROOT "assets"
+#error "CL_ASSET_ROOT must be defined by the build; see CMakeLists.txt"
 #endif
+
+#define ENGINE_CFG "engine.cfg"
+
+// Address space only, and reserving is free, so this is not a setting: every
+// arena in the process is carved from it, sized by engine.cfg.
+#define RESERVE_BYTES GiB(4)
+
+// Holds engine.cfg for the life of the process; the arenas it sizes cannot
+// exist before it is read.
+#define BOOT_ARENA_BYTES MiB(1)
+
+#define DEFAULT_LEVEL "test"
+#define DEFAULT_PERM_MIB 64
+#define DEFAULT_SCRATCH_MIB 64
+#define DEFAULT_ORBIT_SPEED 0.4f
+#define DEFAULT_ORBIT_HEIGHT 0.35f
+#define DEFAULT_ORBIT_DISTANCE 1.15f
 
 int main() {
     logger::init(NULL);
-    logger::set_level(logger::TRACE);
+    memory::init(RESERVE_BYTES);
 
-    memory::init(MiB(1024));
-    memory::Arena perm = memory::create(MiB(64));
-    memory::Arena scratch = memory::create(MiB(64));
+    const char *root = CL_ASSET_ROOT;
 
-    window::Window *win{MUST(window::create(&perm, window::Config{
-                                                       .width = 1280,
-                                                       .height = 720,
-                                                       .title = "explore",
-                                                       .vsync = true,
-                                                   }))};
+    memory::Arena boot = memory::create(BOOT_ARENA_BYTES);
+    config::Doc *engine = MUST(config::load(&boot, FPATH(&boot, root, ENGINE_CFG)));
+    if (engine->problems)
+        LOG_FATAL("main: %s has %u structural problem(s)", ENGINE_CFG, engine->problems);
+    config::Node *cfg = engine->first;
+
+    logger::Level level = logger::TRACE;
+    const char *level_name = config::get(cfg, "log_level", NULL);
+    if (level_name && !logger::level_from_name(level_name, &level))
+        LOG_WARN("main: unknown log_level '%s'", level_name);
+    logger::set_level(level);
+
+    config::Node *mem = config::find(cfg, "memory");
+    config::Node *mem_body = mem ? mem->first_child : NULL;
+    memory::Arena perm = memory::create(MiB(config::get_i32(mem_body, "perm", DEFAULT_PERM_MIB)));
+    memory::Arena scratch =
+        memory::create(MiB(config::get_i32(mem_body, "scratch", DEFAULT_SCRATCH_MIB)));
+
+    window::Window *win{
+        MUST(window::create(&perm, window::config_from(config::find(cfg, "window"))))};
 
     i32 fb_w = 0;
     i32 fb_h = 0;
     window::framebuffer_size(win, &fb_w, &fb_h);
-
-    // The assets folder in the source tree, baked in by CMake. There is exactly
-    // one of them and nothing copies it, so editing a shader, an .entity or a
-    // .level and restarting is enough -- no build in between. A shipped build
-    // would take this from a launch argument instead.
-    const char *root = CL_ASSET_ROOT;
 
     // Shaders before assets: a material is given its program at load, and a
     // shader that will not build means the deployment is broken, so this
     // aborts rather than limping on.
     MUST(shader::init(&perm, &scratch, root));
 
-    render::init(&perm,
-                 render::Config{
-                     .max_draw_items = 4096,
-                     .max_objects = 512,
-                     .max_skinned_draws = 32,
-                 },
-                 fb_w, fb_h);
+    render::Config render_cfg = render::config_from(config::find(cfg, "render"));
+    render::init(&perm, render_cfg, fb_w, fb_h);
 
-    asset::Manager *assets{MUST(asset::init(&perm, &scratch,
-                                            asset::Config{
-                                                .root = root,
-                                                .default_shader = shader::default_handle(),
-                                                .max_models = 64,
-                                                .max_meshes = 256,
-                                                .max_materials = 256,
-                                                .max_skeletons = 32,
-                                                .max_clips = 128,
-                                                .scope_bytes = {MiB(128), MiB(128)},
-                                            }))};
+    asset::Manager *assets{MUST(asset::init(
+        &perm, &scratch,
+        asset::config_from(config::find(cfg, "assets"), root, shader::default_handle())))};
 
     render::attach_assets(&perm, assets);
 
-    entity::World *world{MUST(entity::init(&perm, entity::Config{
-                                                      .max_entities = 4096,
-                                                      .max_renderables = 2048,
-                                                      .max_animators = 64,
-                                                      .max_cameras = 8,
-                                                      .max_lights = 16,
-                                                      .fixed_hz = 120.0f,
-                                                      .max_fixed_steps = 8,
-                                                  }))};
+    entity::World *world{MUST(entity::init(&perm, entity::config_from(config::find(cfg, "world"))))};
 
     // Everything the world contains comes from here. No model handles, import
     // scales or attachment offsets in this file.
-    MUST(entity::load_level(world, assets, "test"));
+    MUST(entity::load_level(world, assets, config::get(cfg, "level", DEFAULT_LEVEL)));
 
     // Frame the camera off the player's real bounds. Guessing a distance is how
     // you end up staring at a black window wondering which of five things is
@@ -108,11 +113,20 @@ int main() {
         LOG_WARN("camera: the level spawned nothing renderable");
     }
 
-    // The camera the level declared. Its fov drives the framing distance, so
-    // changing fov in the .entity file reframes the shot without touching this.
+    // Standing in for a player controller: orbit the level's camera around the
+    // player. Its fov drives the framing distance, so changing fov in the
+    // .entity file reframes the shot.
+    config::Node *orbit = config::find(cfg, "camera_orbit");
+    config::Node *orbit_body = orbit ? orbit->first_child : NULL;
+    f32 orbit_speed = config::get_f32(orbit_body, "speed", DEFAULT_ORBIT_SPEED);
+    f32 orbit_height = config::get_f32(orbit_body, "height", DEFAULT_ORBIT_HEIGHT);
+    f32 orbit_distance = config::get_f32(orbit_body, "distance", DEFAULT_ORBIT_DISTANCE);
+
     entity::Handle cam = entity::active_camera(world);
-    f32 fov = cam.v ? entity::camera(world, cam)->fov_y : 60.0f;
-    f32 dist = radius / tanf(DEG2RAD(fov) * 0.5f) * 1.15f;
+    const entity::Camera *cam_defaults =
+        (const entity::Camera *)entity::component_desc(entity::COMPONENT_CAMERA)->defaults;
+    f32 fov = cam.v ? entity::camera(world, cam)->fov_y : cam_defaults->fov_y;
+    f32 dist = radius / tanf(DEG2RAD(fov) * 0.5f) * orbit_distance;
 
     f64 last = window::time();
 
@@ -134,14 +148,10 @@ int main() {
         f32 dt = (f32)(now - last);
         last = now;
 
-        // Standing in for a player controller. The camera is an entity, and
-        // something has to move it -- when there is input, that something
-        // becomes a controller and this goes away. The camera does not care who
-        // writes its transform.
         if (cam.v) {
-            f32 t = (f32)now;
-            linalg::Vec3 eye{center.x + sinf(t * 0.4f) * dist, center.y + radius * 0.35f,
-                             center.z + cosf(t * 0.4f) * dist};
+            f32 t = (f32)now * orbit_speed;
+            linalg::Vec3 eye{center.x + sinf(t) * dist, center.y + radius * orbit_height,
+                             center.z + cosf(t) * dist};
 
             entity::Entity *ce = entity::get(world, cam);
             ce->local.position = eye;
@@ -151,12 +161,11 @@ int main() {
 
         entity::update(world, assets, &scratch, dt);
 
-        // View, projection and lighting all come from entities now.
         shader::FrameData frame{};
         if (!entity::build_frame(world, (f32)fb_w / (f32)fb_h, &frame))
             LOG_WARN_ONCE("main: the level has no active camera, nothing will be visible");
 
-        render::begin_frame(&frame, linalg::Vec4{0.10f, 0.11f, 0.13f, 1.0f});
+        render::begin_frame(&frame, render_cfg.clear_color);
         entity::submit(world, assets);
         render::flush(assets);
 

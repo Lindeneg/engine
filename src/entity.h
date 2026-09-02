@@ -197,6 +197,9 @@ struct Config {
     u32 max_fixed_steps;
 };
 
+// The `world` block of engine.cfg; NULL or missing keys take the defaults.
+Config config_from(config::Node *block);
+
 RESULT_TYPE(World *, WorldResult);
 RESULT_TYPE(Handle, HandleResult);
 

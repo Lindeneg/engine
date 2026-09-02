@@ -24,7 +24,32 @@
 // Starting extents for a bounds walk: anything real is inside them
 #define BOUNDS_EMPTY 1e30f
 
+#define DEFAULT_MAX_MODELS 64
+#define DEFAULT_MAX_MESHES 256
+#define DEFAULT_MAX_MATERIALS 256
+#define DEFAULT_MAX_SKELETONS 32
+#define DEFAULT_MAX_CLIPS 128
+#define DEFAULT_SCOPE_MIB 128
+
 namespace asset {
+
+Config config_from(config::Node *block, const char *root, shader::Handle default_shader) {
+    config::Node *body = block ? block->first_child : NULL;
+    return Config{
+        .root = root,
+        .default_shader = default_shader,
+        .max_models = (u32)config::get_i32(body, "max_models", DEFAULT_MAX_MODELS),
+        .max_meshes = (u32)config::get_i32(body, "max_meshes", DEFAULT_MAX_MESHES),
+        .max_materials = (u32)config::get_i32(body, "max_materials", DEFAULT_MAX_MATERIALS),
+        .max_skeletons = (u32)config::get_i32(body, "max_skeletons", DEFAULT_MAX_SKELETONS),
+        .max_clips = (u32)config::get_i32(body, "max_clips", DEFAULT_MAX_CLIPS),
+        .scope_bytes =
+            {
+                MiB(config::get_i32(body, "persistent", DEFAULT_SCOPE_MIB)),
+                MiB(config::get_i32(body, "transient", DEFAULT_SCOPE_MIB)),
+            },
+    };
+}
 
 enum Kind { KIND_MODEL, KIND_MESH, KIND_MATERIAL, KIND_SKELETON, KIND_CLIP, KIND_COUNT };
 

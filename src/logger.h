@@ -12,6 +12,9 @@ void shutdown();
 void set_level(Level min);
 Level level();
 
+// "trace" .. "fatal", as engine.cfg spells them. False leaves out untouched.
+b32 level_from_name(const char *name, Level *out);
+
 // Messages seen at this level since startup, counted before level filtering.
 // Tests read it to assert that a path warned.
 u32 count(Level level);

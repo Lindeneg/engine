@@ -22,6 +22,24 @@ namespace entity {
 
 #define DEFAULT_FIXED_HZ 120.0f
 #define DEFAULT_MAX_FIXED_STEPS 8
+#define DEFAULT_MAX_ENTITIES 4096
+#define DEFAULT_MAX_RENDERABLES 2048
+#define DEFAULT_MAX_ANIMATORS 64
+#define DEFAULT_MAX_CAMERAS 8
+#define DEFAULT_MAX_LIGHTS 16
+
+Config config_from(config::Node *block) {
+    config::Node *body = block ? block->first_child : NULL;
+    return Config{
+        .max_entities = (u32)config::get_i32(body, "max_entities", DEFAULT_MAX_ENTITIES),
+        .max_renderables = (u32)config::get_i32(body, "max_renderables", DEFAULT_MAX_RENDERABLES),
+        .max_animators = (u32)config::get_i32(body, "max_animators", DEFAULT_MAX_ANIMATORS),
+        .max_cameras = (u32)config::get_i32(body, "max_cameras", DEFAULT_MAX_CAMERAS),
+        .max_lights = (u32)config::get_i32(body, "max_lights", DEFAULT_MAX_LIGHTS),
+        .fixed_hz = config::get_f32(body, "fixed_hz", DEFAULT_FIXED_HZ),
+        .max_fixed_steps = (u32)config::get_i32(body, "max_fixed_steps", DEFAULT_MAX_FIXED_STEPS),
+    };
+}
 
 // How far from unit length a hand-typed quaternion may be before it is
 // reported. Anything is normalized; this only decides whether to say so.

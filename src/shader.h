@@ -1,6 +1,7 @@
 #pragma once
 
 #include "common.h"
+#include "config.h"
 #include "linalg.h"
 #include "memory.h"
 #include "result.h"
@@ -83,6 +84,19 @@ struct Program {
 };
 
 RESULT_TYPE(Handle, HandleResult);
+
+// One shader block of the manifest, checked but not built. Strings point into
+// the document. Exposed so the manifest rules are testable without a context.
+struct Decl {
+    const char *name;
+    const char *vert;
+    const char *frag;
+    u32 supported;
+};
+
+// Every shader block plus default_shader, which must name one of them.
+result::Error parse_manifest(config::Doc *doc, Decl *out, u32 cap, u32 *out_count,
+                             const char **out_default);
 
 // Reads shaders.cfg and builds every declared variant. Any failure is returned:
 // the caller is expected to abort on it. Requires a current GL context.

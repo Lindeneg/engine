@@ -23,6 +23,7 @@ set(ENGINE_SOURCES
         src/asset.cpp
         src/cgltf_impl.cpp
         src/config.cpp
+        src/drawkey.cpp
         src/entity.cpp
         src/file.cpp
         src/gfx.cpp
