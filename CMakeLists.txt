@@ -11,6 +11,10 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 option(CL_BUILD_TESTS "Build the test runner" OFF)
 option(CL_MEM_STATS "Log memory stats usage" OFF)
 
+if (CL_MEM_STATS)
+    add_compile_definitions(CL_MEM_STATS=1)
+endif()
+
 find_package(glfw3 CONFIG REQUIRED)
 find_package(glad CONFIG REQUIRED)
 
@@ -41,9 +45,6 @@ add_executable(ExploreApp
 target_include_directories(ExploreApp PRIVATE src third_party)
 target_link_libraries(ExploreApp PRIVATE glfw glad::glad)
 
-# The one assets folder is the one in the source tree. Nothing is copied
-# anywhere, so editing a shader, an .entity or a .level and restarting picks the
-# change up with no build in between.
 target_compile_definitions(ExploreApp PRIVATE CL_ASSET_ROOT="${CMAKE_SOURCE_DIR}/assets")
 
 add_custom_command(TARGET ExploreApp POST_BUILD

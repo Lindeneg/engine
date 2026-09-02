@@ -167,7 +167,8 @@ int main() {
 #if CL_MEM_STATS
     memory::log_stats(&perm, "perm");
     memory::log_stats(&scratch, "scratch");
-    memory::log_stats(asset::scope_arena(assets, asset::SCOPE_PERSISTENT), "assets");
+    memory::log_stats(asset::scope_arena(assets, asset::SCOPE_PERSISTENT), "assets-persistent");
+    memory::log_stats(asset::scope_arena(assets, asset::SCOPE_TRANSIENT), "assets-transient");
 #endif
 
     render::shutdown();

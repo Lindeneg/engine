@@ -242,12 +242,13 @@ static inline Mat3 mat3_normal_matrix(Mat4 src) {
         return u; // degenerate (zero scale); the unmodified basis beats NaNs
 
     // stored column-major, so column 0 is (c00, c10, c20) -- listing the
-    // cofactors row-wise here would silently store the inverse instead
-    f32 inv = 1.0f / det;
+    // cofactors row-wise here would silently store the inverse instead.
+    // no det division: the cofactor matrix is the normal matrix up to scale,
+    // and the shader normalizes anyway
     return Mat3{
-        c00 * inv, c10 * inv, c20 * inv, //
-        c01 * inv, c11 * inv, c21 * inv, //
-        c02 * inv, c12 * inv, c22 * inv, //
+        c00, c10, c20, //
+        c01, c11, c21, //
+        c02, c12, c22, //
     };
 }
 
