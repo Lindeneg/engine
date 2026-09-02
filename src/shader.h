@@ -7,40 +7,25 @@
 #include "result.h"
 #include "strmap.h"
 
-// GPU programs. Kept out of the asset manager on purpose: asset:: never calls
-// OpenGL, and a linked program has no meaningful CPU-side payload.
-//
-// Which shaders exist is data. shaders.cfg names the sources, the features each
-// one compiles with, and which one a material gets by default -- so adding or
-// repointing a shader is an edit-time action, not a rebuild. What the engine
-// defines is the *meaning* of a feature, because each is backed by C++ that has
-// to agree with it: SKINNED needs the joint palette bound and the skinned
-// vertex layout, ALPHA_MASK needs the cutoff uniform. The editor picks which
-// features a shader claims, from the list the engine publishes here.
-//
-// There is no fallback program. A shader that will not build is a broken
-// deployment, not a runtime condition, so init fails and the caller aborts.
-// Content can fall back at runtime; infrastructure cannot.
+// GPU programs, kept out of asset:: since it never calls GL. Which shaders exist
+// is data: shaders.cfg names the sources, the features each claims, and the
+// default. The engine defines only what a feature *means*, since each is backed
+// by C++ (SKINNED binds the palette, ALPHA_MASK the cutoff). There is no
+// fallback program: a shader that will not build is a broken deployment.
 
 #define SHADER_NAME_CAP 32
 #define SHADER_MAX_COUNT 32
 
-// Must match MAX_JOINTS in the shader, which is generated from this into the
-// preamble -- so the palette size has exactly one definition instead of a
-// number repeated in a .vert where it can silently drift.
+// generated into the GLSL preamble as MAX_JOINTS, so the palette size has one definition
 #define SHADER_MAX_JOINTS 128
 
-// std140 binding points, assigned at link for every program that declares the
-// block. Each buffer is bound once and never rebound per draw.
+// std140 binding points; each buffer is bound once, never per draw
 #define SHADER_FRAME_BINDING 0
 #define SHADER_JOINT_BINDING 1
 
 namespace shader {
 
-// One source pair covers every combination of these: the loader injects them as
-// #define lines ahead of the source, so a new feature is an #ifdef rather than
-// another file. Variants are compiled eagerly and their count doubles per bit,
-// so this list stays short and every entry is backed by engine code.
+// injected as #define lines ahead of the source; variants double per bit, so this stays short
 enum Feature {
     FEATURE_NONE = 0,
     FEATURE_SKINNED = 1u << 0,    // vertex carries JOINTS_0/WEIGHTS_0; skin via the palette
@@ -50,10 +35,7 @@ enum Feature {
 #define SHADER_FEATURE_BITS 2
 #define SHADER_VARIANT_COUNT (1u << SHADER_FEATURE_BITS)
 
-// Uniforms the engine sets itself on every draw. They resolve once at link into
-// a flat array, so the draw loop never hashes a string. Everything else goes
-// through uniform_loc by name: adding a uniform is a shader edit, not a C++
-// struct edit.
+// uniforms the engine sets every draw, resolved once at link; everything else goes through uniform_loc
 enum Builtin {
     BUILTIN_MODEL,        // mat4  u_model
     BUILTIN_NORMAL_MAT,   // mat3  u_normal_mat
@@ -62,10 +44,7 @@ enum Builtin {
     BUILTIN_COUNT,
 };
 
-// Per-frame constants, std140. The GLSL side lives in assets/shaders/common.glsl
-// and is #included by every stage; these two are siblings and change together.
-// Laid out so std140 needs no explicit padding: mat4 is four vec4s, vec4 is
-// 16-byte aligned.
+// std140 per-frame constants; the GLSL side is assets/shaders/common.glsl and changes with this
 struct FrameData {
     linalg::Mat4 view_proj;
     linalg::Vec4 camera_pos;   // xyz; w unused
@@ -85,8 +64,7 @@ struct Program {
 
 RESULT_TYPE(Handle, HandleResult);
 
-// One shader block of the manifest, checked but not built. Strings point into
-// the document. Exposed so the manifest rules are testable without a context.
+// one manifest block, unbuilt; exposed so the manifest rules are testable without a context
 struct Decl {
     const char *name;
     const char *vert;
@@ -98,37 +76,30 @@ struct Decl {
 result::Error parse_manifest(config::Doc *doc, Decl *out, u32 cap, u32 *out_count,
                              const char **out_default);
 
-// Reads shaders.cfg and builds every declared variant. Any failure is returned:
-// the caller is expected to abort on it. Requires a current GL context.
+// Reads shaders.cfg and builds every declared variant; any failure is fatal to
+// the caller. Needs a current GL context.
 result::Error init(memory::Arena *a, memory::Arena *scratch, const char *root);
 void shutdown();
 
-// A name that is not declared is a content error -- a material referring to a
-// shader nobody defined -- so this reports rather than substituting.
+// An undeclared name is a content error, reported rather than substituted.
 HandleResult find(const char *name);
 
-// The shader a material gets when nothing has assigned it one, named by the
-// default_shader key in shaders.cfg so the editor can repoint it.
+// The default_shader of shaders.cfg.
 Handle default_handle();
 
-// Never NULL. Features outside what the shader claims are masked off, and init
-// guaranteed every claimed combination built, so an unresolvable program here
-// is a bug rather than a condition -- it asserts.
+// Never NULL; features the shader does not claim are masked off. An
+// unresolvable program is a bug and asserts.
 Program *program(Handle h, u32 features);
 
 u32 supported_features(Handle h);
 
-// Compact, dense identifier for a resolved variant -- not a GL name. The draw
-// queue packs this into a sort key, where small and dense is what matters and a
-// driver-assigned program name is neither.
+// Small, dense id for a variant, for the draw queue's sort key; not a GL name.
 u32 program_id(Handle h, u32 features);
 
-// Escape hatch for uniforms the engine does not know about. -1 when absent,
-// which every glUniform* call accepts as a no-op.
+// -1 when absent, which glUniform* accepts as a no-op.
 i32 uniform_loc(Program *p, const char *name);
 
-// Enumeration, so an editor populates a shader picker and a feature checklist
-// from the engine instead of a hardcoded copy of this list.
+// Enumeration, for an editor's shader picker and feature checklist.
 u32 count();
 const char *name(Handle h);
 u32 feature_from_name(const char *name); // FEATURE_NONE when unknown

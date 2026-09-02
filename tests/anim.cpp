@@ -117,9 +117,8 @@ static void time_wraps_on_duration(memory::Arena *a) {
     CHECK(vec3_near(x_axis_of(a, &s, &c, 1.5f), x_axis_of(a, &s, &c, 0.5f)));
     CHECK(vec3_near(x_axis_of(a, &s, &c, 1.0f), x_axis_of(a, &s, &c, 0.0f)));
 
-    // negative time wraps forward: -0.25 is 0.75. Compared against the
-    // positive sample rather than an angle, because nlerp is not constant
-    // velocity and only the midpoint lands on an exact angle.
+    // negative time wraps forward: -0.25 is 0.75. Compared against the positive
+    // sample, since nlerp is not constant velocity.
     CHECK(vec3_near(x_axis_of(a, &s, &c, -0.25f), x_axis_of(a, &s, &c, 0.75f)));
     CHECK(!vec3_near(x_axis_of(a, &s, &c, 0.75f), x_axis_of(a, &s, &c, 0.25f)));
 }
@@ -134,8 +133,7 @@ static void rotation_keys_take_the_short_path(memory::Arena *a) {
     CHECK(vec3_near(x_axis_of(a, &s, &c, 0.5f), linalg::Vec3{H, H, 0.0f}));
 }
 
-// the retargeting rule: a clip authored for another rig carries that rig's
-// bone lengths in its translations, and rotation_only keeps ours
+// rotation_only keeps our bone lengths against a clip carrying another rig's
 static void rotation_only_keeps_the_skeletons_bones(memory::Arena *a) {
     asset::Skeleton s = skeleton(a, 1);
     s.joints[0].bind_t = linalg::Vec3{0.0f, 1.0f, 0.0f};
@@ -155,8 +153,7 @@ static void rotation_only_keeps_the_skeletons_bones(memory::Arena *a) {
     CHECK(vec3_near(linalg::mat4_translation(global[0]), linalg::Vec3{0.0f, 1.0f, 0.0f}));
 }
 
-// glTF does not order joints parent-first; our soldier lists Spine2 before
-// Spine1
+// glTF does not order joints parent-first; our soldier lists Spine2 before Spine1
 static void parents_resolve_in_any_order(memory::Arena *a) {
     asset::Skeleton s = skeleton(a, 2);
     s.joints[0].parent = 1; // the child comes first

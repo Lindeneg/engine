@@ -14,8 +14,7 @@ static void single_segment_gets_no_separator(memory::Arena *a) {
     CHECK(strcmp(FPATH(a, "assets/already/joined"), "assets/already/joined") == 0);
 }
 
-// documents the contract rather than endorsing it: segments are pasted verbatim,
-// so an empty or separator-bearing segment shows up in the output as-is
+// segments are pasted verbatim; an empty or separator-bearing one shows up as-is
 static void does_not_normalize(memory::Arena *a) {
     CHECK(strcmp(FPATH(a, "", "b"), "/b") == 0);
     CHECK(strcmp(FPATH(a, "a", ""), "a/") == 0);
@@ -28,8 +27,7 @@ static void result_is_nul_terminated(memory::Arena *a) {
     CHECK(p[7] == 0);
 }
 
-// how sidecar files are addressed, so getting it wrong silently means an
-// override file that is never found
+// how sidecar files are addressed
 static void swaps_the_extension(memory::Arena *a) {
     CHECK(strcmp(path::swap_ext(a, "characters/soldier.glb", ".mat.cfg"),
                  "characters/soldier.mat.cfg") == 0);

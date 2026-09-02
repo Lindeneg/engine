@@ -34,8 +34,7 @@ void swap(Window *w);
 
 b32 key_down(Window *w, Key k);
 
-// Framebuffer size, not window size: they differ on scaled displays and it is
-// the framebuffer that the GL viewport wants.
+// Framebuffer, not window size: they differ on scaled displays.
 void framebuffer_size(Window *w, i32 *out_w, i32 *out_h);
 
 f64 time();

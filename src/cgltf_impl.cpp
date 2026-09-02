@@ -1,8 +1,6 @@
-// the single translation unit that compiles cgltf; everything else just includes
-// the header for declarations
+// the one translation unit that compiles cgltf
 
-// cgltf uses fopen/strcpy, which MSVC's CRT deprecates. Scoped to this file so
-// our own code keeps the warnings.
+// cgltf uses fopen/strcpy, which MSVC deprecates; scoped to this file
 #define _CRT_SECURE_NO_WARNINGS
 
 #define CGLTF_IMPLEMENTATION

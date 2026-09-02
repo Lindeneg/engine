@@ -9,9 +9,8 @@
 
 namespace render {
 
-// Queue capacities. Overflow drops draws and warns once -- it is a scale
-// problem, not a broken build, and a dropped object is visible while a hard
-// abort in the middle of a frame is not diagnosable.
+// queue capacities; overflow drops draws and warns once, since a dropped object
+// is visible and an abort mid-frame is not diagnosable
 struct Config {
     u32 max_draw_items;    // one per submesh submitted, not per model
     u32 max_objects;       // one per submit_model call
@@ -22,31 +21,24 @@ struct Config {
 // The `render` block of engine.cfg; NULL or missing keys take the defaults.
 Config config_from(config::Node *block);
 
-// Creates the frame and joint uniform buffers and the queue arrays, which are
-// pushed once and refilled per frame rather than re-pushed. shader::init must
-// already have run: the buffers bind to the points programs were linked
-// against. Per-draw state (cull, blend, depth) is deliberately not set here --
-// it comes from each material.
+// Creates the uniform buffers and queue arrays once. shader::init must have
+// run: the buffers bind to the points programs linked against. Per-draw state
+// comes from each material, not from here.
 void init(memory::Arena *a, Config cfg, i32 fb_width, i32 fb_height);
 void shutdown();
 
-// The renderer owns every GPU copy of a mesh in a table indexed by mesh slot,
-// and registers with the manager to be told when a slot goes away. Meshes
-// upload on first submit; upload_model preloads instead, for a level that
-// should not hitch on its first frame.
+// The renderer owns the GPU copy of every mesh, uploaded on first submit, and
+// hears from the manager when a slot dies. upload_model preloads.
 void attach_assets(memory::Arena *a, asset::Manager *m);
 void upload_model(asset::Manager *m, asset::ModelHandle h);
 
 void resize(i32 fb_width, i32 fb_height);
 
-// Uploads the per-frame constants every program reads, empties the queue, and
-// clears. camera_pos is kept for the transparent pass's distance sort.
+// Uploads the frame constants, empties the queue, clears.
 void begin_frame(const shader::FrameData *frame, linalg::Vec4 clear_color);
 
-// Queues one draw per submesh. Issues no GL calls, so submission order carries
-// no meaning -- flush decides the real order. palette is NULL for a static
-// model; when present it is copied, so the caller may reuse its buffer for the
-// next model immediately.
+// One draw per submesh, no GL calls; flush decides the order. palette is NULL
+// for a static model, and copied otherwise, so the caller may reuse it.
 void submit_model(asset::Manager *m, asset::ModelHandle h, linalg::Mat4 model,
                   const linalg::Mat4 *palette, u32 joint_count);
 

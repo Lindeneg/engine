@@ -3,18 +3,11 @@
 #include "common.h"
 #include "memory.h"
 
-// Fixed-capacity slot allocator with generation counters, over caller-owned
-// payload bytes. Extracted from the asset manager because entities and their
-// components need exactly the same thing: a stable u32 handle that stops
-// answering once its slot has been recycled.
-//
-// It carries no lifetime policy of its own. `scope` is a byte the caller
-// assigns meaning to, and the payload is the caller's to fill.
-//
-// Index 0 is reserved and never handed out, which buys two things at once: 0
-// works as the "pool is full" answer from alloc, and handle 0 is never a live
-// entity. The asset manager additionally writes a drawable fallback into slot
-// 0 and substitutes it on a stale lookup; nothing here requires that.
+// Fixed-capacity slot allocator with generation counters over caller-owned
+// payload bytes, shared by assets and entities. No lifetime policy: `scope` is
+// a byte the caller gives meaning to. Index 0 is reserved, so alloc returns 0
+// for "full" and handle 0 is never live. (The asset manager puts a fallback in
+// slot 0; nothing here requires that.)
 
 #define POOL_EPOCH_SHIFT 24
 #define POOL_INDEX_MASK ((1u << POOL_EPOCH_SHIFT) - 1)
@@ -30,9 +23,7 @@ struct Slot {
     b8 used;
     u8 scope;
 
-    // A stale handle is usually dereferenced every frame by whatever still
-    // holds it, so reporting it every time buries the first occurrence under
-    // thousands of copies. One line per slot, per generation.
+    // a stale handle is dereferenced every frame by whoever holds it; warn once per generation
     b8 warned;
 };
 
@@ -43,10 +34,8 @@ struct Pool {
     u64 stride;
     u32 live; // slots in use, not counting the reserved index 0
 
-    // Free indices as a FIFO ring, so alloc is O(1) and a freed slot goes to
-    // the back of the line. LIFO would hand the same slot straight back on
-    // every create/delete cycle, and with an 8-bit epoch that slot's stale
-    // handles would start resolving again after 256 cycles.
+    // FIFO, not LIFO: a freed slot goes to the back, so with an 8-bit epoch its
+    // stale handles do not resolve again after 256 create/delete cycles
     u32 *free_ring;
     u32 free_head;  // next index to hand out
     u32 free_count; // indices waiting in the ring
@@ -78,9 +67,7 @@ void *resolve(Pool *p, u32 handle);
 // returning NULL. Handle 0 substitutes silently, since it means "unset".
 void *resolve_or_zero(Pool *p, u32 handle, const char *what);
 
-// Iteration over live slots. first() returns 0 when the pool is empty, and
-// next() returns 0 at the end. Indices, not pointers, so a caller can hold one
-// across a call that allocates.
+// Live slots; 0 when empty or at the end. Indices, so a caller can hold one across an alloc.
 u32 first(const Pool *p);
 u32 next(const Pool *p, u32 index);
 

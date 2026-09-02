@@ -4,8 +4,7 @@
 
 namespace drawkey {
 
-// Positive floats order the same way as their bit patterns read as integers, so
-// this is an exact, range-free ordering -- no far plane to normalise against.
+// positive floats order like their bit patterns, so this is exact with no far plane to normalize by
 static u32 depth_bits(f32 d) {
     u32 bits;
     memcpy(&bits, &d, sizeof(bits));

@@ -17,8 +17,7 @@
 // glTF's default alphaCutoff, for materials created outside a file
 #define GLTF_DEFAULT_ALPHA_CUTOFF 0.5f
 
-// A skinned vertex whose weights sum below this is treated as unskinned when
-// measuring bounds, rather than collapsed toward the origin
+// weights summing below this measure as unskinned rather than collapsing to the origin
 #define SKIN_WEIGHT_EPSILON 1e-4f
 
 // Starting extents for a bounds walk: anything real is inside them
@@ -72,8 +71,7 @@ struct Manager {
     MeshReleaseFn mesh_release;
     void *mesh_release_user;
 
-    // One of each per scope, keyed by strings living in that scope's arena, so
-    // unloading a scope is a clear() and never a walk.
+    // per scope, keyed by strings in that scope's arena, so unload is a clear()
     strmap::Map by_path[SCOPE_COUNT];      // rel_path -> ModelHandle.v
     strmap::Map clips_by_key[SCOPE_COUNT]; // "<path>@<skeleton>" -> ClipHandle.v
     strmap::Map failed[SCOPE_COUNT];       // rel_path -> result::Error of the first attempt
@@ -105,8 +103,7 @@ static const u32 CUBE_IDX[36] = {
     0, 1, 5, 0, 5, 4, // bottom
 };
 
-// Slot 0 of every pool: a magenta cube, so a missing or stale asset is loud in
-// the world instead of a crash or a silent nothing.
+// slot 0 of every pool: a magenta cube, so a missing asset is loud rather than a crash
 static void build_fallbacks(Manager *m) {
     memory::Arena *a = m->mgr;
 
@@ -230,9 +227,8 @@ static void grow(linalg::Vec3 *lo, linalg::Vec3 *hi, linalg::Vec3 p) {
     hi->z = MAX(hi->z, p.z);
 }
 
-// Walks every vertex once, at load. A skinned mesh is measured with the bind
-// palette applied, because its stored positions are pre-skin: measuring them
-// raw is how a 1.8 m soldier reads as 0.14 m tall.
+// skinned meshes are measured in the bind pose: stored positions are pre-skin,
+// and raw a 1.8 m soldier reads as 0.14 m
 static void compute_bounds(Manager *m, ModelHandle h) {
     Model *model = get(m, h);
 
@@ -294,8 +290,7 @@ void model_bounds(Manager *m, ModelHandle h, linalg::Vec3 *out_min, linalg::Vec3
     linalg::Vec3 lo = model->bounds_min;
     linalg::Vec3 hi = model->bounds_max;
 
-    // All eight corners, not the two extremes: import can rotate, and rotating
-    // min and max alone produces a box that no longer contains the model.
+    // all eight corners: import can rotate, and rotating min/max alone gives a box that misses the model
     linalg::Vec3 out_lo{BOUNDS_EMPTY, BOUNDS_EMPTY, BOUNDS_EMPTY};
     linalg::Vec3 out_hi{-BOUNDS_EMPTY, -BOUNDS_EMPTY, -BOUNDS_EMPTY};
 
@@ -362,7 +357,7 @@ ClipResult create_clip(Manager *m, Scope s) {
 }
 
 linalg::Mat4 import_matrix(ImportOptions opts) {
-    // a zeroed ImportOptions (no sidecar read at all) means as authored
+    // zeroed (no sidecar) means as authored
     f32 scale = opts.scale > 0.0f ? opts.scale : 1.0f;
 
     // -90 degrees about X sends (x, y, z) to (x, z, -y), i.e. Z-up to Y-up
@@ -386,8 +381,7 @@ static void apply_override(Material *mat, config::Node *decl) {
 
     const char *shader_name = config::get(body, "shader", NULL);
     if (shader_name) {
-        // find() already reports an unknown name; keeping the current handle is
-        // the only sane recovery, and it is a content error either way
+        // find() already reported; keep the current handle
         shader::HandleResult h = shader::find(shader_name);
         if (h.err == result::OK)
             mat->shader = h.val;
@@ -409,9 +403,8 @@ static void apply_override(Material *mat, config::Node *decl) {
     mat->alpha_cutoff = config::get_f32(body, "alpha_cutoff", mat->alpha_cutoff);
 }
 
-// The config beside an asset -- characters/soldier.glb -> characters/soldier<ext>
-// -- parsed into scratch. NULL when absent, which is the normal case, or when
-// broken, which load() has logged. The caller owns the temp scope.
+// the config beside an asset (soldier.glb -> soldier<ext>), or NULL when absent
+// or broken; the caller owns the temp scope
 static config::Doc *load_sidecar(Manager *m, const char *rel_path, const char *ext) {
     const char *abs = abs_path(m, path::swap_ext(m->scratch, rel_path, ext));
     if (!file::exists(abs))
@@ -421,8 +414,7 @@ static config::Doc *load_sidecar(Manager *m, const char *rel_path, const char *e
     return doc.err == result::OK ? doc.val : NULL;
 }
 
-// Material overrides from the .mat.cfg sidecar. The .glb is the author's
-// intent; this file is the user's, and the editor's channel into a material.
+// the .glb is the author's intent; the .mat.cfg sidecar is the user's and the editor's
 static void apply_material_sidecar(Manager *m, ModelHandle h, const char *rel_path) {
     memory::ArenaTemp t = memory::temp_begin(m->scratch);
 
@@ -435,9 +427,7 @@ static void apply_material_sidecar(Manager *m, ModelHandle h, const char *rel_pa
     Model *model = get(m, h);
     u32 applied = 0;
 
-    // Reached through the submeshes because that is where materials are
-    // referenced; one shared by several submeshes is written more than once,
-    // which is harmless and cheaper than building a unique set.
+    // via submeshes, where materials are referenced; a shared one is written twice, harmlessly
     for (u32 i = 0; i < model->mesh_count; i++) {
         Mesh *mesh = get(m, model->meshes[i]);
         for (u32 sm = 0; sm < mesh->submesh_count; sm++) {
@@ -508,15 +498,12 @@ ClipResult load_clip(Manager *m, Scope s, const char *rel_path, SkeletonHandle t
 ModelResult load_model_with(Manager *m, Scope s, const char *rel_path, ImportOptions opts) {
     ASSERT(m && rel_path && s < SCOPE_COUNT);
 
-    // dedup is on path only: a second load with different options returns the
-    // first import rather than a second copy
+    // dedup on path only: a second load with other options gets the first import
     u32 *existing = strmap::find(&m->by_path[s], rel_path);
     if (existing)
         return ModelResult{.val = ModelHandle{*existing}};
 
-    // a load that already failed fails again without re-reading the file or
-    // re-logging: the first attempt said why, and five hundred crates
-    // referencing one missing model is one message, not five hundred
+    // a failed load fails again without re-reading or re-logging
     u32 *failed = strmap::find(&m->failed[s], rel_path);
     if (failed)
         return ModelResult{.err = (result::Error)*failed};
@@ -525,8 +512,7 @@ ModelResult load_model_with(Manager *m, Scope s, const char *rel_path, ImportOpt
     ModelResult r = gltf::load_model(m, s, abs_path(m, rel_path), rel_path);
     memory::temp_end(t);
 
-    // either way the key has to outlive its entry, so it lives in the scope
-    // arena and dies with the scope
+    // the key must outlive its entry, so it lives in the scope arena
     memory::Arena *out = scope_arena(m, s);
     if (r.err != result::OK) {
         strmap::insert(&m->failed[s], memory::push_str(out, rel_path), (u32)r.err);
@@ -539,9 +525,8 @@ ModelResult load_model_with(Manager *m, Scope s, const char *rel_path, ImportOpt
     model->import = import_matrix(opts);
     strmap::insert(&m->by_path[s], stored, r.val.v);
 
-    // after the model exists and before anyone can draw it: overrides can move
-    // a material between passes, and bounds are what the camera and the
-    // transparent sort both read
+    // before anyone can draw it: overrides can move a material between passes,
+    // and bounds feed the camera and the transparent sort
     apply_material_sidecar(m, r.val, rel_path);
     compute_bounds(m, r.val);
 
@@ -554,8 +539,7 @@ ClipResult load_clip_with(Manager *m, Scope s, const char *rel_path, SkeletonHan
 
     memory::ArenaTemp t = memory::temp_begin(m->scratch);
 
-    // Keyed on the target as well as the path: the same file bound to two
-    // skeletons is two clips, with different joint indices in each.
+    // keyed on the target too: one file bound to two skeletons is two clips
     const char *key = memory::push_fmt(m->scratch, "%s@%u", rel_path, target.v);
     u32 *existing = strmap::find(&m->clips_by_key[s], key);
     if (existing) {
@@ -597,8 +581,7 @@ void remove(Manager *m, ModelHandle h) {
     if (model->path)
         strmap::remove(&m->by_path[s], model->path);
 
-    // catalog-only: the bytes stay in the scope arena until unload_scope, which
-    // is what makes undo in an editor cheap
+    // catalog-only; the bytes stay until unload_scope
     pool::release(models, idx);
 }
 

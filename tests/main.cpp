@@ -7,8 +7,7 @@ int main() {
     logger::init(NULL);
     logger::set_level(logger::TRACE);
 
-    // reserving is free; the entity suite loads real models into scopes of
-    // its own, and every asset case carves a small manager that never returns
+    // reserving is free, and the asset and entity suites carve managers that never return
     memory::init(MiB(256));
     memory::Arena scratch = memory::create(MiB(16));
 

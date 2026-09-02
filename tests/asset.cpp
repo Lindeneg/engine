@@ -5,9 +5,7 @@
 
 static asset::Config small_config() {
     return asset::Config{
-        // Nothing here reads a file, so the root only has to be non-NULL. The
-        // shader handle is never resolved either: these cases build assets
-        // directly and never reach a draw call.
+        // nothing here reads a file or draws, so root and shader only have to be present
         .root = ".",
         .default_shader = shader::Handle{0},
         .max_models = 8,
@@ -15,8 +13,7 @@ static asset::Config small_config() {
         .max_materials = 8,
         .max_skeletons = 4,
         .max_clips = 4,
-        // small on purpose: init carves these from the global reserve and never
-        // returns them, and every case here builds its own manager
+        // small: init carves these from the global reserve for good, and every case builds a manager
         .scope_bytes = {KiB(256), KiB(256)},
     };
 }
@@ -38,8 +35,7 @@ static void fallbacks_are_drawable(memory::Arena *a) {
     CHECK(mesh->submesh_count == 1);
     CHECK(mesh->vertex_kind == asset::VERTEX_STATIC);
 
-    // every index has to address a real vertex or the fallback crashes the
-    // renderer it exists to protect
+    // every index must address a real vertex
     for (u32 i = 0; i < mesh->index_count; i++)
         CHECK(mesh->indices[i] < mesh->vertex_count);
 
@@ -111,13 +107,11 @@ static void unload_invalidates_only_its_own_scope(memory::Arena *a) {
     CHECK(strcmp(gone->name, "<fallback>") == 0);
 }
 
-// the whole reason handles carry an epoch: a recycled slot must not answer to
-// the handle that used to own it
+// a recycled slot must not answer to the handle that used to own it
 static void recycled_slots_reject_stale_handles(memory::Arena *a) {
     asset::Manager *m = make(a);
 
-    // fill the scope, so that after the unload the first slot comes back
-    // around and gets reused rather than sitting at the back of the free line
+    // fill the scope, so after the unload the first slot comes back around and is reused
     asset::ModelHandle old{MUST(asset::create_model(m, asset::SCOPE_TRANSIENT, "old"))};
     while (asset::create_model(m, asset::SCOPE_TRANSIENT, "filler").err == result::OK)
         ;

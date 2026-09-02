@@ -14,8 +14,7 @@ out vec4 frag_color;
 
 void main() {
 #ifdef ALPHA_MASK
-    // glTF alphaMode MASK. Once base colour textures land this samples the
-    // texture's alpha; for now the material factor is all there is.
+    // glTF alphaMode MASK; samples texture alpha once textures land
     if (u_base_color.a < u_alpha_cutoff)
         discard;
 #endif

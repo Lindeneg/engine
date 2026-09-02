@@ -21,8 +21,7 @@ struct Line {
 
 static b32 is_space(char c) { return c == ' ' || c == '\t'; }
 
-// Splits one line in place: NULs over separators, escapes collapsed inside
-// quotes, the comment kept aside.
+// splits in place: NULs over separators, escapes collapsed, the comment set aside
 static void tokenize(char *line, Line *out) {
     *out = Line{};
     char *p = line;
@@ -99,8 +98,7 @@ DocResult parse(memory::Arena *a, char *text, const char *name) {
     Node **tail_stack[CONFIG_MAX_DEPTH];
     u32 depth = 0;
 
-    // nonzero while inside a rejected block, whose lines are consumed up to
-    // the matching '}' rather than hoisted into the parent
+    // nonzero inside a rejected block, consumed to its matching '}'
     u32 skip_depth = 0;
 
     char *p = text;
@@ -207,7 +205,6 @@ DocResult parse(memory::Arena *a, char *text, const char *name) {
 DocResult load(memory::Arena *a, const char *path) {
     ASSERT(a && path);
 
-    // The text stays in a for the life of the Doc: nodes point into it.
     file::BlobResult blob = file::read(a, path);
     if (blob.err != result::OK)
         return DocResult{.err = blob.err};
@@ -252,8 +249,7 @@ i32 value_i32(Node *n, u32 index, i32 fallback) {
     if (!v)
         return fallback;
 
-    // strtoll rather than strtol: long is 32-bit on Windows and 64-bit on
-    // Linux, so the overflow behaviour would otherwise differ per platform
+    // strtoll: long is 32-bit on Windows and 64-bit on Linux
     char *end = NULL;
     long long out = strtoll(v, &end, 10);
     if (end == v || *end != 0 || out < INT32_MIN || out > INT32_MAX) {
@@ -360,8 +356,7 @@ void unlink(Doc *doc, Node *n) {
     n->next_sibling = NULL;
 }
 
-// Appends into one contiguous arena run: nothing else may push into the
-// arena between the first put and the terminating NUL.
+// one contiguous arena run; nothing else may push between the first put and the NUL
 struct Out {
     memory::Arena *a;
 };

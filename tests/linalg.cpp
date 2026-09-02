@@ -30,8 +30,7 @@ static void euler_is_degrees_about_xyz(memory::Arena *) {
     CHECK(vec3_near(rotate(linalg::quat_from_euler(linalg::Vec3{0, 0, 90}), x), y));
 }
 
-// the order is X, then Y, then Z -- swapping it is invisible until something
-// points the wrong way, and then it looks like a broken asset
+// the order is X, then Y, then Z
 static void euler_applies_x_then_y_then_z(memory::Arena *) {
     linalg::Quat q = linalg::quat_from_euler(linalg::Vec3{90, 90, 0});
 
@@ -55,10 +54,7 @@ static void euler_produces_unit_quaternions(memory::Arena *) {
     }
 }
 
-// Why the config layer normalizes. mat4_from_quat simplifies using
-// w^2+x^2+y^2+z^2 == 1, so a non-unit quaternion is not a scaled rotation --
-// it is a non-orthogonal matrix that stretches each axis differently and
-// shears. This is what "rotation 2 0 0 1" did to a pistol.
+// why the config layer normalizes: a non-unit quaternion is a sheared matrix, not a scaled rotation
 static void non_unit_quaternions_are_not_rotations(memory::Arena *) {
     linalg::Quat bad{2.0f, 0.0f, 0.0f, 1.0f};
 
@@ -80,8 +76,7 @@ static void non_unit_quaternions_are_not_rotations(memory::Arena *) {
     CHECK(NEAR(linalg::vec3_length(rotate(good, linalg::Vec3{0, 0, 1})), 1.0f));
 }
 
-// mat3(model) is only correct under uniform scale; the whole reason the
-// renderer carries a separate normal matrix
+// mat3(model) is only correct under uniform scale
 static void normal_matrix_survives_non_uniform_scale(memory::Arena *) {
     linalg::Mat4 m = linalg::mat4_from_trs(linalg::Vec3{0, 0, 0}, linalg::quat_identity(),
                                            linalg::Vec3{1.0f, 4.0f, 1.0f});
@@ -100,8 +95,7 @@ static void normal_matrix_survives_non_uniform_scale(memory::Arena *) {
     CHECK(degenerate.m[4] == 0.0f);
 }
 
-// cofactor(M) = det(M) * inverse-transpose. Without the sign of det, a model
-// mirrored in one axis -- a left-hand weapon -- lights from the inside.
+// without the sign of det, a mirrored model lights from the inside
 static void normal_matrix_survives_mirrored_scale(memory::Arena *) {
     linalg::Mat4 m = linalg::mat4_from_trs(linalg::Vec3{0, 0, 0}, linalg::quat_identity(),
                                            linalg::Vec3{-1.0f, 1.0f, 1.0f});
@@ -114,8 +108,7 @@ static void normal_matrix_survives_mirrored_scale(memory::Arena *) {
     CHECK(NEAR(n.m[8], 1.0f));
 }
 
-// A camera pitched straight up or down is gameplay, not a bug: forward
-// parallel to up must produce a rotation, not an assert.
+// forward parallel to up (a camera pitched straight up) must produce a rotation, not an assert
 static void look_along_up_does_not_degenerate(memory::Arena *) {
     linalg::Vec3 up{0, 1, 0};
     linalg::Vec3 fwd{0, 0, -1}; // what -Z of a rotated frame is

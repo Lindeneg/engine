@@ -134,8 +134,7 @@ static void typed_reads_fall_back(memory::Arena *a) {
     CHECK(strcmp(config::value(NULL, 0, "fallback"), "fallback") == 0);
 }
 
-// a file a newer editor wrote must still parse: unknown keys are skipped, not
-// rejected, or an engine update becomes a hard dependency on a file update
+// a file a newer editor wrote must still parse: unknown keys are skipped, not rejected
 static void unknown_keys_are_ignored(memory::Arena *a) {
     config::Doc *d = MUST(config::parse(a, text(a, "shader mesh {\n"
                                                   "    vert mesh.vert\n"
@@ -173,8 +172,7 @@ static void malformed_input_survives_and_is_counted(memory::Arena *a) {
     CHECK(test::unmute() == 4);
 }
 
-// a rejected block's body must be skipped, not hoisted: otherwise its '}' closes
-// the parent and everything after lands one level up
+// a rejected block's body is skipped, not hoisted, or its '}' would close the parent
 static void rejected_blocks_are_skipped_whole(memory::Arena *a) {
     test::mute();
     config::Doc *d = MUST(config::parse(a, text(a, "outer {\n"
@@ -248,8 +246,7 @@ static void nodes_know_their_line_and_parent(memory::Arena *a) {
     CHECK(leaf->parent == inner);
 }
 
-// what the editor relies on: everything a person wrote comes back out, in
-// canonical form, and a second pass changes nothing
+// everything a person wrote comes back out in canonical form, and a second pass changes nothing
 static void round_trip_is_stable(memory::Arena *a) {
     const char *src = "# top comment\n"
                       "\n"

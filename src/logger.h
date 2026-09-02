@@ -15,8 +15,7 @@ Level level();
 // "trace" .. "fatal", as engine.cfg spells them. False leaves out untouched.
 b32 level_from_name(const char *name, Level *out);
 
-// Messages seen at this level since startup, counted before level filtering.
-// Tests read it to assert that a path warned.
+// Messages at this level since startup, counted before filtering; tests assert on it.
 u32 count(Level level);
 
 void write(Level level, const char *file, i32 line, const char *fmt, ...);
@@ -32,8 +31,7 @@ void lassert(b32 fatal, const char *file, i32 line, const char *fmt, ...);
 #define LOG_ERR(...) logger::write(logger::ERR, __FILE__, __LINE__, __VA_ARGS__)
 #define LOG_FATAL(...) logger::write(logger::FATAL, __FILE__, __LINE__, __VA_ARGS__)
 
-// Once per call site for the life of the process. For anything on a per-frame
-// or per-object path, where the first occurrence is the only useful one.
+// once per call site; for per-frame and per-object paths
 #define LOG_WARN_ONCE(...)                                                                         \
     do {                                                                                           \
         static b8 warned_once_;                                                                    \

@@ -5,12 +5,10 @@
 
 #include "common.h"
 
-// The one module that talks to the OS. Nothing else includes <windows.h> or
-// POSIX headers, or sees the macros they leak (near, far, min, max).
+// The one module that talks to the OS; nothing else sees <windows.h> or the macros it leaks.
 namespace platform {
 
-// Zero-initialized is a valid unlocked mutex on every supported platform, so a
-// static one needs no init call.
+// zero-initialized is a valid unlocked mutex on every supported platform
 struct Mutex {
     u64 storage[8];
 };

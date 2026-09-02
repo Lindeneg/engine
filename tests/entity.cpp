@@ -3,8 +3,7 @@
 #include "entity.h"
 #include "suites.h"
 
-// One manager for the whole suite: it carves scope arenas from the global
-// reserve that never come back, and the real soldier needs room.
+// one manager for the suite: scope arenas never return to the reserve, and the real soldier needs room
 static asset::Manager *shared_assets(memory::Arena *scratch) {
     static asset::Manager *m = NULL;
     if (m)
@@ -181,14 +180,12 @@ static void quaternion_rotation_is_written_as_four_values(memory::Arena *a) {
     const char *text = written(a, w, h, "entity", false);
     CHECK(strstr(text, "rotation 0 0.707107 0 0.707107") != NULL);
 
-    // and the value it read back is unit length, so the hand-off is exact
-    // enough for a person to correct by hand later
+    // and what it read back is unit length
     entity::set_euler(&entity::get(w, h)->local, linalg::Vec3{0.0f, 0.0f, 0.0f});
     CHECK(strstr(written(a, w, h, "entity", false), "rotation 0 0 0") != NULL);
 }
 
-// templates/camera3d.entity is a real file; a reference to it keeps its
-// values except where the block restates them
+// a reference to a real file keeps its values except where the block restates them
 static void reference_applies_overrides(memory::Arena *a) {
     entity::World *w = make_world(a);
     asset::Manager *m = shared_assets(a);
@@ -214,8 +211,7 @@ static void reference_applies_overrides(memory::Arena *a) {
     entity::Camera *c = entity::camera(w, h);
     CHECK(c->fov_y == 90.0f && c->z_near == 0.05f && c->z_far == 500.0f);
 
-    // written as a reference: the definition, the transform, and only the
-    // component that was overridden
+    // written as a reference: definition, transform, and only the overridden component
     const char *expected = "instance cam {\n"
                            "    definition templates/camera3d\n"
                            "    transform {\n"
@@ -233,9 +229,8 @@ static void reference_applies_overrides(memory::Arena *a) {
     CHECK(strcmp(written(a, w, h, "instance", false), expected) == 0);
 }
 
-// soldier.entity is the real thing: a model, a clip, and a pistol child
-// attached to a joint. The instance write must not restate any of it; the
-// expanded write must restate all of it.
+// soldier.entity is real: model, clip, and a pistol attached to a joint. The
+// instance write restates none of it; the expanded write restates all of it.
 static void definition_children_are_owned(memory::Arena *a) {
     entity::World *w = make_world(a);
     asset::Manager *m = shared_assets(a);
@@ -297,8 +292,7 @@ static void missing_model_falls_back_and_is_cached(memory::Arena *a) {
     CHECK(test::unmute() >= 1);
     CHECK(entity::renderable(w, h1)->model.v == 0);
 
-    // the second reference hits the failure cache: no file read, no error
-    // from the loader, only OR_ELSE saying it fell back
+    // the second reference hits the failure cache: only OR_ELSE's warning, nothing from the loader
     test::mute();
     entity::spawn_from_config(w, m, block(a, text, "entity"), entity::NONE);
     CHECK(test::unmute() == 1);

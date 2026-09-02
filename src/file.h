@@ -18,7 +18,6 @@ BlobResult read(memory::Arena *a, const char *path);
 // Replaces the file wholesale. Logs on failure, like read.
 result::Error write(const char *path, const void *data, u64 size);
 
-// For optional files, where absence is normal and read()'s error log would be
-// noise -- a sidecar config that most assets will not have, say.
+// For optional files, where read()'s error log would be noise.
 b32 exists(const char *path);
 }; // namespace file

@@ -2,10 +2,8 @@
 
 #include "common.h"
 
-// Graphics vocabulary shared by the asset layer and the renderer. No GL here,
-// deliberately: asset:: must stay free of it, and asset.h cannot include
-// render.h without a cycle. These are values a material carries and a draw
-// applies -- the translation to GL calls happens once, in render.cpp.
+// Graphics vocabulary a material carries and a draw applies; GL-free so asset::
+// can hold it. render.cpp translates to GL once.
 
 namespace gfx {
 
@@ -19,21 +17,18 @@ struct RenderState {
     b8 depth_write;
 };
 
-// The default a material starts from. Not the zeroed struct: zeroed leaves
-// depth_test and depth_write false, which is silently wrong everywhere.
+// not the zeroed struct: that disables depth test and write
 inline RenderState state_default() {
     return RenderState{CULL_BACK, BLEND_NONE, true, true};
 }
 
-// Packed into 6 bits for the draw queue's sort key. Grouping by state is what
-// stops a flush from toggling GL state between adjacent draws.
+// 6 bits for the draw queue's sort key
 inline u32 state_key(RenderState s) {
     return ((u32)s.cull << 4) | ((u32)s.blend << 2) | ((u32)(s.depth_test ? 1 : 0) << 1) |
            (u32)(s.depth_write ? 1 : 0);
 }
 
-// Name tables. A material config reads "cull back", and an editor offers the
-// list from here rather than keeping a second copy of it.
+// name tables for config files and the editor
 const char *cull_name(CullMode m);
 const char *blend_name(BlendMode m);
 b32 cull_from_name(const char *s, CullMode *out);

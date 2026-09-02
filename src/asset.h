@@ -12,10 +12,8 @@
 
 #define ASSET_NAME_CAP 64
 
-// Every handle is the same shape on purpose. They stay distinct types so a mesh
-// handle cannot be passed where a material handle belongs -- both are opaque
-// u32s, so the mix-up is otherwise invisible -- and so get() can be one
-// overloaded name instead of five.
+// distinct types over the same u32, so a mesh handle cannot be passed as a
+// material handle and get() overloads on them
 #define ASSET_HANDLE(Name)                                                                         \
     struct Name {                                                                                  \
         u32 v;                                                                                     \
@@ -23,10 +21,8 @@
 
 namespace asset {
 
-// Packed (epoch << 24) | index, from pool::. Handle 0 is the fallback asset
-// here, never "invalid": zeroed memory means "missing", and get() always
-// returns something drawable. Entities use the same encoding but leave slot 0
-// empty, because a fallback entity would be meaningless.
+// (epoch << 24) | index, from pool::. Handle 0 is the fallback asset, never
+// "invalid": zeroed memory reads as missing and get() always returns something drawable.
 inline u32 handle_index(u32 v) { return pool::handle_index(v); }
 inline u8 handle_epoch(u32 v) { return pool::handle_epoch(v); }
 
@@ -42,8 +38,7 @@ constexpr MaterialHandle MATERIAL_FALLBACK = {0};
 constexpr SkeletonHandle SKELETON_FALLBACK = {0};
 constexpr ClipHandle CLIP_FALLBACK = {0};
 
-// Arenas cannot free individual allocations, so lifetime is per-scope: unload
-// resets one arena and invalidates every handle that pointed into it.
+// lifetime is per scope: unload_scope resets one arena and invalidates every handle into it
 enum Scope { SCOPE_PERSISTENT, SCOPE_TRANSIENT, SCOPE_COUNT };
 
 struct VertexStatic {
@@ -62,8 +57,7 @@ struct VertexSkinned {
 
 enum VertexKind { VERTEX_STATIC, VERTEX_SKINNED };
 
-// Union of pointers, not of elements: a union of the structs themselves would
-// size every element at the larger one and save nothing.
+// pointers, not elements: a union of the structs would size every element at the larger
 union VertexArray {
     VertexStatic *statics;
     VertexSkinned *skinned;
@@ -73,9 +67,7 @@ inline u64 vertex_stride(VertexKind k) {
     return k == VERTEX_SKINNED ? sizeof(VertexSkinned) : sizeof(VertexStatic);
 }
 
-// A primitive: a range of the parent mesh's index buffer with one material.
-// pistol.glb shares one vertex buffer across 47 primitives, so vertices are
-// deduplicated by source accessor and only the index ranges differ.
+// one primitive: an index range of the parent mesh with one material
 struct Submesh {
     u32 index_offset;
     u32 index_count;
@@ -92,23 +84,19 @@ struct Mesh {
     u32 submesh_count;
 };
 
-// Physics raycasts against positions regardless of skinning, and reading through
-// the union directly at every call site would be both noisy and type-punning.
+// position regardless of skinning, for raycasts
 inline linalg::Vec3 vertex_pos(const Mesh *m, u32 i) {
     return m->vertex_kind == VERTEX_SKINNED ? m->vertices.skinned[i].pos
                                             : m->vertices.statics[i].pos;
 }
 
-// glTF alphaMode. Drives which shader variant a submesh draws with, so it is
-// stored rather than collapsed into the base colour at load.
+// glTF alphaMode; picks the shader variant, so it is kept rather than baked into the colour
 enum AlphaMode { ALPHA_OPAQUE, ALPHA_MASK, ALPHA_BLEND };
 
 struct Material {
     char name[ASSET_NAME_CAP];
 
-    // Which program draws this. Assigned from the manager's configured default
-    // at load; the point of it living here is that an editor reassigns it per
-    // material without the renderer inferring anything from geometry.
+    // the manager's default at load; a sidecar or an editor reassigns it per material
     shader::Handle shader;
 
     linalg::Vec4 base_color;
@@ -117,13 +105,12 @@ struct Material {
     AlphaMode alpha_mode;
     f32 alpha_cutoff;
 
-    // How to draw it, not what it looks like. Defaults come from the glTF
-    // (doubleSided, alphaMode) and a sidecar .mat.cfg overrides them.
+    // defaults from the glTF (doubleSided, alphaMode); the .mat.cfg sidecar overrides
     gfx::RenderState state;
 };
 
 struct Joint {
-    char name[ASSET_NAME_CAP]; // canonicalized via gltf::canonical_name
+    char name[ASSET_NAME_CAP]; // canonical, see str::canonical_name
     i32 parent;                // -1 at the root
     linalg::Mat4 inverse_bind;
     linalg::Vec3 bind_t;
@@ -136,11 +123,8 @@ struct Skeleton {
     u32 joint_count;
     strmap::Map by_name; // canonical joint name -> index into joints
 
-    // World transform of the joint hierarchy's parent node. The skin's joint
-    // list often starts below the armature, but the inverse bind matrices were
-    // baked against the full chain, so parentless joints need this on the left.
-    // It is kept separate rather than folded into a root joint's TRS because
-    // animation overwrites that TRS every frame.
+    // transform of the node above the topmost joints; the inverse binds were
+    // baked against it, so parentless joints sit under it
     linalg::Mat4 root;
 };
 
@@ -148,8 +132,8 @@ enum Path { PATH_TRANSLATION, PATH_ROTATION, PATH_SCALE };
 enum Interp { INTERP_LINEAR, INTERP_STEP };
 
 struct Channel {
-    char target[ASSET_NAME_CAP]; // canonical node name, kept so a clip can rebind
-    i32 joint;                   // resolved against one skeleton; -1 when unmatched
+    char target[ASSET_NAME_CAP]; // canonical node name
+    i32 joint;                   // -1 when unmatched
     Path path;
     Interp interp;
     f32 *times;
@@ -159,30 +143,23 @@ struct Channel {
 
 struct Clip {
     char name[ASSET_NAME_CAP];
-    const char *key; // "<path>@<skeleton>" in the scope arena; the dedup map keys on it
+    const char *key; // "<path>@<skeleton>" in the scope arena; the dedup key
     f32 duration;
     Channel *channels;
     u32 channel_count;
-    u32 bound_count; // channels that matched a joint; 0 means the bind failed
-
-    // Set from ClipOptions, never inferred. See the note there.
-    b32 rotation_only;
+    u32 bound_count;   // channels that matched a joint; 0 means the bind failed
+    b32 rotation_only; // from ClipOptions, never inferred
 };
 
-// Per-clip import settings. Whether a clip is a retarget is the author's call:
-// it depends on which rig the animation was made for, which is not recoverable
-// from the file. The loader measures and warns when the setting looks wrong,
-// but it does not decide.
+// Per-clip import settings, the author's call: which rig a clip was made for is
+// not in the file. The loader warns when a setting looks wrong; it never decides.
 struct ClipOptions {
-    // Transfer rotations only. Translation and scale channels encode the source
-    // rig's bone lengths in the source file's units; applied to a different
-    // skeleton they tear it apart. Costs root motion, which a locomotion clip
-    // has to get back by transferring root translation scaled by hip height.
+    // rotations only: translation/scale channels carry the source rig's bone
+    // lengths and tear a different skeleton apart. Costs root motion.
     b32 rotation_only;
 };
 
-// Per-asset import settings. A hand-run FBX->glB pipeline produces files in
-// whatever units and up-axis the source tool used, and no two exporters agree.
+// Per-asset import settings; hand-converted files disagree on units and up-axis.
 struct ImportOptions {
     f32 scale; // multiplier on the authored units; the sidecar default is 1
     b32 z_up;  // rotate -90 about X to bring a Z-up asset into our Y-up world
@@ -190,33 +167,26 @@ struct ImportOptions {
 
 struct Model {
     char name[ASSET_NAME_CAP];
-    const char *path;   // lives in the scope arena; the dedup map keys on it
+    const char *path;   // in the scope arena; the dedup key
     MeshHandle *meshes; // array, not a range: ranges would forbid interleaved loads
     u32 mesh_count;
     SkeletonHandle skeleton; // SKELETON_FALLBACK (identity) for static models
 
-    // Applied on top of the model matrix rather than baked, so skinning stays
-    // in native space and the joint palette needs no adjustment.
+    // applied on top of the model matrix, not baked, so skinning stays in native space
     linalg::Mat4 import;
 
-    // Local-space AABB, computed once at load, pre-import. For a skinned model
-    // these are bind-pose bounds: raw vertex positions are pre-skin and are not
-    // the model's shape. Cached because the transparent pass needs a center per
-    // object per frame and that cannot be a walk over every vertex.
+    // local-space AABB, pre-import, measured at load in the bind pose (raw
+    // skinned positions are pre-skin and not the model's shape)
     linalg::Vec3 bounds_min;
     linalg::Vec3 bounds_max;
 };
 
 struct Config {
-    // The assets folder every path hangs off -- the one in the source tree,
-    // baked in by CMake as CL_ASSET_ROOT. Passed in rather than resolved here:
-    // the shader system needs the same value before a manager exists, so one of
-    // them would otherwise own it for both.
+    // the assets folder, baked in by CMake as CL_ASSET_ROOT; passed in because
+    // shader:: needs it before a manager exists
     const char *root;
 
-    // What a loaded material binds to. A handle rather than a name so asset::
-    // stays free of the shader registry -- it stores what it was given and
-    // never asks the shader module anything.
+    // what a loaded material binds to; a handle so asset:: never asks the shader module anything
     shader::Handle default_shader;
 
     u32 max_models;
@@ -240,90 +210,66 @@ RESULT_TYPE(MaterialHandle, MaterialResult);
 RESULT_TYPE(SkeletonHandle, SkeletonResult);
 RESULT_TYPE(ClipHandle, ClipResult);
 
-// Resolves the asset root from the executable's own path rather than the
-// working directory, and fills slot 0 of every array with its fallback asset.
+// Fills slot 0 of every pool with its fallback asset.
 ManagerResult init(memory::Arena *mgr_arena, memory::Arena *scratch, Config cfg);
 
-// The arena a scope's payloads live in. Fill a freshly created asset by pushing
-// into this; it dies with unload_scope.
+// Where a scope's payloads live; dies with unload_scope.
 memory::Arena *scope_arena(Manager *m, Scope s);
 
-// Shared parse/staging space. Anything pushed here must be inside a temp scope.
+// Shared parse/staging space; anything pushed here must be inside a temp scope.
 memory::Arena *scratch_arena(Manager *m);
 
-// The directory asset paths hang off, as configured.
 const char *root(Manager *m);
-
-// The shader handle new materials are given, as configured.
 shader::Handle default_shader(Manager *m);
 
-// The cached bounds with the import transform applied, so callers get the units
-// the world actually uses. All eight corners are transformed, not just the two
-// extremes, because import can rotate. Used to frame a camera and to sort
-// transparent draws now, and by physics broadphase later.
+// The bounds with the import transform applied, in world units. All eight
+// corners are transformed, since import can rotate.
 void model_bounds(Manager *m, ModelHandle h, linalg::Vec3 *out_min, linalg::Vec3 *out_max);
 
-// Claim an empty slot. These are what load_model is built from, and they are
-// also the entry point for procedural geometry and for an editor creating an
-// asset from nothing. ERR_EXHAUSTED when the pool is full.
+// Claim an empty slot; the entry point for procedural geometry and for an
+// editor. ERR_EXHAUSTED when the pool is full.
 ModelResult create_model(Manager *m, Scope s, const char *name);
 MeshResult create_mesh(Manager *m, Scope s);
 MaterialResult create_material(Manager *m, Scope s);
 SkeletonResult create_skeleton(Manager *m, Scope s);
 ClipResult create_clip(Manager *m, Scope s);
 
-// Dedups on path within a scope: loading the same file twice into the same
-// scope returns the same handle. Scopes never share, because a handle from a
-// shorter-lived scope would die under a caller that asked for a longer one.
-// A load that failed fails again from a cache, without re-reading the file or
-// re-logging, until the scope is unloaded.
-// Pair with OR_ELSE(..., MODEL_FALLBACK) to keep a missing asset visible in the
-// world instead of fatal; read .err directly when the reason matters.
-//
-// Import settings come from a sidecar beside the asset -- soldier.glb reads
-// soldier.import.cfg -- because they belong to the file, not to whoever loads
-// it. Two entities referencing one model must not each restate its scale.
+// Dedups on path within a scope; scopes never share. A failed load fails again
+// from a cache, without re-reading or re-logging, until the scope unloads.
+// Import settings come from the sidecar beside the asset (soldier.glb reads
+// soldier.import.cfg): they belong to the file, not to whoever loads it.
 ModelResult load_model(Manager *m, Scope s, const char *rel_path);
 
-// The same load with settings supplied directly, for procedural assets and
-// tests. The sidecar form is what the game and the editor use.
+// The same with settings supplied directly, for procedural assets and tests.
 ModelResult load_model_with(Manager *m, Scope s, const char *rel_path, ImportOptions opts);
 
-// Reads rel_path's sidecar, or the defaults when it has none.
+// The sidecar's settings, or the defaults when there is none.
 ImportOptions import_options(Manager *m, const char *rel_path);
 ClipOptions clip_options(Manager *m, const char *rel_path);
 
-// Builds the matrix ImportOptions describes. Exposed so physics and the
-// renderer agree on it rather than each deriving their own.
+// The matrix ImportOptions describes; exposed so physics and the renderer agree on it.
 linalg::Mat4 import_matrix(ImportOptions opts);
 
-// A clip binds to one skeleton at load, matching channels to joints by
-// canonical name. Records the bind rate on the Clip; a rate of 0 warns loudly,
-// since an unbound clip plays silently and animates nothing. Dedups on
-// (path, target skeleton) within a scope, like load_model.
+// Binds channels to target's joints by canonical name. Dedups on (path, target) within a scope.
 ClipResult load_clip(Manager *m, Scope s, const char *rel_path, SkeletonHandle target);
 ClipResult load_clip_with(Manager *m, Scope s, const char *rel_path, SkeletonHandle target,
                           ClipOptions opts);
 
-// Never NULL, and deliberately not a Result: this runs per-object per-frame and
-// a bad handle means a bug elsewhere, not a condition the caller can act on. A
-// stale or out-of-range handle yields the fallback asset and warns.
+// Never NULL and not a Result: this runs per draw, and a stale handle is a bug,
+// so it yields the fallback asset and warns once.
 Model *get(Manager *m, ModelHandle h);
 Mesh *get(Manager *m, MeshHandle h);
 Material *get(Manager *m, MaterialHandle h);
 Skeleton *get(Manager *m, SkeletonHandle h);
 Clip *get(Manager *m, ClipHandle h);
 
-// Catalog-only, for the editor: frees the slot, bumps its epoch and drops the
-// path entry, but leaves the bytes until the scope resets. Makes undo cheap.
+// Catalog-only: frees the slot and drops the path entry; the bytes stay until the scope resets.
 void remove(Manager *m, ModelHandle h);
 
-// Resets the scope's arena and invalidates every handle it issued. Every mesh
-// in the scope is reported through the release hook first.
+// Resets the scope's arena, invalidating its handles; meshes go through the release hook first.
 void unload_scope(Manager *m, Scope s);
 
-// How the renderer learns a mesh is going away, so it can drop the GPU copy it
-// made of it. The manager never calls OpenGL itself; it only says when.
+// How the renderer learns a mesh is going away; the manager never calls GL itself.
 typedef void (*MeshReleaseFn)(void *user, MeshHandle h);
 void on_mesh_release(Manager *m, MeshReleaseFn fn, void *user);
 

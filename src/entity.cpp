@@ -16,7 +16,7 @@
 #define ENTITY_EXT ".entity"
 #define LEVEL_DIR "levels"
 #define LEVEL_EXT ".level"
-#define FILE_EXT_CAP 16 // room for the longest of the extensions above, plus NUL
+#define FILE_EXT_CAP 16 // longest extension above, plus NUL
 
 namespace entity {
 
@@ -41,18 +41,14 @@ Config config_from(config::Node *block) {
     };
 }
 
-// How far from unit length a hand-typed quaternion may be before it is
-// reported. Anything is normalized; this only decides whether to say so.
+// past this a hand-typed quaternion is reported as non-unit; it is normalized either way
 #define UNIT_QUAT_TOLERANCE 1e-3f
 
-// Precision floats are written with. Enough for anything a person types;
-// a runtime-computed value may lose its last bits on a save/load.
+// enough for anything a person types; a computed value may lose its last bits on a round trip
 #define F32_WRITE_FMT "%.6g"
 
 #define FIELD(T, member) (u32)offsetof(T, member)
 
-// Component defaults and field tables. The engine defines what a camera or a
-// light means, so the defaults live here; a file states what differs.
 static const Renderable RENDERABLE_DEFAULTS = {.visible = true};
 static const FieldDesc RENDERABLE_FIELDS[] = {
     {.key = "model", .type = FIELD_STRING, .offset = FIELD(Renderable, model_path), .cap = ENTITY_PATH_CAP},
@@ -121,14 +117,11 @@ struct World {
     pool::Pool entities;
     pool::Pool components[COMPONENT_COUNT];
 
-    // One palette per animator slot, indexed by slot rather than stored on the
-    // component. Fixed at init so nothing allocates while the game runs.
-    linalg::Mat4 *skin;   // slot * SHADER_MAX_JOINTS
-    linalg::Mat4 *global; // joint model-space transforms, for attachments
+    linalg::Mat4 *skin;   // per animator slot, slot * SHADER_MAX_JOINTS; sized once at init
+    linalg::Mat4 *global; // same, joint model-space transforms for attachments
 };
 
-// Every component's first field. add_component writes it through this so it
-// does not need a switch over types it would then have to be kept in step with.
+// every component's first field; add_component writes owner through this instead of a per-type switch
 struct ComponentHeader {
     Handle owner;
 };
@@ -151,9 +144,8 @@ WorldResult init(memory::Arena *a, Config cfg) {
     w->fixed_dt = 1.0f / (cfg.fixed_hz > 0.0f ? cfg.fixed_hz : DEFAULT_FIXED_HZ);
     w->max_fixed_steps = cfg.max_fixed_steps ? cfg.max_fixed_steps : DEFAULT_MAX_FIXED_STEPS;
 
-    // +1 everywhere: a pool reserves index 0, and unlike assets there is no
-    // fallback entity to put in it, so the configured count is the usable one.
-    // Without this, max_cameras = 1 yields a world that cannot hold a camera.
+    // +1: a pool reserves index 0 and there is no fallback entity to fill it,
+    // so the configured count is the usable one
     w->entities = pool::create(a, cfg.max_entities + 1, sizeof(Entity));
 
     u32 caps[COMPONENT_COUNT] = {
@@ -165,8 +157,7 @@ WorldResult init(memory::Arena *a, Config cfg) {
     for (u32 c = 0; c < COMPONENT_COUNT; c++)
         w->components[c] = pool::create(a, caps[c], DESCS[c].size);
 
-    // slot 0 is reserved in every pool and never animates, but sizing for it
-    // keeps the indexing arithmetic free of an off-by-one
+    // sized for the reserved slot 0 too, so a slot indexes the palette directly
     u64 palette_slots = (u64)caps[COMPONENT_ANIMATOR] * SHADER_MAX_JOINTS;
     w->skin = push_array(a, linalg::Mat4, palette_slots);
     w->global = push_array(a, linalg::Mat4, palette_slots);
@@ -210,8 +201,6 @@ Handle spawn(World *w, const char *name) {
     return Handle{pool::make_handle(&w->entities, idx)};
 }
 
-// Unhooks a child from its parent's sibling list. Linear in sibling count,
-// which is what an intrusive list costs and why it needs no allocation.
 static void unlink(World *w, Handle h) {
     Entity *e = get(w, h);
     if (!e || e->parent.v == 0)
@@ -246,8 +235,7 @@ void destroy(World *w, Handle h) {
     if (!e)
         return;
 
-    // children first, and snapshot each next pointer before recursing: the
-    // recursive call unlinks the child and clears it
+    // snapshot next before recursing: destroy unlinks the child and clears it
     for (Handle c = e->first_child; c.v;) {
         Entity *ce = get(w, c);
         Handle nxt = ce ? ce->next_sibling : NONE;
@@ -276,7 +264,6 @@ static asset::SkeletonHandle skeleton_of(World *w, asset::Manager *m, Handle h) 
     return asset::SKELETON_FALLBACK;
 }
 
-// True when h sits somewhere below ancestor in the hierarchy.
 static b32 descends_from(World *w, Handle h, Handle ancestor) {
     for (Entity *e = get(w, h); e && e->parent.v; e = get(w, e->parent))
         if (e->parent.v == ancestor.v)
@@ -293,8 +280,7 @@ void set_parent(World *w, asset::Manager *m, Handle child, Handle parent, const 
         return;
     }
 
-    // Every refusal comes before the unlink, so a rejected reparent leaves the
-    // child exactly where it was rather than orphaned.
+    // every refusal precedes the unlink, so a rejected reparent leaves the child where it was
     Entity *pe = NULL;
     if (parent.v) {
         pe = get(w, parent);
@@ -302,8 +288,7 @@ void set_parent(World *w, asset::Manager *m, Handle child, Handle parent, const 
             LOG_WARN("entity: \"%s\" parented to a dead handle %u", ce->name, parent.v);
             return;
         }
-        // an entity under itself is a loop the update walk never leaves and
-        // the destroy recursion never returns from
+        // a cycle never terminates in resolve_world or destroy
         if (parent.v == child.v || descends_from(w, parent, child)) {
             LOG_WARN("entity: \"%s\" cannot be parented under its own subtree", ce->name);
             return;
@@ -318,9 +303,7 @@ void set_parent(World *w, asset::Manager *m, Handle child, Handle parent, const 
     if (!pe)
         return;
 
-    // Appended, not pushed to the front: sibling order is file order, and a
-    // writer walking first_child/next_sibling has to get it back out the same
-    // way or the file reverses on every save.
+    // appended, not prepended: sibling order is file order and a save must reproduce it
     ce->parent = parent;
     ce->next_sibling = NONE;
     if (!pe->first_child.v) {
@@ -336,13 +319,10 @@ void set_parent(World *w, asset::Manager *m, Handle child, Handle parent, const 
     if (!joint || !joint[0])
         return;
 
-    // Joint names are stored canonicalized, so the name from the file has to
-    // be canonicalized the same way or "mixamorig:RightHand" never matches.
+    // skeletons store joint names canonicalized
     str::canonical_name(ce->attach_joint, ENTITY_NAME_CAP, joint);
 
-    // Resolved once here rather than per frame. A name that does not match is a
-    // content error and stays at -1, which falls back to plain parenting --
-    // visible as a weapon floating at the holder's origin.
+    // resolved once; an unknown name stays -1 and degrades to plain parenting
     asset::Skeleton *skel = asset::get(m, skeleton_of(w, m, parent));
     u32 *found = strmap::find(&skel->by_name, ce->attach_joint);
     if (!found) {
@@ -353,9 +333,6 @@ void set_parent(World *w, asset::Manager *m, Handle child, Handle parent, const 
 
     ce->attach_joint_index = (i32)*found;
 
-    // The joint's transform only exists once something animates the parent.
-    // Without an animator the attachment quietly degrades to plain parenting,
-    // which draws the child at the parent's origin with nothing in the log.
     if (!animator(w, parent))
         LOG_WARN("entity: \"%s\" attaches to joint \"%s\" of \"%s\", which has no animator to "
                  "pose it",
@@ -442,8 +419,7 @@ b32 build_frame(World *w, f32 aspect, shader::FrameData *out) {
                      linalg::mat4_view_from_world(e->world);
     out->camera_pos = linalg::vec4_from(linalg::mat4_translation(e->world), 0.0f);
 
-    // No light is a legitimate state -- a level being built, or one lit only by
-    // ambient. It reads as pure black rather than as the shader failing.
+    // no light is legitimate (a level being built) and reads as black, not as a shader failure
     out->light_dir = linalg::Vec4{0.0f, 1.0f, 0.0f, 0.0f};
     out->light_color = linalg::Vec4{0.0f, 0.0f, 0.0f, 0.0f};
 
@@ -454,10 +430,8 @@ b32 build_frame(World *w, f32 aspect, shader::FrameData *out) {
         if (!l->active || !le)
             continue;
 
-        // A directional light aims along its entity's forward, which is -Z, so
-        // the shader's "toward the light" vector is +Z of the world basis.
-        // a zero-scaled light entity has no forward; straight down is the
-        // least surprising stand-in
+        // forward is -Z, so "toward the light" is the entity's +Z axis; a
+        // zero-scaled entity has no forward and falls back to overhead
         linalg::Vec3 toward = linalg::vec3_normalize_or(linalg::mat4_axis(le->world, 2),
                                                         linalg::Vec3{0.0f, 1.0f, 0.0f});
         out->light_dir = linalg::Vec4{toward.x, toward.y, toward.z, 0.0f};
@@ -517,8 +491,7 @@ static void advance_animator(World *w, asset::Manager *m, memory::Arena *scratch
     anim::sample(scratch, skel, clip, a->time, skin_at(w, slot), global_at(w, slot));
 }
 
-// Parent before child, following the hierarchy rather than pool order: a child
-// must read a world matrix that is already current this frame.
+// recursive from a root, so a child reads a parent already resolved this frame
 static void resolve_world(World *w, asset::Manager *m, Handle h) {
     Entity *e = get(w, h);
     if (!e)
@@ -534,19 +507,14 @@ static void resolve_world(World *w, asset::Manager *m, Handle h) {
         Animator *pa =
             slot ? (Animator *)pool::at(&w->components[COMPONENT_ANIMATOR], slot) : NULL;
 
-        // a skeleton can come from an animator alone, so the parent is not
-        // guaranteed to have a renderable to take an import transform from
+        // the parent may have an animator but no renderable to take an import transform from
         Renderable *pr = renderable(w, e->parent);
 
         if (pa && pr && (u32)e->attach_joint_index < pa->joint_count) {
-            // The joint's model-space transform, not its skinning matrix: the
-            // palette entry carries the inverse bind, which would send the
-            // attachment back into the mesh's pre-skin space.
+            // model-space joint, not the skinning matrix, which carries the inverse bind
             linalg::Mat4 joint = global_at(w, slot)[e->attach_joint_index];
 
-            // The parent's import transform sits between its model space and
-            // the world, so the joint has to pass through it too -- otherwise a
-            // gun on a 0.857-scaled soldier lands 14x out.
+            // the joint is in the parent's native space, so it passes through the parent's import too
             asset::Model *pm = asset::get(m, pr->model);
             e->world = pe->world * pm->import * joint * local;
         } else {
@@ -565,20 +533,15 @@ static void resolve_world(World *w, asset::Manager *m, Handle h) {
     }
 }
 
-// Everything whose correctness depends on the timestep. Empty until physics:
-// the accumulator around it is the point, because adding the split later means
-// touching every system that assumed it was called once per frame.
+// everything whose correctness depends on the timestep; empty until physics
 static void step_fixed(World *w, asset::Manager *m, f32 dt) {
     (void)w;
     (void)m;
     (void)dt;
 }
 
-// Purely visual, at real frame time. Animation is sampled here rather than in
-// the fixed step so it stays smooth at any framerate. That will have to change
-// for anything that shoots at an animated bone: a hit test has to see the same
-// pose the solver did, which means sampling on the fixed clock and
-// interpolating for display.
+// visual only, at frame time. Animation samples here for smoothness; hit tests
+// against bones will need it sampled on the fixed clock instead.
 static void step_variable(World *w, asset::Manager *m, memory::Arena *scratch, f32 dt) {
     pool::Pool *p = &w->components[COMPONENT_ANIMATOR];
     for (u32 i = pool::first(p); i; i = pool::next(p, i))
@@ -588,8 +551,7 @@ static void step_variable(World *w, asset::Manager *m, memory::Arena *scratch, f
 void update(World *w, asset::Manager *m, memory::Arena *scratch, f32 dt) {
     ASSERT(w && m && scratch);
 
-    // A negative or absurd dt comes from a debugger pause or a clock that
-    // stepped backwards, and feeding it to an accumulator strands the loop.
+    // a clock that stepped backwards must not strand the accumulator
     if (dt < 0.0f)
         dt = 0.0f;
 
@@ -602,10 +564,7 @@ void update(World *w, asset::Manager *m, memory::Arena *scratch, f32 dt) {
         steps++;
     }
 
-    // Hit the cap: the remaining backlog is dropped rather than carried, or the
-    // next frame inherits it and falls further behind every frame after.
-    // Simulated time is lost, which is visible as a hitch and is survivable;
-    // the spiral is not.
+    // over the cap the backlog is dropped, not carried: a hitch is survivable, the spiral is not
     if (w->accumulator >= w->fixed_dt) {
         LOG_WARN_ONCE("entity: could not keep up at %.1f Hz, dropping %.1f ms of simulation",
                       (f64)(1.0f / w->fixed_dt), (f64)(w->accumulator * 1000.0f));
@@ -616,8 +575,7 @@ void update(World *w, asset::Manager *m, memory::Arena *scratch, f32 dt) {
 
     step_variable(w, m, scratch, dt);
 
-    // Last, because either step above can move an entity, and roots first so a
-    // child always reads a parent that is already current this frame.
+    // after both steps, since either can move an entity
     for (Handle h = first(w); h.v; h = next(w, h))
         if (get(w, h)->parent.v == 0)
             resolve_world(w, m, h);
@@ -636,9 +594,6 @@ f32 fixed_dt(World *w) {
 void submit(World *w, asset::Manager *m) {
     ASSERT(w && m);
 
-    // Walks the renderable pool rather than every entity: a level of four
-    // thousand entities where two hundred are drawable should touch two hundred
-    // contiguous structs, not four thousand scattered ones.
     pool::Pool *p = &w->components[COMPONENT_RENDERABLE];
     for (u32 i = pool::first(p); i; i = pool::next(p, i)) {
         Renderable *r = (Renderable *)pool::at(p, i);
@@ -658,8 +613,6 @@ void submit(World *w, asset::Manager *m) {
 static void after_read_RENDERABLE(World *, asset::Manager *m, Handle, void *c) {
     Renderable *r = (Renderable *)c;
 
-    // A missing model key gets the same magenta cube as a missing model file:
-    // content problems stay visible, they do not turn invisible.
     if (!r->model_path[0]) {
         LOG_WARN("entity: a renderable has no model, drawing the fallback");
         r->model = asset::MODEL_FALLBACK;
@@ -699,9 +652,7 @@ static void after_read_CAMERA(World *, asset::Manager *, Handle, void *c) {
 
 static void after_read_LIGHT(World *, asset::Manager *, Handle, void *) {}
 
-// Fields present in body overwrite the component; absent ones keep what is
-// there, which is the default for a fresh component and the definition's
-// value for an override.
+// absent keys keep what is there: the default for a fresh component, the definition's value for an override
 static void read_fields(const ComponentDesc *d, config::Node *body, void *c) {
     for (u32 i = 0; i < d->field_count; i++) {
         const FieldDesc *f = &d->fields[i];
@@ -776,7 +727,7 @@ static void write_fields(memory::Arena *a, config::Doc *doc, config::Node *block
         }
         case FIELD_STRING:
             if (!*(const char *)at)
-                continue; // never set; nothing to say
+                continue; // never set
             vals[0] = (const char *)at;
             break;
         case FIELD_ENUM: {
@@ -798,8 +749,7 @@ static void read_transform(config::Node *n, Transform *out) {
 
     out->position = config::value_vec3(config::find(body, "position"), out->position);
 
-    // Three values are Euler degrees about X, Y, Z -- what a person types.
-    // Four are a raw quaternion, for a tool that wants to round-trip exactly.
+    // 3 values: Euler degrees. 4: a raw quaternion, for exact round-trips.
     config::Node *r = config::find(body, "rotation");
     if (r && r->value_count == 3) {
         set_euler(out, config::value_vec3(r, linalg::Vec3{}));
@@ -811,13 +761,8 @@ static void read_transform(config::Node *n, Transform *out) {
             config::value_f32(r, 3, out->rotation.w),
         };
 
-        // A non-unit quaternion does not produce a scaled rotation, it produces
-        // a broken one: mat4_from_quat simplifies its terms using
-        // w^2+x^2+y^2+z^2 == 1, so feeding it anything else yields a
-        // non-orthogonal matrix that stretches each axis by a different amount
-        // and shears. "rotation 2 0 0 1" leaves X alone and blows Y and Z out
-        // to 8x, which reads as a mangled model rather than a bad angle.
-        // Normalising here is the difference between a typo and an afternoon.
+        // mat4_from_quat assumes unit length; a non-unit quaternion yields a
+        // sheared, non-orthogonal matrix, not a scaled rotation
         if (r->value_count != 4)
             LOG_WARN("entity: rotation has %u value(s); 3 reads as Euler degrees, 4 as a "
                      "quaternion, anything else is a typo",
@@ -837,7 +782,7 @@ static void read_transform(config::Node *n, Transform *out) {
 
     config::Node *s = config::find(body, "scale");
     if (s) {
-        // one value is uniform scale, which is what almost every instance wants
+        // one value is uniform scale
         f32 sx = config::value_f32(s, 0, out->scale.x);
         out->scale = linalg::Vec3{
             sx,
@@ -865,14 +810,13 @@ static void write_transform(memory::Arena *a, config::Doc *doc, config::Node *pa
         config::append(a, doc, block, "rotation", rot, 4);
     }
 
-    // one value when uniform, which is how almost every instance was written
+    // one value when uniform
     b32 uniform = t->scale.x == t->scale.y && t->scale.y == t->scale.z;
     const char *scl[] = {fmt_f32(a, t->scale.x), fmt_f32(a, t->scale.y), fmt_f32(a, t->scale.z)};
     config::append(a, doc, block, "scale", scl, uniform ? 1 : 3);
 }
 
-// A definition that references itself, directly or through a chain, would spawn
-// until the pool ran dry. Depth is bounded instead, and reported.
+// bounds a definition that references itself, directly or through a chain
 #define MAX_DEFINITION_DEPTH 8
 
 static Handle build_entity(World *w, asset::Manager *m, config::Node *decl, Handle parent,
@@ -884,9 +828,7 @@ static void build_children(World *w, asset::Manager *m, config::Node *body, Hand
         build_entity(w, m, c, self, depth);
 }
 
-// Every component block in body, applied to h: added with defaults when new,
-// overwritten in place when it already exists. Returns the bits of the ones
-// present, which is the override mask for a definition reference.
+// returns a bit per component block present: the override mask for a definition reference
 static u32 read_components(World *w, asset::Manager *m, Handle h, config::Node *body) {
     u32 present = 0;
     for (u32 c = 0; c < COMPONENT_COUNT; c++) {
@@ -913,8 +855,7 @@ static void mark_owned(World *w, Handle h) {
     }
 }
 
-// "<name><ext>" into a fixed buffer, refusing to truncate: a clipped name would
-// go on to report NOT_FOUND against a file that was never asked for.
+// refuses to truncate: a clipped name would report NOT_FOUND against a file nobody asked for
 static b32 data_file_name(char *out, u64 cap, const char *name, const char *ext) {
     i32 n = snprintf(out, cap, "%s%s", name, ext);
     if (n < 0 || (u64)n >= cap) {
@@ -924,7 +865,7 @@ static b32 data_file_name(char *out, u64 cap, const char *name, const char *ext)
     return true;
 }
 
-// <root>/<dir>/<name><ext>, parsed into scratch. The caller owns the temp scope.
+// parses <root>/<dir>/<name><ext> into scratch; the caller owns the temp scope
 static config::DocResult load_data_file(asset::Manager *m, memory::Arena *scratch, const char *dir,
                                         const char *name, const char *ext) {
     char file[ENTITY_NAME_CAP + FILE_EXT_CAP];
@@ -956,8 +897,7 @@ static HandleResult instantiate(World *w, asset::Manager *m, const char *name, u
         return HandleResult{.err = result::ERR_PARSE};
     }
 
-    // Parented by the caller, not here: the joint name to attach by lives in
-    // the referencing block, not in the definition.
+    // parented by the caller: the attach joint lives in the referencing block
     Handle h = build_entity(w, m, decl, NONE, depth);
     memory::temp_end(t);
 
@@ -971,11 +911,8 @@ static HandleResult instantiate(World *w, asset::Manager *m, const char *name, u
     return HandleResult{.val = h};
 }
 
-// One "entity", "child" or "instance" block -- they are the same thing, which
-// is why they share this. A block either references another definition and
-// overrides parts of it, or declares its components inline. The three files
-// then compose: a level instances a soldier, the soldier's weapon slot
-// instances a pistol, and each layer overrides only what it cares about.
+// one "entity", "child" or "instance" block: either a definition reference with
+// overrides, or inline components
 static Handle build_entity(World *w, asset::Manager *m, config::Node *decl, Handle parent,
                            u32 depth) {
     config::Node *body = decl->first_child;
@@ -984,9 +921,7 @@ static Handle build_entity(World *w, asset::Manager *m, config::Node *decl, Hand
 
     Handle h = NONE;
     if (def) {
-        // Read fresh per reference rather than cached. An editor rewrites these
-        // files while the game runs, and ten crates is ten small parses, not a
-        // reason for a cache to go stale.
+        // parsed fresh per reference: an editor rewrites these files while the game runs
         HandleResult r = instantiate(w, m, def, depth + 1);
         if (r.err != result::OK)
             return NONE;
@@ -997,10 +932,7 @@ static Handle build_entity(World *w, asset::Manager *m, config::Node *decl, Hand
             return NONE;
     }
 
-    // Component blocks and entity keys apply the same way whether the entity
-    // came from a definition or from this block: an absent key leaves what is
-    // already there. For a reference, the components present are overrides
-    // and are remembered as such, so a save writes them and nothing else.
+    // for a reference, the components present are overrides; remembered so a save writes only them
     Entity *e = get(w, h);
     u32 present = read_components(w, m, h, body);
     if (def)
@@ -1011,8 +943,7 @@ static Handle build_entity(World *w, asset::Manager *m, config::Node *decl, Hand
     e->active = config::get_b32(body, "active", e->active);
     read_transform(config::find(body, "transform"), &e->local);
 
-    // after the components exist: attaching resolves a joint against the
-    // parent's skeleton, and children read this entity's own
+    // after the components: attaching resolves a joint against the parent's skeleton
     if (parent.v)
         set_parent(w, m, h, parent, config::get(body, "attach_joint", NULL));
 
@@ -1076,7 +1007,7 @@ HandleResult spawn_definition(World *w, asset::Manager *m, const char *name) {
     return instantiate(w, m, name, 0);
 }
 
-// The absolute path of <dir>/<name><ext> under the asset root, or NULL.
+// NULL when the name does not fit
 static const char *data_file_path(asset::Manager *m, memory::Arena *scratch, const char *dir,
                                   const char *name, const char *ext) {
     char file[ENTITY_NAME_CAP + FILE_EXT_CAP];
@@ -1120,9 +1051,6 @@ result::Error load_level(World *w, asset::Manager *m, const char *name) {
     u32 spawned = 0;
     for (config::Node *n = config::find(doc.val->first, "instance"); n;
          n = config::find_next(n, "instance")) {
-        // An instance is a root-level reference to a definition, which is
-        // exactly what a child block is, so it takes the same path and gets
-        // inline children and component overrides for free.
         if (build_entity(w, m, n, NONE, 0).v)
             spawned++;
     }

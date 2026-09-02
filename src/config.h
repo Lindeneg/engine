@@ -5,10 +5,9 @@
 #include "memory.h"
 #include "result.h"
 
-// A small block-structured text format for everything the user configures at
-// edit time: which shaders exist, how an asset is imported, what a material
-// overrides. The editor writes these files and the engine reads them; both
-// go through this module, so a file survives a round trip.
+// The block-structured text format for everything configured at edit time. The
+// editor writes these files and the engine reads them, both through here, so a
+// file survives a round trip.
 //
 //   # comment to end of line
 //   shader mesh {
@@ -16,20 +15,15 @@
 //       features SKINNED ALPHA_MASK
 //   }
 //
-// Line-oriented: a node is a key, zero or more value tokens, and an optional
-// child block. '{' and '}' are their own tokens and only bare ones are
-// structure -- a quoted "{" is a value. A value is quoted when it contains
-// whitespace, '#', '{', '}', '"' or '\'; inside quotes, \" and \\ escape.
-// Comment lines and blank lines are nodes with a NULL key, so a writer emits
-// them where they were. Output is canonical (4-space indent, single spaces),
-// not byte-preserving.
+// A node is a key, zero or more value tokens, and an optional child block. Only
+// bare '{' and '}' are structure; a quoted "{" is a value. A value is quoted
+// when it contains whitespace, '#', '{', '}', '"' or '\'; inside quotes, \" and
+// \\ escape. Comment and blank lines are nodes with a NULL key, so a writer
+// emits them where they were. Output is canonical, not byte-preserving.
 //
-// Deliberately not JSON. This has to stay hand-editable and diffable, and a
-// reader must be able to skip keys it does not recognise -- an engine reading a
-// file a newer editor wrote should ignore the extra metadata, not reject the
-// file. Unknown keys are therefore never an error. Structural damage (a stray
-// '}', an unclosed block) is counted in Doc.problems and left to the caller:
-// a shader manifest refuses it, a material sidecar shrugs.
+// Unknown keys are never an error, so an engine can read a file a newer editor
+// wrote. Structural damage is counted in Doc.problems and left to the caller: a
+// shader manifest refuses it, a material sidecar shrugs.
 
 #define CONFIG_MAX_DEPTH 16
 #define CONFIG_MAX_TOKENS 32
@@ -57,22 +51,18 @@ struct Doc {
 
 RESULT_TYPE(Doc *, DocResult);
 
-// Tokenizes in place, so text must be writable and NUL-terminated, and it has
-// to outlive the Doc: keys and values point into it rather than being copied.
+// Tokenizes text in place; it must be writable and outlive the Doc, which points into it.
 DocResult parse(memory::Arena *a, char *text, const char *name);
 
-// Reads path into a and parses it. Everything -- text and nodes -- lives in a.
 DocResult load(memory::Arena *a, const char *path);
 
-// first is any node in a sibling chain, usually doc->first or n->first_child.
-// Comment and blank nodes never match.
+// first is any node in a sibling chain; comment and blank nodes never match.
 Node *find(Node *first, const char *key);
 
-// Continues a scan past from, for a key that repeats within one block.
+// Continues past from, for a key that repeats within one block.
 Node *find_next(Node *from, const char *key);
 
-// All return the fallback when the node or the index is missing, so a reader
-// reads as a straight run of gets instead of a ladder of null checks.
+// The fallback when the node or the index is missing.
 const char *value(Node *n, u32 index, const char *fallback);
 f32 value_f32(Node *n, u32 index, f32 fallback);
 i32 value_i32(Node *n, u32 index, i32 fallback);
@@ -88,9 +78,8 @@ b32 get_b32(Node *block, const char *key, b32 fallback);
 linalg::Vec3 value_vec3(Node *n, linalg::Vec3 fallback);
 linalg::Vec4 value_vec4(Node *n, linalg::Vec4 fallback);
 
-// Editing. Strings are copied into a, so callers may pass stack buffers. A
-// node appended under a parent makes that parent a block. unlink detaches a
-// node; its bytes stay until the arena resets.
+// Editing. Strings are copied into a. Appending under a parent makes it a
+// block; unlink leaves the node's bytes until the arena resets.
 Doc *create(memory::Arena *a, const char *name);
 Node *append(memory::Arena *a, Doc *doc, Node *parent, const char *key,
              const char *const *values, u32 count);

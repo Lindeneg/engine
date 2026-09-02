@@ -1,8 +1,7 @@
 #include "gfx.h"
 #include "suites.h"
 
-// every combination must have its own key, and fit the 6 bits the draw key
-// gives it
+// every combination has its own key and fits the draw key's 6 bits
 static void state_keys_are_distinct_and_small(memory::Arena *) {
     u32 seen[64] = {};
     u32 count = 0;

@@ -15,14 +15,12 @@
 #define DEG2RAD(d) ((d) * (PI_F32 / 180.0f))
 #define RAD2DEG(r) ((r) * (180.0f / PI_F32))
 
-// Numerical thresholds. Three because they answer three different questions:
-//   ZERO      "is this length zero?" -- normalize refuses below it
-//   PARALLEL  "do these directions coincide?" -- the cross product's length is
-//             sin(angle), and a side axis built from it is garbage long before
-//             it reaches ZERO, so this trips at ~0.006 degrees instead
-//   DET       "is this 3x3 singular?" -- a determinant is a product of three
-//             scales, so it must sit far below ZERO or a model imported at
-//             0.001 (det ~1e-9) would count as flat
+// Three thresholds for three questions:
+//   ZERO      is this length zero? normalize refuses below it
+//   PARALLEL  do these directions coincide? a cross product's length is
+//             sin(angle), and a side axis built from it is garbage long before ZERO
+//   DET       is this 3x3 singular? a determinant is a product of three scales,
+//             so a model imported at 0.001 (det ~1e-9) must not count as flat
 #define LINALG_ZERO_EPSILON 1e-8f
 #define LINALG_PARALLEL_EPSILON 1e-4f
 #define LINALG_DET_EPSILON 1e-12f
@@ -79,9 +77,7 @@ static inline Vec3 vec3_normalize(Vec3 v) {
     return vec3_scale(v, 1.0f / len);
 }
 
-// For data that may legitimately be zero (a velocity, a delta): the fallback
-// instead of an assert. vec3_normalize stays the choice for values that are
-// zero only when there is a bug.
+// for data that may legitimately be zero (a velocity); vec3_normalize asserts instead
 static inline Vec3 vec3_normalize_or(Vec3 v, Vec3 fallback) {
     f32 len = vec3_length(v);
     return len > LINALG_ZERO_EPSILON ? vec3_scale(v, 1.0f / len) : fallback;
@@ -129,8 +125,7 @@ static inline Quat quat_normalize(Quat q) {
     return Quat{q.x * inv, q.y * inv, q.z * inv, q.w * inv};
 }
 
-// Rotation about X, then Y, then Z, in degrees. What a human types when asked
-// to turn something: quaternion components are for tools to write, not people.
+// about X, then Y, then Z, in degrees
 static inline Quat quat_from_euler(Vec3 degrees) {
     f32 hx = DEG2RAD(degrees.x) * 0.5f;
     f32 hy = DEG2RAD(degrees.y) * 0.5f;
@@ -144,10 +139,9 @@ static inline Quat quat_from_euler(Vec3 degrees) {
     return quat_mul(quat_mul(qz, qy), qx);
 }
 
-// The right-handed (side, up, forward) basis for looking along forward, shared
-// by quat_look_rotation and mat4_look_at. When forward is parallel to up -- a
-// camera pitched straight up or down, which is gameplay, not a bug -- the up
-// hint is replaced by whichever world axis is furthest from forward.
+// right-handed (side, up, forward) basis along forward. When forward is parallel
+// to up (a camera pitched straight up), the hint is replaced by the world axis
+// furthest from forward.
 static inline void look_basis(Vec3 forward, Vec3 up, Vec3 *out_s, Vec3 *out_u, Vec3 *out_f) {
     Vec3 f = vec3_normalize(forward);
     Vec3 s = vec3_cross(f, up);
@@ -161,10 +155,8 @@ static inline void look_basis(Vec3 forward, Vec3 up, Vec3 *out_s, Vec3 *out_u, V
     *out_f = f;
 }
 
-// Rotation whose -Z points along forward, matching mat4_look_at: what an entity
-// needs to face something. Shepperd's method -- the branch picks whichever
-// component is largest, because the direct formula divides by w and loses all
-// its precision as the rotation approaches 180 degrees.
+// rotation whose -Z is forward, matching mat4_look_at. Shepperd's method:
+// branch on the largest component, since dividing by w loses precision near 180 degrees.
 static inline Quat quat_look_rotation(Vec3 forward, Vec3 up) {
     Vec3 s, u, f;
     look_basis(forward, up, &s, &u, &f);
@@ -267,11 +259,9 @@ static inline Mat3 mat3_from_mat4(Mat4 a) {
     };
 }
 
-// The matrix that transforms normals: transpose(inverse(upper-left 3x3)).
-// Plain mat3(model) only works under uniform scale -- any non-uniform scale
-// shears normals off the surface and lights the model wrong. Since
-// inverse(M) = adjugate(M)/det and adjugate is the transposed cofactor matrix,
-// the transpose cancels and this is just cofactor(M)/det(M).
+// transpose(inverse(upper 3x3)): plain mat3(model) shears normals under
+// non-uniform scale. inverse = adjugate/det and adjugate is the transposed
+// cofactor matrix, so this is cofactor(M)/det(M).
 static inline Mat3 mat3_normal_matrix(Mat4 src) {
     Mat3 u = mat3_from_mat4(src);
 
@@ -293,12 +283,9 @@ static inline Mat3 mat3_normal_matrix(Mat4 src) {
     if (det > -LINALG_DET_EPSILON && det < LINALG_DET_EPSILON)
         return u; // degenerate (zero scale); the unmodified basis beats NaNs
 
-    // stored column-major, so column 0 is (c00, c10, c20) -- listing the
-    // cofactors row-wise here would silently store the inverse instead.
-    // No division by |det|: the cofactor matrix is the normal matrix up to a
-    // positive scale, and the shader normalizes anyway. The sign is not
-    // optional: cofactor(M) = det(M) * inverse-transpose, so a mirrored scale
-    // (det < 0) would otherwise point every normal inward.
+    // column-major, so column 0 is (c00, c10, c20); row-wise would store the
+    // inverse. |det| is dropped (the shader normalizes) but its sign is not: a
+    // mirrored scale would point every normal inward.
     f32 sign = det < 0.0f ? -1.0f : 1.0f;
     return Mat3{
         c00 * sign, c10 * sign, c20 * sign, //
@@ -370,12 +357,8 @@ static inline Mat4 mat4_perspective(f32 fovy, f32 aspect, f32 znear, f32 zfar) {
     return out;
 }
 
-// View matrix for a camera sitting at a world transform: the inverse of it.
-//
-// Scale is normalized away rather than inverted. A camera parented to anything
-// scaled -- a head joint on a model imported at 0.857 -- would otherwise
-// inherit that scale into the view matrix, which silently resizes the entire
-// world instead of the camera, and looks like a broken projection.
+// inverse of a camera's world transform, with scale normalized away: a camera
+// under a scaled parent would otherwise resize the whole world
 static inline Mat4 mat4_view_from_world(Mat4 world) {
     Vec3 x = mat4_axis(world, 0);
     Vec3 y = mat4_axis(world, 1);

@@ -8,8 +8,7 @@
 namespace path {
 char *join(memory::Arena *a, ...);
 
-// "characters/soldier.glb" + ".mat.cfg" -> "characters/soldier.mat.cfg".
-// Replaces from the last '.' in the final segment, appends when there is none.
-// How sidecar files are addressed: an editor writes them beside the asset.
+// "soldier.glb" + ".mat.cfg" -> "soldier.mat.cfg"; replaces from the last '.'
+// of the final segment, appends when there is none.
 char *swap_ext(memory::Arena *a, const char *path, const char *ext);
 }; // namespace path

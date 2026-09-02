@@ -23,8 +23,7 @@
 
 namespace shader {
 
-// Bit index -> the #define the preamble emits. Order matches the Feature enum;
-// feature_name/feature_from_name are the editor's view of this table.
+// bit index -> #define; order matches Feature
 static const char *FEATURE_DEFINES[SHADER_FEATURE_BITS] = {
     "SKINNED",
     "ALPHA_MASK",
@@ -52,10 +51,8 @@ struct Registry {
 
 static Registry g_reg;
 
-// A shader stage assembled from pieces: the generated preamble, spans of each
-// file's text, and the #line directives between them. glShaderSource takes an
-// array of strings, so the pieces never have to be concatenated -- which is
-// what would otherwise force a growable allocation on top of a bump arena.
+// a stage as pieces (preamble, file spans, #line directives); glShaderSource
+// takes an array, so nothing is concatenated
 struct Chunks {
     const char *text[MAX_CHUNKS];
     i32 len[MAX_CHUNKS];
@@ -85,8 +82,7 @@ static b32 add_fmt(Chunks *c, memory::Arena *a, const char *fmt, ...) {
     return add_chunk(c, text, strlen(text));
 }
 
-// Recognises a line whose only content is #include "name". Returns the name
-// copied into a, or NULL when the line is anything else.
+// the name from a line that is only #include "name", copied into a; else NULL
 static const char *parse_include(memory::Arena *a, const char *line, u64 len) {
     u64 i = 0;
     while (i < len && (line[i] == ' ' || line[i] == '\t'))
@@ -116,9 +112,8 @@ static const char *parse_include(memory::Arena *a, const char *line, u64 len) {
     return memory::push_fmt(a, "%.*s", (i32)(i - start), line + start);
 }
 
-// Appends one shader file, splicing in whatever it #includes. Each file gets a
-// source id and a #line directive, so a driver reports errors as "<id>(line)"
-// against the file the author wrote rather than against one flattened blob.
+// appends one file, splicing in its #includes. Each file gets a source id and
+// #line, so driver errors point at the file the author wrote.
 static b32 add_file(Chunks *c, memory::Arena *scratch, const char *root, const char *file,
                     u32 depth) {
     if (depth > MAX_INCLUDE_DEPTH) {
@@ -170,9 +165,7 @@ static b32 add_file(Chunks *c, memory::Arena *scratch, const char *root, const c
     return add_chunk(c, text + run, len - run);
 }
 
-// #version must be the first thing in the concatenated source, so this is
-// always chunk 0. MAX_JOINTS is generated from the C++ constant rather than
-// written into a .vert, so the palette size has exactly one definition.
+// #version must come first, so this is chunk 0; MAX_JOINTS comes from the C++ constant
 static b32 add_preamble(Chunks *c, memory::Arena *a, u32 features) {
     char buf[PREAMBLE_CAP];
     i32 n = snprintf(buf, sizeof(buf), "#version 330 core\n#define MAX_JOINTS %d\n",
@@ -208,16 +201,13 @@ static u32 compile_stage(u32 type, const Chunks *c, const char *label) {
     return 0;
 }
 
-// Reads back every active uniform, so the draw side needs no struct field per
-// uniform. Block members report location -1 and are skipped: they are addressed
-// through the UBO, not by location.
+// every active uniform by name; block members report -1 and are skipped
 static b32 reflect(memory::Arena *a, Program *p, const char *label) {
     i32 active = 0;
     glGetProgramiv(p->gl, GL_ACTIVE_UNIFORMS, &active);
     p->uniforms = strmap::create(a, (u64)(active > 0 ? active : 1));
 
-    // A name the buffer cannot hold would be truncated, and a truncated name
-    // resolves to no location -- a uniform that silently does nothing forever.
+    // a truncated name resolves to no location and silently does nothing
     i32 longest = 0;
     glGetProgramiv(p->gl, GL_ACTIVE_UNIFORM_MAX_LENGTH, &longest);
     if (longest > UNIFORM_NAME_CAP) {
@@ -313,8 +303,7 @@ static b32 build_variant(memory::Arena *a, memory::Arena *scratch, const char *r
                          const char *label, Program *out) {
     memory::ArenaTemp t = memory::temp_begin(scratch);
 
-    // Source ids are per stage, so both stages number their includes from 0 and
-    // a driver's "<id>(line)" is unambiguous within the stage it came from.
+    // source ids are per stage
     Chunks vc{};
     Chunks fc{};
 
@@ -326,8 +315,7 @@ static b32 build_variant(memory::Arena *a, memory::Arena *scratch, const char *r
     return ok;
 }
 
-// "mesh", "mesh[SKINNED]", "mesh[SKINNED|ALPHA_MASK]". Without it all four
-// variants report under one name and a failure in one is impossible to place.
+// "mesh", "mesh[SKINNED|ALPHA_MASK]": so a failure names its variant
 static void variant_label(char *dst, u64 cap, const char *name_, u32 features) {
     i32 n = snprintf(dst, cap, "%s", name_);
     ASSERT(n > 0);
@@ -355,8 +343,7 @@ result::Error parse_manifest(config::Doc *doc, Decl *out, u32 cap, u32 *out_coun
             LOG_ERR("shader: %s:%u: a 'shader' block has no name", doc->name, decl->line);
             return result::ERR_PARSE;
         }
-        // refused rather than truncated: a clipped name would later fail the
-        // default_shader lookup with a misleading "no shader named"
+        // refused, not truncated: a clipped name would fail the default_shader lookup misleadingly
         if (strlen(name_) >= SHADER_NAME_CAP) {
             LOG_ERR("shader: name '%s' is longer than the %d bytes allowed", name_,
                     SHADER_NAME_CAP - 1);
@@ -414,8 +401,7 @@ result::Error parse_manifest(config::Doc *doc, Decl *out, u32 cap, u32 *out_coun
 
 static result::Error build_one(memory::Arena *a, memory::Arena *scratch, const char *root,
                                const Decl *d) {
-    // zeroed first: a previous init's or a failed build's program ids must not
-    // survive in the variants this manifest does not claim
+    // zeroed: no program id from a previous init may survive in an unclaimed variant
     Shader *sh = &g_reg.items[g_reg.count];
     memset(sh, 0, sizeof(*sh));
     snprintf(sh->name, SHADER_NAME_CAP, "%s", d->name);
@@ -506,8 +492,6 @@ Handle default_handle() {
     return g_reg.dflt;
 }
 
-// init built every combination each shader claims, and masks it here, so
-// failing to resolve one means a handle from somewhere else entirely.
 Program *program(Handle h, u32 features) {
     ASSERT_MSG(h.v < g_reg.count, "shader: handle %u out of range", h.v);
 

@@ -10,8 +10,7 @@
 #define push_struct(a, T) (T *)memory::push((a), sizeof(T), alignof(T))
 #define push_array(a, T, n) (T *)memory::push((a), sizeof(T) * (n), alignof(T))
 
-// Non-zeroing variants. For bulk buffers that are fully overwritten right after
-// the push (file reads, staging). Contents are undefined on return.
+// non-zeroing, for buffers fully overwritten right after the push
 #define push_struct_nz(a, T) (T *)memory::push_nz((a), sizeof(T), alignof(T))
 #define push_array_nz(a, T, n) (T *)memory::push_nz((a), sizeof(T) * (n), alignof(T))
 
@@ -34,8 +33,7 @@ Arena create(u64 cap);
 void *push(Arena *a, size_t size, size_t align = ARENA_DEFAULT_ALIGN);
 void *push_nz(Arena *a, size_t size, size_t align = ARENA_DEFAULT_ALIGN);
 
-// Copies into the arena. For strings that have to outlive their source: map
-// keys, names stored on a pool payload.
+// copies in, for strings that must outlive their source
 char *push_str(Arena *a, const char *s);
 void *push_bytes(Arena *a, const void *src, u64 n);
 char *push_fmt(Arena *a, const char *fmt, ...);

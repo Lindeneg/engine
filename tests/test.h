@@ -20,9 +20,8 @@ struct Suite {
 
 void check(b32 cond, const char *file, i32 line, const char *expr);
 
-// Silences the logger around a path that is expected to warn or error.
-// unmute() returns how many WARN+ERR messages the path produced, so a case
-// can assert that it actually did. Nests badly on purpose: do not.
+// silences the logger around a path expected to warn; unmute() returns how many
+// WARN+ERR it produced. Does not nest.
 void mute();
 u32 unmute();
 

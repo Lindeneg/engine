@@ -62,8 +62,7 @@ static void broken_manifests_are_refused(memory::Arena *a) {
     CHECK(parse_bad(a, "default_shader x\n", 4) == result::ERR_PARSE);
     CHECK(parse_bad(a, GOOD, 1) == result::ERR_EXHAUSTED);
 
-    // a name at the cap would later fail the default lookup, so it is refused
-    // up front
+    // a name at the cap is refused up front, not truncated
     char long_name[SHADER_NAME_CAP + 1];
     memset(long_name, 'x', SHADER_NAME_CAP);
     long_name[SHADER_NAME_CAP] = 0;

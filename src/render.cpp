@@ -10,8 +10,7 @@
 
 namespace render {
 
-// The vertex layouts the attribute setup below describes. A field reorder in
-// asset.h would otherwise mis-feed the GPU with no compiler in the loop.
+// pins the layouts setup_attribs describes
 static_assert(sizeof(asset::VertexStatic) == 32, "VertexStatic layout changed");
 static_assert(sizeof(asset::VertexSkinned) == 56, "VertexSkinned layout changed");
 static_assert(offsetof(asset::VertexStatic, pos) == offsetof(asset::VertexSkinned, pos) &&
@@ -22,7 +21,7 @@ static_assert(offsetof(asset::VertexStatic, pos) == offsetof(asset::VertexSkinne
 // The std140 block in common.glsl is laid out to exactly this size.
 static_assert(sizeof(shader::FrameData) == 112, "FrameData no longer matches the Frame block");
 
-// A driver-neutral fallback if GL_UNIFORM_BUFFER_OFFSET_ALIGNMENT cannot be read
+// if GL_UNIFORM_BUFFER_OFFSET_ALIGNMENT cannot be read
 #define UBO_ALIGN_FALLBACK 256
 
 // "nothing bound yet" for the per-pass state caches; no real value is ever this
@@ -46,10 +45,7 @@ Config config_from(config::Node *block) {
     };
 }
 
-// Opaque draws group by the most expensive state change first; depth lands in
-// the low bits so it only breaks ties, front-to-back, which feeds early-Z.
-// Transparent draws sort on distance above everything else, because ordering
-// there is correctness rather than performance.
+// opaque sorts for state grouping, transparent back-to-front; see drawkey.h
 enum Pass { PASS_OPAQUE, PASS_TRANSPARENT, PASS_COUNT };
 
 struct DrawItem {
@@ -62,8 +58,7 @@ struct DrawItem {
     gfx::RenderState state;
 };
 
-// Per submit_model, not per submesh: the pistol's 47 primitives would otherwise
-// carry 47 copies of the same matrices.
+// per submit_model, not per submesh
 struct ObjectData {
     linalg::Mat4 world;
     linalg::Mat3 normal;
@@ -71,8 +66,7 @@ struct ObjectData {
     b32 skinned;
 };
 
-// The GPU side of one mesh slot. epoch is the handle generation it was
-// uploaded for, so a recycled slot re-uploads instead of drawing stale buffers.
+// GPU side of one mesh slot; epoch detects a recycled slot
 struct GpuMesh {
     u32 vao, vbo, ebo;
     u8 epoch;
@@ -97,8 +91,7 @@ static struct {
     u32 frame_ubo;
     u32 joint_ubo;
 
-    // Staged on the CPU and uploaded once in flush, so submit_model issues no
-    // GL calls at all and the caller's palette buffer is free immediately.
+    // staged on the CPU and uploaded once in flush, so submit_model issues no GL calls
     u8 *joint_staging;
     u32 joint_stride; // bytes per slot, aligned to the driver's requirement
     u32 joint_count;  // slots used this frame
@@ -153,17 +146,14 @@ void init(memory::Arena *a, Config cfg, i32 fb_width, i32 fb_height) {
     glDepthFunc(GL_LESS);
     glFrontFace(GL_CCW); // glTF defines counter-clockwise as front-facing
 
-    // GL 3.3 requires a bound range to cover the block's declared size, and the
-    // block is a fixed MAX_JOINTS array, so every slot costs the full palette
-    // regardless of how many joints the rig actually has. A texture buffer
-    // would avoid that; it costs four texelFetches per vertex instead.
+    // GL 3.3 needs the bound range to cover the block's declared size, so every
+    // slot costs the full MAX_JOINTS palette
     i32 align = UBO_ALIGN_FALLBACK;
     glGetIntegerv(GL_UNIFORM_BUFFER_OFFSET_ALIGNMENT, &align);
     u32 slot_bytes = (u32)(sizeof(linalg::Mat4) * SHADER_MAX_JOINTS);
     g.joint_stride = (u32)ALIGN_UP_2(slot_bytes, (u64)align);
 
-    // zeroed, not push_array_nz: only the first joint_count matrices of a slot
-    // are written each frame, and the tail is uploaded either way
+    // zeroed: only the first joint_count matrices of a slot are written per frame
     u64 joint_bytes = (u64)g.joint_stride * MAX(cfg.max_skinned_draws, 1u);
     g.joint_staging = push_array(a, u8, joint_bytes);
 
@@ -214,8 +204,7 @@ void begin_frame(const shader::FrameData *frame, linalg::Vec4 clear_color) {
     for (u32 p = 0; p < PASS_COUNT; p++)
         g.pass_count[p] = 0;
 
-    // depth writes must be on to clear the depth buffer, and a transparent
-    // material at the end of the last frame will have turned them off
+    // depth writes must be on to clear depth; a transparent material may have left them off
     glDepthMask(GL_TRUE);
     glClearColor(clear_color.x, clear_color.y, clear_color.z, clear_color.w);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
@@ -224,8 +213,6 @@ void begin_frame(const shader::FrameData *frame, linalg::Vec4 clear_color) {
 static void setup_attribs(asset::VertexKind kind) {
     u32 stride = (u32)asset::vertex_stride(kind);
 
-    // offsets from the structs themselves; the static_asserts at the top pin
-    // the two layouts to agreeing on the shared leading fields
     glEnableVertexAttribArray(0);
     glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, stride,
                           (const void *)offsetof(asset::VertexStatic, pos));
@@ -239,8 +226,7 @@ static void setup_attribs(asset::VertexKind kind) {
     if (kind != asset::VERTEX_SKINNED)
         return;
 
-    // glVertexAttribIPointer, not the float-converting variant: joint indices
-    // are integers and must arrive in the shader as integers
+    // IPointer: joint indices must arrive in the shader as integers
     glEnableVertexAttribArray(3);
     glVertexAttribIPointer(3, 4, GL_UNSIGNED_SHORT, stride,
                            (const void *)offsetof(asset::VertexSkinned, joints));
@@ -249,8 +235,7 @@ static void setup_attribs(asset::VertexKind kind) {
                           (const void *)offsetof(asset::VertexSkinned, weights));
 }
 
-// The GPU copy for a mesh handle, uploading on first sight or after the slot
-// was recycled. NULL for a mesh with no vertices.
+// uploads on first sight or after the slot was recycled; NULL for an empty mesh
 static GpuMesh *ensure_uploaded(asset::Manager *m, asset::MeshHandle h) {
     ASSERT_MSG(g.gpu, "render: attach_assets before drawing");
 
@@ -260,8 +245,7 @@ static GpuMesh *ensure_uploaded(asset::Manager *m, asset::MeshHandle h) {
     if (mesh->vertex_count == 0)
         return NULL;
 
-    // get() substitutes the fallback for a stale handle; upload that under its
-    // own slot rather than the stale one's
+    // a stale handle resolved to the fallback; upload that under slot 0, not the stale slot
     if (mesh == asset::get(m, asset::MESH_FALLBACK)) {
         idx = 0;
         epoch = 0;
@@ -296,9 +280,7 @@ void upload_model(asset::Manager *m, asset::ModelHandle h) {
         ensure_uploaded(m, model->meshes[i]);
 }
 
-// What the geometry requires of a program, as opposed to what the material asks
-// for. A skinned vertex layout leaves attributes 3 and 4 bound, and a program
-// built without SKINNED would ignore them and draw the bind pose.
+// what the geometry requires of a program, as opposed to what the material asks for
 static u32 mesh_features(const asset::Mesh *mesh) {
     return mesh->vertex_kind == asset::VERTEX_SKINNED ? shader::FEATURE_SKINNED
                                                       : shader::FEATURE_NONE;
@@ -321,8 +303,7 @@ void submit_model(asset::Manager *m, asset::ModelHandle h, linalg::Mat4 model_ma
     u32 object = g.object_count++;
     ObjectData *o = &g.objects[object];
 
-    // the import transform sits between world placement and the asset's own
-    // native space, so it applies to normals as well as positions
+    // import sits between world placement and native space, so it applies to normals too
     o->world = model_mat * model->import;
     o->normal = linalg::mat3_normal_matrix(o->world);
     o->joint_offset = 0;
@@ -346,9 +327,7 @@ void submit_model(asset::Manager *m, asset::ModelHandle h, linalg::Mat4 model_ma
         }
     }
 
-    // One distance per object, from the bounds centre rather than the origin:
-    // a model whose pivot sits at its feet would otherwise sort against a point
-    // that is not where the geometry is.
+    // distance from the bounds centre, not the origin: a pivot at the feet would sort wrong
     linalg::Vec3 lo, hi;
     asset::model_bounds(m, h, &lo, &hi);
     linalg::Vec3 center = linalg::mat4_mul_point(model_mat, (lo + hi) * 0.5f);
@@ -372,8 +351,7 @@ void submit_model(asset::Manager *m, asset::ModelHandle h, linalg::Mat4 model_ma
                 return;
             }
 
-            // A skinned mesh whose palette did not fit must draw unskinned, not
-            // with whatever palette the previous object left behind.
+            // a palette that did not fit draws unskinned, not with the previous object's
             u32 features = geometry | material_features(mat);
             if ((features & shader::FEATURE_SKINNED) && !o->skinned)
                 features &= ~(u32)shader::FEATURE_SKINNED;
@@ -460,10 +438,7 @@ static void flush_pass(asset::Manager *m, u32 pass) {
             glUseProgram(p->gl);
             bound_program = p->gl;
 
-            // Uniform values live in the program object, so everything set
-            // through a location is stale now even though the object and the
-            // material have not changed. Getting this wrong shows up as one
-            // model wearing another's colour.
+            // uniform values live in the program object, so a program change invalidates both
             bound_object = UNBOUND;
             bound_material = UNBOUND;
         }
@@ -484,9 +459,7 @@ static void flush_pass(asset::Manager *m, u32 pass) {
             glUniformMatrix4fv(p->builtin[shader::BUILTIN_MODEL], 1, GL_FALSE, o->world.m);
             glUniformMatrix3fv(p->builtin[shader::BUILTIN_NORMAL_MAT], 1, GL_FALSE, o->normal.m);
 
-            // Buffer bindings are context state, not program state, so this
-            // survives a program change -- but the object cache was just
-            // invalidated by one, so it is rebound harmlessly.
+            // buffer bindings are context state, so this survives a program change
             if (o->skinned)
                 glBindBufferRange(GL_UNIFORM_BUFFER, SHADER_JOINT_BINDING, g.joint_ubo,
                                   o->joint_offset, g.joint_stride);

@@ -10,21 +10,18 @@
 #include "shader.h"
 #include "window.h"
 
-// The assets folder in the source tree, baked in by CMake. There is exactly
-// one of them and nothing copies it, so editing a file and restarting is
-// enough. A shipped build would take this from a launch argument instead.
+// the assets folder in the source tree, baked in by CMake; a shipped build would
+// take a launch argument instead
 #ifndef CL_ASSET_ROOT
 #error "CL_ASSET_ROOT must be defined by the build; see CMakeLists.txt"
 #endif
 
 #define ENGINE_CFG "engine.cfg"
 
-// Address space only, and reserving is free, so this is not a setting: every
-// arena in the process is carved from it, sized by engine.cfg.
+// address space only, free to reserve; every arena is carved from it, sized by engine.cfg
 #define RESERVE_BYTES GiB(4)
 
-// Holds engine.cfg for the life of the process; the arenas it sizes cannot
-// exist before it is read.
+// holds engine.cfg, which sizes every other arena
 #define BOOT_ARENA_BYTES MiB(1)
 
 #define DEFAULT_LEVEL "test"
@@ -65,9 +62,7 @@ int main() {
     i32 fb_h = 0;
     window::framebuffer_size(win, &fb_w, &fb_h);
 
-    // Shaders before assets: a material is given its program at load, and a
-    // shader that will not build means the deployment is broken, so this
-    // aborts rather than limping on.
+    // shaders before assets: materials get their program at load
     MUST(shader::init(&perm, &scratch, root));
 
     render::Config render_cfg = render::config_from(config::find(cfg, "render"));
@@ -81,18 +76,14 @@ int main() {
 
     entity::World *world{MUST(entity::init(&perm, entity::config_from(config::find(cfg, "world"))))};
 
-    // Everything the world contains comes from here. No model handles, import
-    // scales or attachment offsets in this file.
+    // everything in the world comes from the level file
     MUST(entity::load_level(world, assets, config::get(cfg, "level", DEFAULT_LEVEL)));
 
-    // Frame the camera off the player's real bounds. Guessing a distance is how
-    // you end up staring at a black window wondering which of five things is
-    // broken.
+    // frame the camera off real bounds rather than a guessed distance
     linalg::Vec3 center{};
     f32 radius = 1.0f;
 
-    // the first renderable *root*: iterating raw would find the attached weapon
-    // just as readily as the soldier holding it
+    // the first renderable root: iterating raw could find the attached weapon first
     entity::Renderable *player = NULL;
     for (entity::Handle h = entity::first(world); h.v; h = entity::next(world, h)) {
         if (entity::get(world, h)->parent.v)
@@ -113,9 +104,8 @@ int main() {
         LOG_WARN("camera: the level spawned nothing renderable");
     }
 
-    // Standing in for a player controller: orbit the level's camera around the
-    // player. Its fov drives the framing distance, so changing fov in the
-    // .entity file reframes the shot.
+    // stand-in for a player controller: orbit the level's camera around the
+    // player, its fov driving the distance
     config::Node *orbit = config::find(cfg, "camera_orbit");
     config::Node *orbit_body = orbit ? orbit->first_child : NULL;
     f32 orbit_speed = config::get_f32(orbit_body, "speed", DEFAULT_ORBIT_SPEED);

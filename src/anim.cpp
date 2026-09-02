@@ -5,8 +5,7 @@
 
 namespace anim {
 
-// Two keys closer than this in time are the same key: interpolating between
-// them would divide by a span that is only rounding noise.
+// keys closer than this are one key; dividing by the span would be noise
 #define MIN_KEY_SPAN 1e-8f
 
 struct Trs {
@@ -56,17 +55,14 @@ static void sample_channel(const asset::Channel *ch, f32 t, Trs *local) {
                                      linalg::Vec3{v1[0], v1[1], v1[2]}, a);
         break;
     case asset::PATH_ROTATION:
-        // nlerp, not lerp: quat_nlerp picks the nearer neighbourhood, without
-        // which joints flip halfway through a blend
         local->r = linalg::quat_nlerp(linalg::Quat{v0[0], v0[1], v0[2], v0[3]},
                                       linalg::Quat{v1[0], v1[1], v1[2], v1[3]}, a);
         break;
     }
 }
 
-// glTF does not order skin.joints parent-before-child -- our soldier lists
-// Spine2 ahead of its parent Spine1 -- so globals resolve on demand rather than
-// in a single forward pass. Each joint is still computed exactly once.
+// skin.joints is not parent-first (our soldier lists Spine2 before Spine1), so
+// globals resolve on demand, each once
 static void resolve(const asset::Skeleton *skel, const Trs *locals, linalg::Mat4 *global, b8 *done,
                     i32 j) {
     if (done[j])
@@ -77,8 +73,7 @@ static void resolve(const asset::Skeleton *skel, const Trs *locals, linalg::Mat4
     i32 p = skel->joints[j].parent;
 
     if (p < 0 || p >= (i32)skel->joint_count) {
-        // a parentless joint still sits under the armature the inverse bind
-        // matrices were baked against
+        // a parentless joint still sits under the armature the inverse binds were baked against
         global[j] = skel->root * local;
         return;
     }
@@ -112,9 +107,9 @@ void sample(memory::Arena *scratch, const asset::Skeleton *skel, const asset::Cl
         for (u32 c = 0; c < clip->channel_count; c++) {
             const asset::Channel *ch = &clip->channels[c];
             if (ch->joint < 0 || ch->joint >= (i32)n)
-                continue; // unmatched channel: this rig has no such joint
+                continue; // this rig has no such joint
             if (clip->rotation_only && ch->path != asset::PATH_ROTATION)
-                continue; // retargeted: keep this skeleton's own bone lengths
+                continue; // retargeted: keep this skeleton's bone lengths
             sample_channel(ch, t, &locals[ch->joint]);
         }
     }

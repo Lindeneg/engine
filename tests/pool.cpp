@@ -12,8 +12,7 @@ static pool::Pool make(memory::Arena *a, u32 cap) {
     return pool::create(a, cap, sizeof(Item));
 }
 
-// index 0 is what makes handle 0 mean "nothing" everywhere, and what lets
-// alloc report a full pool by returning 0
+// index 0 is never handed out: handle 0 means "nothing", and alloc returns 0 for full
 static void slot_zero_is_never_handed_out(memory::Arena *a) {
     pool::Pool p = make(a, 4);
 
@@ -75,8 +74,7 @@ static void recycled_slots_reject_stale_handles(memory::Arena *a) {
     CHECK(pool::resolve(&p, old) == NULL);
 }
 
-// a freed slot goes to the back of the line, so create/delete churn does not
-// hammer one slot's 8-bit epoch
+// a freed slot goes to the back of the line, so churn does not hammer one slot's epoch
 static void freed_slots_are_reused_last(memory::Arena *a) {
     pool::Pool p = make(a, 4);
 
