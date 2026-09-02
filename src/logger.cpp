@@ -1,69 +1,19 @@
-#if defined(__linux__)
-#define _GNU_SOURCE // expose localtime_r / isatty under strict -std=c17
-#endif
-
 #include "logger.h"
 
 #include <stdarg.h>
 #include <time.h>
 
-#if PLATFORM_WINDOWS
-#include <windows.h>
-#elif PLATFORM_LINUX
-#include <pthread.h>
-#include <unistd.h>
-#endif
+#include "platform.h"
 
-#if PLATFORM_WINDOWS
-typedef SRWLOCK os_mutex_t;
-#define OS_MUTEX_INIT SRWLOCK_INIT
-static void os_lock(os_mutex_t *m) { AcquireSRWLockExclusive(m); }
-static void os_unlock(os_mutex_t *m) { ReleaseSRWLockExclusive(m); }
-#elif PLATFORM_LINUX
-typedef pthread_mutex_t os_mutex_t;
-#define OS_MUTEX_INIT PTHREAD_MUTEX_INITIALIZER
-static void os_lock(os_mutex_t *m) { pthread_mutex_lock(m); }
-static void os_unlock(os_mutex_t *m) { pthread_mutex_unlock(m); }
-#endif
+#define TIMESTAMP_CAP 16
+#define MESSAGE_CAP 1024
+#define LINE_CAP (MESSAGE_CAP + 128) // message plus level, file and line
 
-static FILE *os_fopen(const char *path, const char *mode) {
-#if PLATFORM_WINDOWS
-    FILE *f = NULL;
-    fopen_s(&f, path, mode);
-    return f;
-#elif PLATFORM_LINUX
-    return fopen(path, mode);
-#endif
-}
-
-static void os_localtime(struct tm *out, const time_t *t) {
-#if PLATFORM_WINDOWS
-    localtime_s(out, t); // MSVC arg order (dst, src)
-#elif PLATFORM_LINUX
-    localtime_r(t, out); // POSIX arg order (src, dst)
-#endif
-}
-
-static b32 os_enable_color() {
-#if PLATFORM_WINDOWS
-    DWORD mode = 0;
-    HANDLE err = GetStdHandle(STD_ERROR_HANDLE);
-    if (GetConsoleMode(err, &mode))
-        SetConsoleMode(err, mode | ENABLE_VIRTUAL_TERMINAL_PROCESSING);
-    HANDLE out = GetStdHandle(STD_OUTPUT_HANDLE);
-    if (!GetConsoleMode(out, &mode))
-        return false; // redirected to file/pipe, skip colors
-    SetConsoleMode(out, mode | ENABLE_VIRTUAL_TERMINAL_PROCESSING);
-    return true;
-#elif PLATFORM_LINUX
-    return isatty(STDOUT_FILENO); // terminals handle ANSI natively
-#endif
-}
-
-static os_mutex_t g_lock = OS_MUTEX_INIT;
+static platform::Mutex g_lock;
 static FILE *g_file = NULL;
 static logger::Level g_min = logger::TRACE;
 static b32 g_color = false; // true when stdout is an ANSI-capable console
+static u32 g_counts[logger::FATAL + 1];
 
 static const char *level_name(logger::Level level) {
     switch (level) {
@@ -104,12 +54,12 @@ static const char *level_color(logger::Level level) {
 namespace logger {
 
 void init(const char *file_path) {
-    os_lock(&g_lock);
+    platform::lock(&g_lock);
     if (file_path && !g_file)
-        g_file = os_fopen(file_path, "w");
-    g_color = os_enable_color();
+        g_file = platform::file_open(file_path, "w");
+    g_color = platform::enable_console_color();
     b32 no_file = file_path && !g_file;
-    os_unlock(&g_lock);
+    platform::unlock(&g_lock);
 
     // g_lock is not recursive, so this has to happen after the unlock
     if (no_file)
@@ -117,17 +67,21 @@ void init(const char *file_path) {
 }
 
 void shutdown(void) {
-    os_lock(&g_lock);
+    platform::lock(&g_lock);
     if (g_file) {
         fclose(g_file);
         g_file = NULL;
     }
-    os_unlock(&g_lock);
+    platform::unlock(&g_lock);
 }
 
 void set_level(Level min) { g_min = min; }
+Level level() { return g_min; }
+u32 count(Level level) { return level <= FATAL ? g_counts[level] : 0; }
 
 void write(Level level, const char *file, i32 line, const char *fmt, ...) {
+    if (level <= FATAL)
+        g_counts[level]++;
     if (level < g_min)
         return;
 
@@ -137,13 +91,13 @@ void write(Level level, const char *file, i32 line, const char *fmt, ...) {
             name = p + 1;
     }
 
-    char ts[16];
+    char ts[TIMESTAMP_CAP];
     time_t now = time(NULL);
     struct tm lt;
-    os_localtime(&lt, &now);
+    platform::local_time(&lt, &now);
     strftime(ts, sizeof(ts), "%H:%M:%S", &lt);
 
-    char msg[1024];
+    char msg[MESSAGE_CAP];
     va_list args;
     va_start(args, fmt);
     vsnprintf(msg, sizeof(msg), fmt, args);
@@ -154,7 +108,7 @@ void write(Level level, const char *file, i32 line, const char *fmt, ...) {
     const char *reset = g_color ? "\x1b[0m" : "";
     FILE *console = (level >= ERR) ? stderr : stdout;
 
-    os_lock(&g_lock);
+    platform::lock(&g_lock);
 
     fprintf(console, "%s %s%-5s%s %s:%d: %s\n", ts, color, lvl, reset, name, line, msg);
 
@@ -163,13 +117,11 @@ void write(Level level, const char *file, i32 line, const char *fmt, ...) {
         fflush(g_file);
     }
 
-#if PLATFORM_WINDOWS
-    char dbg[1100];
+    char dbg[LINE_CAP];
     snprintf(dbg, sizeof(dbg), "[%s] %s:%d: %s\n", lvl, name, line, msg);
-    OutputDebugStringA(dbg);
-#endif
+    platform::debug_print(dbg);
 
-    os_unlock(&g_lock);
+    platform::unlock(&g_lock);
 
     if (level == FATAL) {
         fflush(NULL);
@@ -178,7 +130,7 @@ void write(Level level, const char *file, i32 line, const char *fmt, ...) {
 }
 
 void lassert(b32 fatal, const char *file, i32 line, const char *fmt, ...) {
-    char msg[1024];
+    char msg[MESSAGE_CAP];
     va_list args;
     va_start(args, fmt);
     vsnprintf(msg, sizeof(msg), fmt, args);

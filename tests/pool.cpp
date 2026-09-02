@@ -1,6 +1,5 @@
 #include <string.h>
 
-#include "logger.h"
 #include "pool.h"
 #include "suites.h"
 
@@ -41,15 +40,22 @@ static void handles_resolve_to_their_payload(memory::Arena *a) {
     CHECK(((Item *)pool::resolve(&p, h2))->id == 222);
 }
 
+// Fills the pool so the next alloc can only return the slot just released.
+static u32 release_and_realloc(pool::Pool *p, u32 idx) {
+    while (pool::alloc(p, 0))
+        ;
+    pool::release(p, idx);
+    return pool::alloc(p, 0);
+}
+
 static void alloc_zeroes_the_payload(memory::Arena *a) {
     pool::Pool p = make(a, 4);
 
     u32 i = pool::alloc(&p, 0);
     ((Item *)pool::at(&p, i))->id = 0xABCD;
-    pool::release(&p, i);
 
-    u32 again = pool::alloc(&p, 0);
-    CHECK(again == i); // same slot back
+    u32 again = release_and_realloc(&p, i);
+    CHECK(again == i);
     CHECK(((Item *)pool::at(&p, again))->id == 0);
 }
 
@@ -59,16 +65,28 @@ static void recycled_slots_reject_stale_handles(memory::Arena *a) {
 
     u32 idx = pool::alloc(&p, 0);
     u32 old = pool::make_handle(&p, idx);
-    pool::release(&p, idx);
+    u32 fresh = pool::make_handle(&p, release_and_realloc(&p, idx));
 
-    u32 fresh = pool::make_handle(&p, pool::alloc(&p, 0));
-
-    CHECK(pool_handle_index(old) == pool_handle_index(fresh));
-    CHECK(pool_handle_epoch(old) != pool_handle_epoch(fresh));
+    CHECK(pool::handle_index(old) == pool::handle_index(fresh));
+    CHECK(pool::handle_epoch(old) != pool::handle_epoch(fresh));
 
     CHECK(pool::alive(&p, fresh) == true);
     CHECK(pool::alive(&p, old) == false);
     CHECK(pool::resolve(&p, old) == NULL);
+}
+
+// a freed slot goes to the back of the line, so create/delete churn does not
+// hammer one slot's 8-bit epoch
+static void freed_slots_are_reused_last(memory::Arena *a) {
+    pool::Pool p = make(a, 4);
+
+    u32 first = pool::alloc(&p, 0);
+    pool::release(&p, first);
+
+    CHECK(pool::alloc(&p, 0) != first);
+    CHECK(pool::alloc(&p, 0) != first);
+    CHECK(pool::alloc(&p, 0) == first);
+    CHECK(pool::alloc(&p, 0) == 0);
 }
 
 static void scopes_release_independently(memory::Arena *a) {
@@ -92,15 +110,20 @@ static void resolve_or_zero_substitutes_and_warns_once(memory::Arena *a) {
     u32 stale = pool::make_handle(&p, idx);
     pool::release(&p, idx);
 
-    logger::set_level(logger::FATAL); // the first lookup warns, by design
+    test::mute();
     CHECK(((Item *)pool::resolve_or_zero(&p, stale, "item"))->id == 999);
-    CHECK(p.slots[pool_handle_index(stale)].warned == true);
+    CHECK(((Item *)pool::resolve_or_zero(&p, stale, "item"))->id == 999);
+    CHECK(p.slots[pool::handle_index(stale)].warned == true);
 
     // handle 0 means "unset" rather than "broken", so it must stay silent
     pool::Pool q = make(a, 4);
     CHECK(pool::resolve_or_zero(&q, 0, "item") == pool::at(&q, 0));
     CHECK(q.slots[0].warned == false);
-    logger::set_level(logger::TRACE);
+
+    // past the capacity there is no slot to flag, so the pool flags once itself
+    CHECK(pool::resolve_or_zero(&q, 77, "item") == pool::at(&q, 0));
+    CHECK(pool::resolve_or_zero(&q, 78, "item") == pool::at(&q, 0));
+    CHECK(test::unmute() == 2); // one stale, one out of range
 }
 
 static void iteration_visits_live_slots_only(memory::Arena *a) {
@@ -131,13 +154,14 @@ static void iteration_visits_live_slots_only(memory::Arena *a) {
 
 test::Suite pool_suite() {
     static const test::Case cases[] = {
-        {"slot_zero_is_never_handed_out", slot_zero_is_never_handed_out},
-        {"handles_resolve_to_their_payload", handles_resolve_to_their_payload},
-        {"alloc_zeroes_the_payload", alloc_zeroes_the_payload},
-        {"recycled_slots_reject_stale_handles", recycled_slots_reject_stale_handles},
-        {"scopes_release_independently", scopes_release_independently},
-        {"resolve_or_zero_substitutes_and_warns_once", resolve_or_zero_substitutes_and_warns_once},
-        {"iteration_visits_live_slots_only", iteration_visits_live_slots_only},
+        CASE(slot_zero_is_never_handed_out),
+        CASE(handles_resolve_to_their_payload),
+        CASE(alloc_zeroes_the_payload),
+        CASE(recycled_slots_reject_stale_handles),
+        CASE(freed_slots_are_reused_last),
+        CASE(scopes_release_independently),
+        CASE(resolve_or_zero_substitutes_and_warns_once),
+        CASE(iteration_visits_live_slots_only),
     };
     return test::Suite{.name = "pool", .cases = cases, .count = ARRAY_COUNT(cases)};
 }

@@ -1,55 +1,30 @@
 #include "file.h"
 
 #include "logger.h"
-
-static FILE *os_fopen(const char *path, const char *mode) {
-#if PLATFORM_WINDOWS
-    FILE *f = NULL;
-    fopen_s(&f, path, mode);
-    return f;
-#elif PLATFORM_LINUX
-    return fopen(path, mode);
-#endif
-}
-
-static i32 os_fseek(FILE *f, i64 off, i32 origin) {
-#if PLATFORM_WINDOWS
-    return _fseeki64(f, off, origin);
-#elif PLATFORM_LINUX
-    return fseeko(f, (off_t)off, origin);
-#endif
-}
-
-static i64 os_ftell(FILE *f) {
-#if PLATFORM_WINDOWS
-    return _ftelli64(f);
-#elif PLATFORM_LINUX
-    return (i64)ftello(f);
-#endif
-}
+#include "platform.h"
 
 namespace file {
 
 BlobResult read(memory::Arena *a, const char *path) {
-    FILE *f = os_fopen(path, "rb");
+    FILE *f = platform::file_open(path, "rb");
     if (!f) {
         LOG_ERR("file_read: cannot open %s", path);
         return BlobResult{.err = result::ERR_NOT_FOUND};
     }
 
-    if (os_fseek(f, 0, SEEK_END) != 0) {
+    if (platform::file_seek(f, 0, SEEK_END) != 0) {
         LOG_ERR("file_read: cannot seek %s", path);
         fclose(f);
         return BlobResult{.err = result::ERR_IO};
     }
 
-    i64 len = os_ftell(f);
+    i64 len = platform::file_tell(f);
     if (len < 0) {
         LOG_ERR("file_read: cannot size %s", path);
         fclose(f);
         return BlobResult{.err = result::ERR_IO};
     }
-    os_fseek(f, 0, SEEK_SET);
+    platform::file_seek(f, 0, SEEK_SET);
 
     memory::ArenaTemp t = memory::temp_begin(a);
 
@@ -68,10 +43,30 @@ BlobResult read(memory::Arena *a, const char *path) {
     return BlobResult{.val = Blob{.data = buf, .size = (u64)len}};
 }
 
+result::Error write(const char *path, const void *data, u64 size) {
+    ASSERT(path && (data || size == 0));
+
+    FILE *f = platform::file_open(path, "wb");
+    if (!f) {
+        LOG_ERR("file_write: cannot open %s", path);
+        return result::ERR_IO;
+    }
+
+    u64 put = fwrite(data, 1, size, f);
+    b32 closed = fclose(f) == 0;
+    if (put != size || !closed) {
+        LOG_ERR("file_write: short write on %s (%llu of %llu)", path, (unsigned long long)put,
+                (unsigned long long)size);
+        return result::ERR_IO;
+    }
+
+    return result::OK;
+}
+
 b32 exists(const char *path) {
     ASSERT(path);
 
-    FILE *f = os_fopen(path, "rb");
+    FILE *f = platform::file_open(path, "rb");
     if (!f)
         return false;
     fclose(f);

@@ -1,5 +1,7 @@
 #pragma once
 
+#include <stdarg.h>
+
 #include "common.h"
 
 #define ARENA_DEFAULT_ALIGN 16
@@ -31,6 +33,13 @@ void init(u64 reserve);
 Arena create(u64 cap);
 void *push(Arena *a, size_t size, size_t align = ARENA_DEFAULT_ALIGN);
 void *push_nz(Arena *a, size_t size, size_t align = ARENA_DEFAULT_ALIGN);
+
+// Copies into the arena. For strings that have to outlive their source: map
+// keys, names stored on a pool payload.
+char *push_str(Arena *a, const char *s);
+void *push_bytes(Arena *a, const void *src, u64 n);
+char *push_fmt(Arena *a, const char *fmt, ...);
+char *push_vfmt(Arena *a, const char *fmt, va_list ap);
 
 void reset(Arena *a);
 ArenaTemp temp_begin(Arena *a);

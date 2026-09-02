@@ -64,6 +64,8 @@ int main() {
                                                 .scope_bytes = {MiB(128), MiB(128)},
                                             }))};
 
+    render::attach_assets(&perm, assets);
+
     entity::World *world{MUST(entity::init(&perm, entity::Config{
                                                       .max_entities = 4096,
                                                       .max_renderables = 2048,
@@ -112,7 +114,6 @@ int main() {
     f32 fov = cam.v ? entity::camera(world, cam)->fov_y : 60.0f;
     f32 dist = radius / tanf(DEG2RAD(fov) * 0.5f) * 1.15f;
 
-    b32 warned_no_camera = false;
     f64 last = window::time();
 
     while (!window::should_close(win)) {
@@ -144,18 +145,16 @@ int main() {
 
             entity::Entity *ce = entity::get(world, cam);
             ce->local.position = eye;
-            ce->local.rotation =
-                linalg::quat_look_rotation(center - eye, linalg::Vec3{0.0f, 1.0f, 0.0f});
+            entity::set_rotation(&ce->local, linalg::quat_look_rotation(
+                                                 center - eye, linalg::Vec3{0.0f, 1.0f, 0.0f}));
         }
 
         entity::update(world, assets, &scratch, dt);
 
         // View, projection and lighting all come from entities now.
         shader::FrameData frame{};
-        if (!entity::build_frame(world, (f32)fb_w / (f32)fb_h, &frame) && !warned_no_camera) {
-            warned_no_camera = true;
-            LOG_WARN("main: the level has no active camera, nothing will be visible");
-        }
+        if (!entity::build_frame(world, (f32)fb_w / (f32)fb_h, &frame))
+            LOG_WARN_ONCE("main: the level has no active camera, nothing will be visible");
 
         render::begin_frame(&frame, linalg::Vec4{0.10f, 0.11f, 0.13f, 1.0f});
         entity::submit(world, assets);

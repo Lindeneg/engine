@@ -19,11 +19,11 @@
 #define POOL_EPOCH_SHIFT 24
 #define POOL_INDEX_MASK ((1u << POOL_EPOCH_SHIFT) - 1)
 
-// The encoding is public so handles can be serialized and printed.
-inline u32 pool_handle_index(u32 v) { return v & POOL_INDEX_MASK; }
-inline u8 pool_handle_epoch(u32 v) { return (u8)(v >> POOL_EPOCH_SHIFT); }
-
 namespace pool {
+
+// The encoding is public so handles can be serialized and printed.
+inline u32 handle_index(u32 v) { return v & POOL_INDEX_MASK; }
+inline u8 handle_epoch(u32 v) { return (u8)(v >> POOL_EPOCH_SHIFT); }
 
 struct Slot {
     u8 epoch;
@@ -42,6 +42,17 @@ struct Pool {
     u32 cap;
     u64 stride;
     u32 live; // slots in use, not counting the reserved index 0
+
+    // Free indices as a FIFO ring, so alloc is O(1) and a freed slot goes to
+    // the back of the line. LIFO would hand the same slot straight back on
+    // every create/delete cycle, and with an 8-bit epoch that slot's stale
+    // handles would start resolving again after 256 cycles.
+    u32 *free_ring;
+    u32 free_head;  // next index to hand out
+    u32 free_count; // indices waiting in the ring
+
+    // an index past cap has no slot to carry a warned flag, so it gets one here
+    b8 warned_range;
 };
 
 Pool create(memory::Arena *a, u32 cap, u64 stride);

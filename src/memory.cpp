@@ -1,8 +1,10 @@
 #include "./memory.h"
 
+#include <stdarg.h>
 #include <string.h>
 
 #include "logger.h"
+#include "platform.h"
 
 struct ArenaRoot {
     u8 *base;
@@ -15,50 +17,6 @@ static ArenaRoot g_arena_root;
 
 static f64 to_mib(u64 bytes) { return (f64)bytes / (1024.0 * 1024.0); }
 
-#if PLATFORM_WINDOWS
-#include <windows.h>
-#elif PLATFORM_LINUX
-#include <sys/mman.h>
-#include <unistd.h>
-#endif
-
-static u64 os_page_size() {
-#if PLATFORM_WINDOWS
-    SYSTEM_INFO si;
-    GetSystemInfo(&si);
-    return si.dwPageSize;
-#elif PLATFORM_LINUX
-    return (u64)sysconf(_SC_PAGESIZE);
-#endif
-}
-
-static u64 os_alloc_granularity() {
-#if PLATFORM_WINDOWS
-    SYSTEM_INFO si;
-    GetSystemInfo(&si);
-    return si.dwAllocationGranularity;
-#elif PLATFORM_LINUX
-    return (u64)sysconf(_SC_PAGESIZE);
-#endif
-}
-
-static void *os_reserve(u64 size) {
-#if PLATFORM_WINDOWS
-    return VirtualAlloc(0, size, MEM_RESERVE, PAGE_READWRITE);
-#elif PLATFORM_LINUX
-    void *p = mmap(0, size, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-    return (p == MAP_FAILED) ? NULL : p;
-#endif
-}
-
-static b32 os_commit(void *ptr, u64 size) {
-#if PLATFORM_WINDOWS
-    return VirtualAlloc(ptr, size, MEM_COMMIT, PAGE_READWRITE) != NULL;
-#elif PLATFORM_LINUX
-    return mprotect(ptr, size, PROT_READ | PROT_WRITE) == 0;
-#endif
-}
-
 static void commit_for(memory::Arena *a, u64 needed) {
     if (needed <= a->committed)
         return;
@@ -67,7 +25,7 @@ static void commit_for(memory::Arena *a, u64 needed) {
     if (want > a->cap)
         want = a->cap; // cap is page-aligned, stays aligned
 
-    b32 ok = os_commit(a->base + a->committed, want - a->committed);
+    b32 ok = platform::commit(a->base + a->committed, want - a->committed);
     ASSERT_MSG(ok, "commit of %llu bytes failed", (unsigned long long)(want - a->committed));
 
     a->committed = want;
@@ -95,10 +53,10 @@ static void *push_impl(memory::Arena *a, size_t size, size_t align, b32 zero) {
 namespace memory {
 void init(u64 reserve) {
     ASSERT_MSG(!g_arena_root.base, "memory system already initialized");
-    g_arena_root.page_size = os_page_size();
+    g_arena_root.page_size = platform::page_size();
 
-    reserve = ALIGN_UP_2(reserve, os_alloc_granularity());
-    void *base = os_reserve(reserve);
+    reserve = ALIGN_UP_2(reserve, platform::alloc_granularity());
+    void *base = platform::reserve(reserve);
     ASSERT_MSG(base, "reserve of %llu bytes failed", (unsigned long long)reserve);
 
     g_arena_root.base = (u8 *)base;
@@ -108,6 +66,7 @@ void init(u64 reserve) {
 }
 
 Arena create(u64 cap) {
+    ASSERT_MSG(g_arena_root.base, "memory::create before memory::init");
     cap = ALIGN_UP_2(cap, g_arena_root.page_size);
     ASSERT_MSG(g_arena_root.carved + cap <= g_arena_root.reserved,
                "arena budget exhausted: want %llu, %llu left", (unsigned long long)cap,
@@ -128,6 +87,40 @@ void *push(Arena *a, size_t size, size_t align) { return push_impl(a, size, alig
 
 void *push_nz(Arena *a, size_t size, size_t align) { return push_impl(a, size, align, false); }
 
+char *push_str(Arena *a, const char *s) {
+    ASSERT(s);
+    return (char *)push_bytes(a, s, strlen(s) + 1);
+}
+
+void *push_bytes(Arena *a, const void *src, u64 n) {
+    ASSERT(src || n == 0);
+    void *out = push_impl(a, n, ARENA_DEFAULT_ALIGN, false);
+    memcpy(out, src, n);
+    return out;
+}
+
+char *push_fmt(Arena *a, const char *fmt, ...) {
+    va_list ap;
+    va_start(ap, fmt);
+    char *out = push_vfmt(a, fmt, ap);
+    va_end(ap);
+    return out;
+}
+
+char *push_vfmt(Arena *a, const char *fmt, va_list ap) {
+    ASSERT(fmt);
+
+    va_list measure;
+    va_copy(measure, ap);
+    i32 n = vsnprintf(NULL, 0, fmt, measure);
+    va_end(measure);
+    ASSERT(n >= 0);
+
+    char *out = (char *)push_impl(a, (u64)n + 1, ARENA_DEFAULT_ALIGN, false);
+    vsnprintf(out, (u64)n + 1, fmt, ap);
+    return out;
+}
+
 void reset(Arena *a) {
     ASSERT(a);
     a->used = 0;
@@ -140,6 +133,10 @@ ArenaTemp temp_begin(Arena *a) {
 
 void temp_end(ArenaTemp t) {
     ASSERT(t.arena);
+    // a mark above the current position means scopes ended out of order, or
+    // the arena was reset underneath a live temp
+    ASSERT_MSG(t.used <= t.arena->used, "temp_end mark %llu above arena position %llu",
+               (unsigned long long)t.used, (unsigned long long)t.arena->used);
     t.arena->used = t.used;
 }
 

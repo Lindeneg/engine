@@ -26,8 +26,8 @@ namespace asset {
 // here, never "invalid": zeroed memory means "missing", and get() always
 // returns something drawable. Entities use the same encoding but leave slot 0
 // empty, because a fallback entity would be meaningless.
-inline u32 handle_index(u32 v) { return pool_handle_index(v); }
-inline u8 handle_epoch(u32 v) { return pool_handle_epoch(v); }
+inline u32 handle_index(u32 v) { return pool::handle_index(v); }
+inline u8 handle_epoch(u32 v) { return pool::handle_epoch(v); }
 
 ASSET_HANDLE(ModelHandle);
 ASSET_HANDLE(MeshHandle);
@@ -89,9 +89,6 @@ struct Mesh {
     u32 index_count;
     Submesh *submeshes;
     u32 submesh_count;
-
-    // owned by the renderer, untouched here -- the manager never calls OpenGL
-    u32 gpu_vao, gpu_vbo, gpu_ebo;
 };
 
 // Physics raycasts against positions regardless of skinning, and reading through
@@ -161,6 +158,7 @@ struct Channel {
 
 struct Clip {
     char name[ASSET_NAME_CAP];
+    const char *key; // "<path>@<skeleton>" in the scope arena; the dedup map keys on it
     f32 duration;
     Channel *channels;
     u32 channel_count;
@@ -185,7 +183,7 @@ struct ClipOptions {
 // Per-asset import settings. A hand-run FBX->glB pipeline produces files in
 // whatever units and up-axis the source tool used, and no two exporters agree.
 struct ImportOptions {
-    f32 scale; // 0 means "as authored"
+    f32 scale; // multiplier on the authored units; the sidecar default is 1
     b32 z_up;  // rotate -90 about X to bring a Z-up asset into our Y-up world
 };
 
@@ -269,7 +267,11 @@ MaterialResult create_material(Manager *m, Scope s);
 SkeletonResult create_skeleton(Manager *m, Scope s);
 ClipResult create_clip(Manager *m, Scope s);
 
-// Dedups on path: loading the same file twice returns the same handle.
+// Dedups on path within a scope: loading the same file twice into the same
+// scope returns the same handle. Scopes never share, because a handle from a
+// shorter-lived scope would die under a caller that asked for a longer one.
+// A load that failed fails again from a cache, without re-reading the file or
+// re-logging, until the scope is unloaded.
 // Pair with OR_ELSE(..., MODEL_FALLBACK) to keep a missing asset visible in the
 // world instead of fatal; read .err directly when the reason matters.
 //
@@ -292,7 +294,8 @@ linalg::Mat4 import_matrix(ImportOptions opts);
 
 // A clip binds to one skeleton at load, matching channels to joints by
 // canonical name. Records the bind rate on the Clip; a rate of 0 warns loudly,
-// since an unbound clip plays silently and animates nothing.
+// since an unbound clip plays silently and animates nothing. Dedups on
+// (path, target skeleton) within a scope, like load_model.
 ClipResult load_clip(Manager *m, Scope s, const char *rel_path, SkeletonHandle target);
 ClipResult load_clip_with(Manager *m, Scope s, const char *rel_path, SkeletonHandle target,
                           ClipOptions opts);
@@ -310,7 +313,16 @@ Clip *get(Manager *m, ClipHandle h);
 // path entry, but leaves the bytes until the scope resets. Makes undo cheap.
 void remove(Manager *m, ModelHandle h);
 
-// Resets the scope's arena and invalidates every handle it issued.
+// Resets the scope's arena and invalidates every handle it issued. Every mesh
+// in the scope is reported through the release hook first.
 void unload_scope(Manager *m, Scope s);
+
+// How the renderer learns a mesh is going away, so it can drop the GPU copy it
+// made of it. The manager never calls OpenGL itself; it only says when.
+typedef void (*MeshReleaseFn)(void *user, MeshHandle h);
+void on_mesh_release(Manager *m, MeshReleaseFn fn, void *user);
+
+// Pool capacity, for a side table indexed by mesh slot.
+u32 mesh_capacity(Manager *m);
 
 } // namespace asset

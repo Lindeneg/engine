@@ -57,37 +57,3 @@ void lassert(b32 fatal, const char *file, i32 line, const char *fmt, ...);
             logger::lassert(true, __FILE__, __LINE__, "ASSERT '%s' failed: " fmt " (%s)", #expr,   \
                             ##__VA_ARGS__, __func__);                                              \
     } while (0)
-
-#define ASSERT_RET(expr, ret)                                                                      \
-    do {                                                                                           \
-        if (!(expr)) {                                                                             \
-            logger::lassert(false, __FILE__, __LINE__, "check '%s' failed (%s)", #expr, __func__); \
-            return (ret);                                                                          \
-        }                                                                                          \
-    } while (0)
-
-#define ASSERT_RET_V(expr)                                                                         \
-    do {                                                                                           \
-        if (!(expr)) {                                                                             \
-            logger::lassert(false, __FILE__, __LINE__, "check '%s' failed (%s)", #expr, __func__); \
-            return;                                                                                \
-        }                                                                                          \
-    } while (0)
-
-#define ASSERT_RET_MSG(expr, ret, fmt, ...)                                                        \
-    do {                                                                                           \
-        if (!(expr)) {                                                                             \
-            logger::lassert(false, __FILE__, __LINE__, "check '%s' failed: " fmt " (%s)", #expr,   \
-                            ##__VA_ARGS__, __func__);                                              \
-            return (ret);                                                                          \
-        }                                                                                          \
-    } while (0)
-
-#define ASSERT_RET_V_MSG(expr, fmt, ...)                                                           \
-    do {                                                                                           \
-        if (!(expr)) {                                                                             \
-            logger::lassert(false, __FILE__, __LINE__, "check '%s' failed: " fmt " (%s)", #expr,   \
-                            ##__VA_ARGS__, __func__);                                              \
-            return;                                                                                \
-        }                                                                                          \
-    } while (0)

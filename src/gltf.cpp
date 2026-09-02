@@ -6,6 +6,12 @@
 
 #include "file.h"
 #include "logger.h"
+#include "str.h"
+
+// A clip whose translations reach this many times further than the target
+// skeleton's own bones is almost certainly authored for another rig. Only a
+// warning threshold: rotation_only stays the author's call (principle 3).
+#define GLTF_RETARGET_WARN_RATIO 4.0f
 
 static void *arena_alloc(void *user, cgltf_size size) {
     return memory::push((memory::Arena *)user, (size_t)size);
@@ -244,11 +250,14 @@ static void dump_images(const cgltf_data *d) {
 }
 
 // Parse + load_buffers + validate. The returned tree lives in `scratch` and dies
-// with the caller's temp scope.
-static result::Error parse_glb(memory::Arena *scratch, const char *path, cgltf_data **out) {
+// with the caller's temp scope. out_bytes, when given, receives the file size.
+static result::Error parse_glb(memory::Arena *scratch, const char *path, cgltf_data **out,
+                               u64 *out_bytes) {
     file::BlobResult blob = file::read(scratch, path);
     if (blob.err != result::OK)
         return blob.err;
+    if (out_bytes)
+        *out_bytes = blob.val.size;
 
     cgltf_options opts = {};
     opts.memory.alloc_func = arena_alloc;
@@ -278,17 +287,26 @@ static result::Error parse_glb(memory::Arena *scratch, const char *path, cgltf_d
     return result::OK;
 }
 
-static void read_floats(const cgltf_accessor *a, cgltf_size i, f32 *out, cgltf_size n) {
-    if (!a || !cgltf_accessor_read_float(a, i, out, n))
+// An absent accessor is a legitimate "no such attribute" and reads as zeros; a
+// present one that cgltf refuses to read is a failure, reported so the caller
+// can log it once rather than per vertex.
+static b32 read_floats(const cgltf_accessor *a, cgltf_size i, f32 *out, cgltf_size n) {
+    if (!a) {
         memset(out, 0, n * sizeof(f32));
+        return true;
+    }
+    if (cgltf_accessor_read_float(a, i, out, n))
+        return true;
+    memset(out, 0, n * sizeof(f32));
+    return false;
 }
 
-static void read_joints(const cgltf_accessor *a, cgltf_size i, u16 *out) {
+static b32 read_joints(const cgltf_accessor *a, cgltf_size i, u16 *out) {
     cgltf_uint tmp[4] = {};
-    if (a)
-        cgltf_accessor_read_uint(a, i, tmp, 4);
+    b32 ok = !a || cgltf_accessor_read_uint(a, i, tmp, 4);
     for (u32 k = 0; k < 4; k++)
         out[k] = (u16)tmp[k];
+    return ok;
 }
 
 static const cgltf_accessor *attr(const cgltf_primitive *p, cgltf_attribute_type t) {
@@ -316,39 +334,52 @@ static b32 block_matches(const VertexBlock *b, const cgltf_primitive *p) {
            b->weights == attr(p, cgltf_attribute_type_weights);
 }
 
-static linalg::Vec3 xform_point(linalg::Mat4 m, linalg::Vec3 p) {
-    linalg::Vec4 r = linalg::mat4_mul_vec4(m, linalg::Vec4{p.x, p.y, p.z, 1.0f});
-    return linalg::Vec3{r.x, r.y, r.z};
-}
+// Everything a mesh load wants to say once, rather than per vertex.
+struct MeshStats {
+    u32 read_failures; // accessor reads cgltf refused; the vertex got zeros
+    u32 bad_joints;    // JOINTS_0 entries past the skeleton, unweighted
+    u32 rides_root;    // primitives of a skinned mesh with no JOINTS_0
+    u32 orphan_joints; // primitives with JOINTS_0 under a node with no skin
+    u32 skipped;       // no POSITION, or not a triangle list
+};
 
-static linalg::Vec3 xform_dir(linalg::Mat4 m, linalg::Vec3 v) {
-    linalg::Vec4 r = linalg::mat4_mul_vec4(m, linalg::Vec4{v.x, v.y, v.z, 0.0f});
-    linalg::Vec3 d{r.x, r.y, r.z};
-    f32 len = linalg::vec3_length(d);
-    return len > 1e-8f ? linalg::vec3_scale(d, 1.0f / len) : linalg::Vec3{0.0f, 1.0f, 0.0f};
-}
+static void fill_block(asset::Mesh *mesh, const VertexBlock *b, linalg::Mat4 bake, u32 joint_count,
+                       MeshStats *st) {
+    if (mesh->vertex_kind == asset::VERTEX_SKINNED && !b->joints)
+        st->rides_root++;
 
-static void fill_block(asset::Mesh *mesh, const VertexBlock *b, linalg::Mat4 bake) {
     for (u32 i = 0; i < b->count; i++) {
         f32 pos[3], nrm[3], uv[2];
-        read_floats(b->pos, i, pos, 3);
-        read_floats(b->nrm, i, nrm, 3);
-        read_floats(b->uv, i, uv, 2);
+        st->read_failures += !read_floats(b->pos, i, pos, 3);
+        st->read_failures += !read_floats(b->nrm, i, nrm, 3);
+        st->read_failures += !read_floats(b->uv, i, uv, 2);
 
-        linalg::Vec3 p = xform_point(bake, linalg::Vec3{pos[0], pos[1], pos[2]});
-        linalg::Vec3 n = xform_dir(bake, linalg::Vec3{nrm[0], nrm[1], nrm[2]});
+        linalg::Vec3 p = linalg::mat4_mul_point(bake, linalg::Vec3{pos[0], pos[1], pos[2]});
+        linalg::Vec3 n = linalg::vec3_normalize_or(
+            linalg::mat4_mul_dir(bake, linalg::Vec3{nrm[0], nrm[1], nrm[2]}),
+            linalg::Vec3{0.0f, 1.0f, 0.0f});
 
         if (mesh->vertex_kind == asset::VERTEX_SKINNED) {
             asset::VertexSkinned *v = &mesh->vertices.skinned[b->base + i];
             v->pos = p;
             v->normal = n;
             v->uv = linalg::Vec2{uv[0], uv[1]};
-            read_joints(b->joints, i, v->joints);
+            st->read_failures += !read_joints(b->joints, i, v->joints);
             if (b->weights) {
-                read_floats(b->weights, i, v->weights, 4);
+                st->read_failures += !read_floats(b->weights, i, v->weights, 4);
             } else {
                 // an unskinned primitive inside a skinned mesh rides joint 0
                 v->weights[0] = 1.0f;
+            }
+
+            // The shader indexes the palette with these unchecked, so an index
+            // past the skeleton reads whatever sits after it in the UBO.
+            for (u32 k = 0; k < 4; k++) {
+                if (v->joints[k] >= joint_count) {
+                    st->bad_joints++;
+                    v->joints[k] = 0;
+                    v->weights[k] = 0.0f;
+                }
             }
         } else {
             asset::VertexStatic *v = &mesh->vertices.statics[b->base + i];
@@ -359,10 +390,13 @@ static void fill_block(asset::Mesh *mesh, const VertexBlock *b, linalg::Mat4 bak
     }
 }
 
+// skinned is the node's call, not the primitive's: a node with a skin is
+// skinned even where a primitive lacks JOINTS_0 (it rides joint 0), and a node
+// without one is static even if its primitives carry joint data.
 static void load_mesh(asset::Manager *m, asset::Scope s, memory::Arena *scratch,
                       const cgltf_data *d, const cgltf_mesh *src,
-                      const asset::MaterialHandle *materials, linalg::Mat4 bake,
-                      asset::Mesh *mesh) {
+                      const asset::MaterialHandle *materials, linalg::Mat4 bake, b32 skinned,
+                      u32 joint_count, asset::Mesh *mesh) {
     memory::ArenaTemp t = memory::temp_begin(scratch);
     memory::Arena *out = asset::scope_arena(m, s);
 
@@ -370,16 +404,18 @@ static void load_mesh(asset::Manager *m, asset::Scope s, memory::Arena *scratch,
     u32 block_count = 0;
     u32 total_verts = 0;
     u32 total_indices = 0;
-    b32 skinned = false;
+    MeshStats st{};
 
     for (cgltf_size p = 0; p < src->primitives_count; p++) {
         const cgltf_primitive *prim = &src->primitives[p];
         const cgltf_accessor *pos = attr(prim, cgltf_attribute_type_position);
-        if (!pos || prim->type != cgltf_primitive_type_triangles)
+        if (!pos || prim->type != cgltf_primitive_type_triangles) {
+            st.skipped++;
             continue;
+        }
 
-        if (attr(prim, cgltf_attribute_type_joints))
-            skinned = true;
+        if (!skinned && attr(prim, cgltf_attribute_type_joints))
+            st.orphan_joints++;
 
         b32 found = false;
         for (u32 b = 0; b < block_count && !found; b++)
@@ -413,7 +449,25 @@ static void load_mesh(asset::Manager *m, asset::Scope s, memory::Arena *scratch,
     mesh->submeshes = push_array(out, asset::Submesh, src->primitives_count);
 
     for (u32 b = 0; b < block_count; b++)
-        fill_block(mesh, &blocks[b], bake);
+        fill_block(mesh, &blocks[b], bake, joint_count, &st);
+
+    const char *mesh_name = safe_name(src->name);
+    if (st.skipped)
+        LOG_WARN("gltf: mesh \"%s\": %u primitive(s) skipped -- no POSITION or not triangles",
+                 mesh_name, st.skipped);
+    if (st.read_failures)
+        LOG_WARN("gltf: mesh \"%s\": %u accessor read(s) failed, those values are zero", mesh_name,
+                 st.read_failures);
+    if (st.bad_joints)
+        LOG_WARN("gltf: mesh \"%s\": %u joint index(es) past the skeleton's %u joints, unweighted",
+                 mesh_name, st.bad_joints, joint_count);
+    if (st.rides_root)
+        LOG_INFO("gltf: mesh \"%s\": %u primitive(s) have no JOINTS_0 and ride joint 0", mesh_name,
+                 st.rides_root);
+    if (st.orphan_joints)
+        LOG_WARN("gltf: mesh \"%s\": %u primitive(s) carry JOINTS_0 under a node with no skin; "
+                 "loaded static",
+                 mesh_name, st.orphan_joints);
 
     u32 index_cursor = 0;
     for (cgltf_size p = 0; p < src->primitives_count; p++) {
@@ -449,8 +503,19 @@ static void load_mesh(asset::Manager *m, asset::Scope s, memory::Arena *scratch,
     memory::temp_end(t);
 }
 
+// SKELETON_FALLBACK (0) means failure here, and the caller fails the whole
+// model on it: a skinned mesh drawn against the one-joint fallback skeleton is
+// not a placeholder, it is garbage.
 static asset::SkeletonHandle load_skeleton(asset::Manager *m, asset::Scope s,
                                            const cgltf_skin *skin) {
+    // The palette is a fixed UBO array; a rig past it would write over the
+    // next animator's slot and index outside the block on the GPU.
+    if (skin->joints_count > SHADER_MAX_JOINTS) {
+        LOG_ERR("gltf: skin \"%s\" has %llu joints, the palette holds %d", safe_name(skin->name),
+                (unsigned long long)skin->joints_count, SHADER_MAX_JOINTS);
+        return asset::SKELETON_FALLBACK;
+    }
+
     asset::SkeletonHandle h{
         OR_ELSE(asset::create_skeleton(m, s), asset::SKELETON_FALLBACK)};
     if (h.v == 0)
@@ -465,12 +530,14 @@ static asset::SkeletonHandle load_skeleton(asset::Manager *m, asset::Scope s,
     skel->root = linalg::mat4_identity();
 
     b32 have_root = false;
+    u32 ibm_failures = 0;
+    u32 name_collisions = 0;
 
     for (u32 j = 0; j < skel->joint_count; j++) {
         const cgltf_node *node = skin->joints[j];
         asset::Joint *joint = &skel->joints[j];
 
-        gltf::canonical_name(joint->name, ASSET_NAME_CAP, node ? node->name : NULL);
+        str::canonical_name(joint->name, ASSET_NAME_CAP, node ? node->name : NULL);
 
         joint->parent = -1;
         if (node && node->parent) {
@@ -492,10 +559,13 @@ static asset::SkeletonHandle load_skeleton(asset::Manager *m, asset::Scope s,
             }
         }
 
-        if (skin->inverse_bind_matrices)
-            read_floats(skin->inverse_bind_matrices, j, joint->inverse_bind.m, 16);
-        else
+        // identity on a failed read, not the zero matrix read_floats leaves:
+        // a zero inverse bind collapses every vertex the joint touches
+        if (!skin->inverse_bind_matrices ||
+            !read_floats(skin->inverse_bind_matrices, j, joint->inverse_bind.m, 16)) {
+            ibm_failures += skin->inverse_bind_matrices != NULL;
             joint->inverse_bind = linalg::mat4_identity();
+        }
 
         joint->bind_t = linalg::Vec3{};
         joint->bind_r = linalg::quat_identity();
@@ -511,67 +581,38 @@ static asset::SkeletonHandle load_skeleton(asset::Manager *m, asset::Scope s,
                 joint->bind_s = linalg::Vec3{node->scale[0], node->scale[1], node->scale[2]};
         }
 
+        // Blender's "Bone.001" and "Bone_001" both canonicalize to Bone_001;
+        // the later one would silently take over the earlier one's channels.
+        if (strmap::find(&skel->by_name, joint->name))
+            name_collisions++;
         strmap::insert(&skel->by_name, joint->name, j);
     }
+
+    if (ibm_failures)
+        LOG_WARN("gltf: skin \"%s\": %u inverse bind matrix read(s) failed, using identity",
+                 safe_name(skin->name), ibm_failures);
+    if (name_collisions)
+        LOG_WARN("gltf: skin \"%s\": %u joint name(s) collide after canonicalization; clips will "
+                 "drive the last one of each",
+                 safe_name(skin->name), name_collisions);
 
     return h;
 }
 
 namespace gltf {
 
-void canonical_name(char *dst, u64 cap, const char *src) {
-    ASSERT(dst && cap);
-
-    u64 i = 0;
-    if (src) {
-        for (; src[i] && i + 1 < cap; i++) {
-            char c = src[i];
-            b32 alnum = (c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z');
-            dst[i] = alnum ? c : '_';
-        }
-    }
-    dst[i] = 0;
-}
-
 result::Error inspect(memory::Arena *scratch, const char *path) {
     memory::ArenaTemp t = memory::temp_begin(scratch);
 
-    file::BlobResult blob = file::read(scratch, path);
-    if (blob.err != result::OK) {
-        memory::temp_end(t);
-        return blob.err;
-    }
-
-    cgltf_options opts = {};
-    opts.memory.alloc_func = arena_alloc;
-    opts.memory.free_func = arena_free;
-    opts.memory.user_data = scratch;
-    opts.file.read = reject_external;
-    opts.file.release = reject_release;
-
     cgltf_data *d = NULL;
-    cgltf_result r = cgltf_parse(&opts, blob.val.data, blob.val.size, &d);
-    if (r != cgltf_result_success) {
-        LOG_ERR("gltf: parse failed on %s (%s)", path, cgltf_err_str(r));
+    u64 bytes = 0;
+    result::Error e = parse_glb(scratch, path, &d, &bytes);
+    if (e != result::OK) {
         memory::temp_end(t);
-        return result::ERR_PARSE;
+        return e;
     }
 
-    r = cgltf_load_buffers(&opts, d, path);
-    if (r != cgltf_result_success) {
-        LOG_ERR("gltf: load_buffers failed on %s (%s)", path, cgltf_err_str(r));
-        memory::temp_end(t);
-        return result::ERR_PARSE;
-    }
-
-    r = cgltf_validate(d);
-    if (r != cgltf_result_success) {
-        LOG_ERR("gltf: validate failed on %s (%s)", path, cgltf_err_str(r));
-        memory::temp_end(t);
-        return result::ERR_INVALID;
-    }
-
-    LOG_INFO("gltf: %s (%.1f KiB, %s)", path, (f64)blob.val.size / 1024.0,
+    LOG_INFO("gltf: %s (%.1f KiB, %s)", path, (f64)bytes / 1024.0,
              d->file_type == cgltf_file_type_glb ? "glb" : "gltf");
     LOG_INFO("gltf:   generator=\"%s\" version=\"%s\"",
              d->asset.generator ? d->asset.generator : "?",
@@ -602,17 +643,47 @@ asset::ModelResult load_model(asset::Manager *m, asset::Scope s, const char *abs
     memory::ArenaTemp t = memory::temp_begin(scratch);
 
     cgltf_data *d = NULL;
-    result::Error e = parse_glb(scratch, abs_path, &d);
+    result::Error e = parse_glb(scratch, abs_path, &d, NULL);
     if (e != result::OK) {
         memory::temp_end(t);
         return asset::ModelResult{.err = e};
     }
 
+    // The model slot first, because it is the cheapest thing to claim and the
+    // one whose failure the caller already handles; then the skeleton, whose
+    // failure fails the model before any material slot is spent on it.
+    asset::ModelResult mr = asset::create_model(m, s, name);
+    if (mr.err != result::OK) {
+        memory::temp_end(t);
+        return mr;
+    }
+
+    asset::SkeletonHandle skel = asset::SKELETON_FALLBACK;
+    if (d->skins_count > 0) {
+        if (d->skins_count > 1)
+            LOG_WARN("gltf: %s has %llu skins, using the first", abs_path,
+                     (unsigned long long)d->skins_count);
+        skel = load_skeleton(m, s, &d->skins[0]);
+        if (skel.v == 0) {
+            asset::remove(m, mr.val);
+            memory::temp_end(t);
+            return asset::ModelResult{.err = result::ERR_EXHAUSTED};
+        }
+    }
+
     asset::MaterialHandle *materials =
         push_array(scratch, asset::MaterialHandle, d->materials_count);
+    u32 materials_dropped = 0;
     for (cgltf_size i = 0; i < d->materials_count; i++) {
         const cgltf_material *src = &d->materials[i];
         materials[i] = OR_ELSE(asset::create_material(m, s), asset::MATERIAL_FALLBACK);
+
+        // slot 0 is the shared magenta fallback; writing this file's material
+        // into it would repaint every missing material in the world
+        if (materials[i].v == 0) {
+            materials_dropped++;
+            continue;
+        }
 
         asset::Material *mat = asset::get(m, materials[i]);
         snprintf(mat->name, ASSET_NAME_CAP, "%s", src->name ? src->name : "<unnamed>");
@@ -656,19 +727,9 @@ asset::ModelResult load_model(asset::Manager *m, asset::Scope s, const char *abs
         }
     }
 
-    asset::SkeletonHandle skel = asset::SKELETON_FALLBACK;
-    if (d->skins_count > 0) {
-        if (d->skins_count > 1)
-            LOG_WARN("gltf: %s has %llu skins, using the first", abs_path,
-                     (unsigned long long)d->skins_count);
-        skel = load_skeleton(m, s, &d->skins[0]);
-    }
-
-    asset::ModelResult mr = asset::create_model(m, s, name);
-    if (mr.err != result::OK) {
-        memory::temp_end(t);
-        return mr;
-    }
+    if (materials_dropped)
+        LOG_WARN("gltf: %s: material pool full, %u material(s) draw as the fallback", abs_path,
+                 materials_dropped);
 
     // Geometry hangs off nodes, not off the mesh list: the node carries the
     // transform, and the same mesh can appear under several nodes.
@@ -682,19 +743,27 @@ asset::ModelResult load_model(asset::Manager *m, asset::Scope s, const char *abs
     model->skeleton = skel;
     model->meshes = push_array(asset::scope_arena(m, s), asset::MeshHandle, node_meshes);
 
+    u32 joint_count = asset::get(m, skel)->joint_count;
     u32 verts = 0;
     u32 indices = 0;
+    u32 other_skins = 0;
     for (cgltf_size i = 0; i < d->nodes_count; i++) {
         const cgltf_node *node = &d->nodes[i];
         if (!node->mesh)
             continue;
+
+        // Only the skin that was loaded skins anything. A node on a second
+        // skin has no palette to index, so it is baked static like any other.
+        b32 skinned = node->skin && node->skin == &d->skins[0];
+        if (node->skin && !skinned)
+            other_skins++;
 
         // A skinned mesh's node transform MUST be ignored per the glTF spec --
         // the joints define its space. Static geometry bakes the node's world
         // transform in, so vertices are model-space and physics needs no extra
         // matrix per mesh.
         linalg::Mat4 bake = linalg::mat4_identity();
-        if (!node->skin)
+        if (!skinned)
             cgltf_node_transform_world(node, bake.m);
 
         asset::MeshHandle mh = OR_ELSE(asset::create_mesh(m, s), asset::MESH_FALLBACK);
@@ -703,10 +772,14 @@ asset::ModelResult load_model(asset::Manager *m, asset::Scope s, const char *abs
             continue;
 
         asset::Mesh *mesh = asset::get(m, mh);
-        load_mesh(m, s, scratch, d, node->mesh, materials, bake, mesh);
+        load_mesh(m, s, scratch, d, node->mesh, materials, bake, skinned, joint_count, mesh);
         verts += mesh->vertex_count;
         indices += mesh->index_count;
     }
+
+    if (other_skins)
+        LOG_WARN("gltf: %s: %u mesh node(s) use a skin other than the first; loaded static",
+                 abs_path, other_skins);
 
     LOG_INFO("gltf: loaded %s -- %u mesh node(s), %u verts, %u indices, %llu materials, %s", name,
              model->mesh_count, verts, indices, (unsigned long long)d->materials_count,
@@ -724,7 +797,7 @@ asset::ClipResult load_clip(asset::Manager *m, asset::Scope s, const char *abs_p
     memory::ArenaTemp t = memory::temp_begin(scratch);
 
     cgltf_data *d = NULL;
-    result::Error e = parse_glb(scratch, abs_path, &d);
+    result::Error e = parse_glb(scratch, abs_path, &d, NULL);
     if (e != result::OK) {
         memory::temp_end(t);
         return asset::ClipResult{.err = e};
@@ -768,6 +841,7 @@ asset::ClipResult load_clip(asset::Manager *m, asset::Scope s, const char *abs_p
 
     f32 max_clip_t = 0.0f;   // largest translation the clip asks for
     f32 max_bind_t = 0.0f;   // largest the target skeleton actually uses
+    u32 read_failures = 0;
 
     for (cgltf_size c = 0; c < src->channels_count; c++) {
         const cgltf_animation_channel *ch = &src->channels[c];
@@ -795,7 +869,7 @@ asset::ClipResult load_clip(asset::Manager *m, asset::Scope s, const char *abs_p
                           ? asset::INTERP_STEP
                           : asset::INTERP_LINEAR;
 
-        gltf::canonical_name(dst->target, ASSET_NAME_CAP,
+        str::canonical_name(dst->target, ASSET_NAME_CAP,
                              ch->target_node ? ch->target_node->name : NULL);
 
         const cgltf_accessor *in = ch->sampler->input;
@@ -806,9 +880,15 @@ asset::ClipResult load_clip(asset::Manager *m, asset::Scope s, const char *abs_p
         dst->times = push_array(out, f32, dst->key_count);
         dst->values = push_array(out, f32, (u64)dst->key_count * comps);
         for (u32 k = 0; k < dst->key_count; k++) {
-            read_floats(in, k, &dst->times[k], 1);
-            read_floats(val, k, &dst->values[(u64)k * comps], comps);
+            read_failures += !read_floats(in, k, &dst->times[k], 1);
+            read_failures += !read_floats(val, k, &dst->values[(u64)k * comps], comps);
         }
+
+        // From the keys themselves. The accessor's max is optional and some
+        // exporters omit it, which used to leave duration at 0 -- and a zero
+        // duration plays as the bind pose with nothing in the log.
+        if (dst->key_count > 0)
+            clip->duration = MAX(clip->duration, dst->times[dst->key_count - 1]);
 
         if (path == asset::PATH_TRANSLATION) {
             for (u32 k = 0; k < dst->key_count; k++) {
@@ -818,9 +898,6 @@ asset::ClipResult load_clip(asset::Manager *m, asset::Scope s, const char *abs_p
             }
         }
 
-        if (in->has_max && in->max[0] > clip->duration)
-            clip->duration = in->max[0];
-
         u32 *joint = strmap::find(&skel->by_name, dst->target);
         dst->joint = joint ? (i32)*joint : -1;
         if (joint)
@@ -829,6 +906,10 @@ asset::ClipResult load_clip(asset::Manager *m, asset::Scope s, const char *abs_p
 
     for (u32 j = 0; j < skel->joint_count; j++)
         max_bind_t = MAX(max_bind_t, linalg::vec3_length(skel->joints[j].bind_t));
+
+    if (read_failures)
+        LOG_WARN("gltf: clip \"%s\": %u keyframe read(s) failed, those keys are zero", clip->name,
+                 read_failures);
 
     if (clip->bound_count == 0)
         LOG_ERR("gltf: %s bound 0 of %u channels to skeleton -- name mismatch, clip will not "
@@ -845,7 +926,8 @@ asset::ClipResult load_clip(asset::Manager *m, asset::Scope s, const char *abs_p
     // out loud rather than letting the skeleton silently tear apart.
     LOG_INFO("gltf:   max translation: clip %.4f, target skeleton %.4f", (f64)max_clip_t,
              (f64)max_bind_t);
-    if (!clip->rotation_only && max_bind_t > 1e-6f && max_clip_t > max_bind_t * 4.0f)
+    if (!clip->rotation_only && max_bind_t > LINALG_ZERO_EPSILON &&
+        max_clip_t > max_bind_t * GLTF_RETARGET_WARN_RATIO)
         LOG_WARN("gltf: %s translates %.1fx further than the target skeleton -- if it was authored "
                  "for another rig, it needs rotation_only",
                  abs_path, (f64)(max_clip_t / max_bind_t));

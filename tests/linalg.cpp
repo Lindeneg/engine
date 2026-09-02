@@ -10,8 +10,7 @@ static b32 vec3_near(linalg::Vec3 a, linalg::Vec3 b) {
 }
 
 static linalg::Vec3 rotate(linalg::Quat q, linalg::Vec3 v) {
-    linalg::Vec4 r = linalg::mat4_from_quat(q) * linalg::Vec4{v.x, v.y, v.z, 1.0f};
-    return linalg::Vec3{r.x, r.y, r.z};
+    return linalg::mat4_mul_point(linalg::mat4_from_quat(q), v);
 }
 
 static void euler_is_degrees_about_xyz(memory::Arena *) {
@@ -101,13 +100,48 @@ static void normal_matrix_survives_non_uniform_scale(memory::Arena *) {
     CHECK(degenerate.m[4] == 0.0f);
 }
 
+// cofactor(M) = det(M) * inverse-transpose. Without the sign of det, a model
+// mirrored in one axis -- a left-hand weapon -- lights from the inside.
+static void normal_matrix_survives_mirrored_scale(memory::Arena *) {
+    linalg::Mat4 m = linalg::mat4_from_trs(linalg::Vec3{0, 0, 0}, linalg::quat_identity(),
+                                           linalg::Vec3{-1.0f, 1.0f, 1.0f});
+    linalg::Mat3 n = linalg::mat3_normal_matrix(m);
+
+    // a normal along +X on a model mirrored in X points along -X, and the
+    // other two axes are untouched
+    CHECK(NEAR(n.m[0], -1.0f));
+    CHECK(NEAR(n.m[4], 1.0f));
+    CHECK(NEAR(n.m[8], 1.0f));
+}
+
+// A camera pitched straight up or down is gameplay, not a bug: forward
+// parallel to up must produce a rotation, not an assert.
+static void look_along_up_does_not_degenerate(memory::Arena *) {
+    linalg::Vec3 up{0, 1, 0};
+    linalg::Vec3 fwd{0, 0, -1}; // what -Z of a rotated frame is
+
+    linalg::Quat q = linalg::quat_look_rotation(up, up);
+    CHECK(NEAR(sqrtf(linalg::quat_dot(q, q)), 1.0f));
+    CHECK(vec3_near(rotate(q, fwd), up));
+
+    linalg::Quat d = linalg::quat_look_rotation(linalg::vec3_neg(up), up);
+    CHECK(vec3_near(rotate(d, fwd), linalg::vec3_neg(up)));
+
+    // mat4_look_at shares the basis: a target straight above lands down -Z
+    linalg::Mat4 v = linalg::mat4_look_at(linalg::Vec3{0, 0, 0}, linalg::Vec3{0, 5, 0}, up);
+    linalg::Vec4 t = v * linalg::Vec4{0, 5, 0, 1};
+    CHECK(vec3_near(linalg::Vec3{t.x, t.y, t.z}, linalg::Vec3{0, 0, -5}));
+}
+
 test::Suite linalg_suite() {
     static const test::Case cases[] = {
-        {"euler_is_degrees_about_xyz", euler_is_degrees_about_xyz},
-        {"euler_applies_x_then_y_then_z", euler_applies_x_then_y_then_z},
-        {"euler_produces_unit_quaternions", euler_produces_unit_quaternions},
-        {"non_unit_quaternions_are_not_rotations", non_unit_quaternions_are_not_rotations},
-        {"normal_matrix_survives_non_uniform_scale", normal_matrix_survives_non_uniform_scale},
+        CASE(euler_is_degrees_about_xyz),
+        CASE(euler_applies_x_then_y_then_z),
+        CASE(euler_produces_unit_quaternions),
+        CASE(non_unit_quaternions_are_not_rotations),
+        CASE(normal_matrix_survives_non_uniform_scale),
+        CASE(normal_matrix_survives_mirrored_scale),
+        CASE(look_along_up_does_not_degenerate),
     };
     return test::Suite{.name = "linalg", .cases = cases, .count = ARRAY_COUNT(cases)};
 }

@@ -5,6 +5,10 @@
 
 namespace anim {
 
+// Two keys closer than this in time are the same key: interpolating between
+// them would divide by a span that is only rounding noise.
+#define MIN_KEY_SPAN 1e-8f
+
 struct Trs {
     linalg::Vec3 t;
     linalg::Quat r;
@@ -34,7 +38,7 @@ static void sample_channel(const asset::Channel *ch, f32 t, Trs *local) {
     u32 i1 = MIN(i0 + 1, ch->key_count - 1);
 
     f32 span = ch->times[i1] - ch->times[i0];
-    f32 a = span > 1e-8f ? (t - ch->times[i0]) / span : 0.0f;
+    f32 a = span > MIN_KEY_SPAN ? (t - ch->times[i0]) / span : 0.0f;
     a = MAX(0.0f, MIN(1.0f, a));
     if (ch->interp == asset::INTERP_STEP)
         a = 0.0f;

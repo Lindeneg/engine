@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.15)
+cmake_minimum_required(VERSION 3.21)
 project(ExploreApp LANGUAGES CXX)
 
 set(CMAKE_EXPORT_COMPILE_COMMANDS true)
@@ -30,10 +30,12 @@ set(ENGINE_SOURCES
         src/logger.cpp
         src/memory.cpp
         src/path.cpp
+        src/platform.cpp
         src/pool.cpp
         src/render.cpp
         src/result.cpp
         src/shader.cpp
+        src/str.cpp
         src/strmap.cpp
         src/window.cpp
 )

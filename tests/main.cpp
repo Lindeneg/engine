@@ -7,18 +7,21 @@ int main() {
     logger::init(NULL);
     logger::set_level(logger::TRACE);
 
-    memory::init(MiB(64));
+    // reserving is free; the entity suite loads real models into scopes of
+    // its own, and every asset case carves a small manager that never returns
+    memory::init(MiB(256));
     memory::Arena scratch = memory::create(MiB(16));
 
     const test::Suite suites[] = {
         asset_suite(),
         config_suite(),
+        entity_suite(),
         file_suite(),
-        gltf_suite(),
         linalg_suite(),
         path_suite(),
         pool_suite(),
         result_suite(),
+        str_suite(),
         strmap_suite(),
     };
 

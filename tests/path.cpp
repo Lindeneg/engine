@@ -48,11 +48,11 @@ static void swaps_the_extension(memory::Arena *a) {
 
 test::Suite path_suite() {
     static const test::Case cases[] = {
-        {"joins_segments", joins_segments},
-        {"single_segment_gets_no_separator", single_segment_gets_no_separator},
-        {"does_not_normalize", does_not_normalize},
-        {"result_is_nul_terminated", result_is_nul_terminated},
-        {"swaps_the_extension", swaps_the_extension},
+        CASE(joins_segments),
+        CASE(single_segment_gets_no_separator),
+        CASE(does_not_normalize),
+        CASE(result_is_nul_terminated),
+        CASE(swaps_the_extension),
     };
     return test::Suite{.name = "path", .cases = cases, .count = ARRAY_COUNT(cases)};
 }

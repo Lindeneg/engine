@@ -25,15 +25,18 @@ struct Config {
 void init(memory::Arena *a, Config cfg, i32 fb_width, i32 fb_height);
 void shutdown();
 
+// The renderer owns every GPU copy of a mesh in a table indexed by mesh slot,
+// and registers with the manager to be told when a slot goes away. Meshes
+// upload on first submit; upload_model preloads instead, for a level that
+// should not hitch on its first frame.
+void attach_assets(memory::Arena *a, asset::Manager *m);
+void upload_model(asset::Manager *m, asset::ModelHandle h);
+
 void resize(i32 fb_width, i32 fb_height);
 
 // Uploads the per-frame constants every program reads, empties the queue, and
 // clears. camera_pos is kept for the transparent pass's distance sort.
 void begin_frame(const shader::FrameData *frame, linalg::Vec4 clear_color);
-
-// Fills the gpu_* fields the asset manager deliberately leaves alone. Safe to
-// call twice: an already-uploaded mesh is skipped.
-void upload_model(asset::Manager *m, asset::ModelHandle h);
 
 // Queues one draw per submesh. Issues no GL calls, so submission order carries
 // no meaning -- flush decides the real order. palette is NULL for a static

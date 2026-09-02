@@ -1,7 +1,6 @@
 #include <string.h>
 
 #include "file.h"
-#include "logger.h"
 #include "suites.h"
 
 // these read a file from the repo root, so the runner has to be invoked from there
@@ -21,9 +20,9 @@ static void appends_nul_past_size(memory::Arena *a) {
 }
 
 static void missing_file_reports_not_found(memory::Arena *a) {
-    logger::set_level(logger::FATAL); // file::read logs the miss, expected here
+    test::mute();
     file::BlobResult r = file::read(a, "definitely/not/a/real/path.glb");
-    logger::set_level(logger::TRACE);
+    CHECK(test::unmute() == 1); // read logs the miss
 
     CHECK(r.err == result::ERR_NOT_FOUND);
     CHECK(r.val.data == NULL);
@@ -34,9 +33,9 @@ static void missing_file_reports_not_found(memory::Arena *a) {
 static void failed_read_leaves_arena_untouched(memory::Arena *a) {
     u64 before = a->used;
 
-    logger::set_level(logger::FATAL);
+    test::mute();
     file::BlobResult r = file::read(a, "definitely/not/a/real/path.glb");
-    logger::set_level(logger::TRACE);
+    test::unmute();
 
     CHECK(r.err != result::OK);
     CHECK(a->used == before);
@@ -44,10 +43,10 @@ static void failed_read_leaves_arena_untouched(memory::Arena *a) {
 
 test::Suite file_suite() {
     static const test::Case cases[] = {
-        {"reads_existing_file", reads_existing_file},
-        {"appends_nul_past_size", appends_nul_past_size},
-        {"missing_file_reports_not_found", missing_file_reports_not_found},
-        {"failed_read_leaves_arena_untouched", failed_read_leaves_arena_untouched},
+        CASE(reads_existing_file),
+        CASE(appends_nul_past_size),
+        CASE(missing_file_reports_not_found),
+        CASE(failed_read_leaves_arena_untouched),
     };
     return test::Suite{.name = "file", .cases = cases, .count = ARRAY_COUNT(cases)};
 }

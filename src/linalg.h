@@ -15,6 +15,18 @@
 #define DEG2RAD(d) ((d) * (PI_F32 / 180.0f))
 #define RAD2DEG(r) ((r) * (180.0f / PI_F32))
 
+// Numerical thresholds. Three because they answer three different questions:
+//   ZERO      "is this length zero?" -- normalize refuses below it
+//   PARALLEL  "do these directions coincide?" -- the cross product's length is
+//             sin(angle), and a side axis built from it is garbage long before
+//             it reaches ZERO, so this trips at ~0.006 degrees instead
+//   DET       "is this 3x3 singular?" -- a determinant is a product of three
+//             scales, so it must sit far below ZERO or a model imported at
+//             0.001 (det ~1e-9) would count as flat
+#define LINALG_ZERO_EPSILON 1e-8f
+#define LINALG_PARALLEL_EPSILON 1e-4f
+#define LINALG_DET_EPSILON 1e-12f
+
 namespace linalg {
 
 struct Vec2 {
@@ -63,8 +75,16 @@ static inline f32 vec3_length(Vec3 v) { return sqrtf(vec3_length_sq(v)); }
 
 static inline Vec3 vec3_normalize(Vec3 v) {
     f32 len = vec3_length(v);
-    ASSERT_MSG(len > 1e-8f, "normalizing near-zero vector");
+    ASSERT_MSG(len > LINALG_ZERO_EPSILON, "normalizing near-zero vector");
     return vec3_scale(v, 1.0f / len);
+}
+
+// For data that may legitimately be zero (a velocity, a delta): the fallback
+// instead of an assert. vec3_normalize stays the choice for values that are
+// zero only when there is a bug.
+static inline Vec3 vec3_normalize_or(Vec3 v, Vec3 fallback) {
+    f32 len = vec3_length(v);
+    return len > LINALG_ZERO_EPSILON ? vec3_scale(v, 1.0f / len) : fallback;
 }
 
 static inline Vec3 vec3_lerp(Vec3 a, Vec3 b, f32 t) {
@@ -82,6 +102,9 @@ static inline Vec4 vec4_sub(Vec4 a, Vec4 b) {
 static inline Vec4 vec4_scale(Vec4 v, f32 s) { return Vec4{v.x * s, v.y * s, v.z * s, v.w * s}; }
 
 static inline f32 vec4_dot(Vec4 a, Vec4 b) { return a.x * b.x + a.y * b.y + a.z * b.z + a.w * b.w; }
+
+static inline Vec4 vec4_from(Vec3 v, f32 w) { return Vec4{v.x, v.y, v.z, w}; }
+static inline Vec3 vec3_from(Vec4 v) { return Vec3{v.x, v.y, v.z}; }
 
 static inline Quat quat_identity() { return Quat{0.0f, 0.0f, 0.0f, 1.0f}; }
 
@@ -101,7 +124,7 @@ static inline Quat quat_mul(Quat a, Quat b) {
 
 static inline Quat quat_normalize(Quat q) {
     f32 len = sqrtf(quat_dot(q, q));
-    ASSERT_MSG(len > 1e-8f, "normalizing near-zero quaternion");
+    ASSERT_MSG(len > LINALG_ZERO_EPSILON, "normalizing near-zero quaternion");
     f32 inv = 1.0f / len;
     return Quat{q.x * inv, q.y * inv, q.z * inv, q.w * inv};
 }
@@ -121,14 +144,30 @@ static inline Quat quat_from_euler(Vec3 degrees) {
     return quat_mul(quat_mul(qz, qy), qx);
 }
 
+// The right-handed (side, up, forward) basis for looking along forward, shared
+// by quat_look_rotation and mat4_look_at. When forward is parallel to up -- a
+// camera pitched straight up or down, which is gameplay, not a bug -- the up
+// hint is replaced by whichever world axis is furthest from forward.
+static inline void look_basis(Vec3 forward, Vec3 up, Vec3 *out_s, Vec3 *out_u, Vec3 *out_f) {
+    Vec3 f = vec3_normalize(forward);
+    Vec3 s = vec3_cross(f, up);
+    if (vec3_length_sq(s) < LINALG_PARALLEL_EPSILON * LINALG_PARALLEL_EPSILON) {
+        Vec3 alt = fabsf(f.y) < fabsf(f.z) ? Vec3{0.0f, 1.0f, 0.0f} : Vec3{0.0f, 0.0f, 1.0f};
+        s = vec3_cross(f, alt);
+    }
+    s = vec3_normalize(s);
+    *out_s = s;
+    *out_u = vec3_cross(s, f);
+    *out_f = f;
+}
+
 // Rotation whose -Z points along forward, matching mat4_look_at: what an entity
 // needs to face something. Shepperd's method -- the branch picks whichever
 // component is largest, because the direct formula divides by w and loses all
 // its precision as the rotation approaches 180 degrees.
 static inline Quat quat_look_rotation(Vec3 forward, Vec3 up) {
-    Vec3 f = vec3_normalize(forward);
-    Vec3 s = vec3_normalize(vec3_cross(f, up));
-    Vec3 u = vec3_cross(s, f);
+    Vec3 s, u, f;
+    look_basis(forward, up, &s, &u, &f);
 
     // basis columns are s, u, -f; m[row][col]
     f32 m00 = s.x, m01 = u.x, m02 = -f.x;
@@ -193,6 +232,19 @@ static inline Vec4 mat4_mul_vec4(Mat4 a, Vec4 v) {
     };
 }
 
+// Point (w = 1) and direction (w = 0) transforms. Directions come back
+// unnormalized: a scaled matrix scales them.
+static inline Vec3 mat4_mul_point(Mat4 m, Vec3 p) { return vec3_from(mat4_mul_vec4(m, vec4_from(p, 1.0f))); }
+static inline Vec3 mat4_mul_dir(Mat4 m, Vec3 d) { return vec3_from(mat4_mul_vec4(m, vec4_from(d, 0.0f))); }
+
+static inline Vec3 mat4_translation(Mat4 m) { return Vec3{m.m[12], m.m[13], m.m[14]}; }
+
+// Basis column 0..2: the matrix's local X, Y, Z in the parent space, scale included.
+static inline Vec3 mat4_axis(Mat4 m, u32 col) {
+    ASSERT(col < 3);
+    return Vec3{m.m[col * 4 + 0], m.m[col * 4 + 1], m.m[col * 4 + 2]};
+}
+
 static inline Mat4 mat4_transpose(Mat4 a) {
     Mat4 out;
     for (i32 c = 0; c < 4; ++c)
@@ -238,17 +290,20 @@ static inline Mat3 mat3_normal_matrix(Mat4 src) {
     f32 c22 = a * e - b * d;
 
     f32 det = a * c00 + b * c01 + c * c02;
-    if (det > -1e-12f && det < 1e-12f)
+    if (det > -LINALG_DET_EPSILON && det < LINALG_DET_EPSILON)
         return u; // degenerate (zero scale); the unmodified basis beats NaNs
 
     // stored column-major, so column 0 is (c00, c10, c20) -- listing the
     // cofactors row-wise here would silently store the inverse instead.
-    // no det division: the cofactor matrix is the normal matrix up to scale,
-    // and the shader normalizes anyway
+    // No division by |det|: the cofactor matrix is the normal matrix up to a
+    // positive scale, and the shader normalizes anyway. The sign is not
+    // optional: cofactor(M) = det(M) * inverse-transpose, so a mirrored scale
+    // (det < 0) would otherwise point every normal inward.
+    f32 sign = det < 0.0f ? -1.0f : 1.0f;
     return Mat3{
-        c00, c10, c20, //
-        c01, c11, c21, //
-        c02, c12, c22, //
+        c00 * sign, c10 * sign, c20 * sign, //
+        c01 * sign, c11 * sign, c21 * sign, //
+        c02 * sign, c12 * sign, c22 * sign, //
     };
 }
 
@@ -322,15 +377,15 @@ static inline Mat4 mat4_perspective(f32 fovy, f32 aspect, f32 znear, f32 zfar) {
 // inherit that scale into the view matrix, which silently resizes the entire
 // world instead of the camera, and looks like a broken projection.
 static inline Mat4 mat4_view_from_world(Mat4 world) {
-    Vec3 x{world.m[0], world.m[1], world.m[2]};
-    Vec3 y{world.m[4], world.m[5], world.m[6]};
-    Vec3 z{world.m[8], world.m[9], world.m[10]};
-    Vec3 t{world.m[12], world.m[13], world.m[14]};
+    Vec3 x = mat4_axis(world, 0);
+    Vec3 y = mat4_axis(world, 1);
+    Vec3 z = mat4_axis(world, 2);
+    Vec3 t = mat4_translation(world);
 
     f32 lx = vec3_length(x);
     f32 ly = vec3_length(y);
     f32 lz = vec3_length(z);
-    if (lx < 1e-8f || ly < 1e-8f || lz < 1e-8f)
+    if (lx < LINALG_ZERO_EPSILON || ly < LINALG_ZERO_EPSILON || lz < LINALG_ZERO_EPSILON)
         return mat4_identity(); // degenerate basis; identity beats NaNs on screen
 
     x = vec3_scale(x, 1.0f / lx);
@@ -356,9 +411,8 @@ static inline Mat4 mat4_view_from_world(Mat4 world) {
 }
 
 static inline Mat4 mat4_look_at(Vec3 eye, Vec3 target, Vec3 up) {
-    Vec3 f = vec3_normalize(vec3_sub(target, eye));
-    Vec3 s = vec3_normalize(vec3_cross(f, up));
-    Vec3 u = vec3_cross(s, f);
+    Vec3 s, u, f;
+    look_basis(vec3_sub(target, eye), up, &s, &u, &f);
 
     Mat4 out{};
     out.m[0] = s.x;

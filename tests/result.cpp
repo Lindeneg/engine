@@ -1,4 +1,3 @@
-#include "logger.h"
 #include "result.h"
 #include "suites.h"
 
@@ -24,9 +23,9 @@ static void or_else_falls_back(memory::Arena *) {
     u32 good{OR_ELSE(halve(8), 99u)};
     CHECK(good == 4);
 
-    logger::set_level(logger::FATAL); // OR_ELSE warns on the failing path, by design
+    test::mute();
     u32 bad{OR_ELSE(halve(7), 99u)};
-    logger::set_level(logger::TRACE);
+    CHECK(test::unmute() == 1); // OR_ELSE warns on the failing path, by design
     CHECK(bad == 99);
 }
 
@@ -57,10 +56,10 @@ static void str_covers_every_code(memory::Arena *) {
 
 test::Suite result_suite() {
     static const test::Case cases[] = {
-        {"must_unwraps", must_unwraps},
-        {"or_else_falls_back", or_else_falls_back},
-        {"try_propagates", try_propagates},
-        {"str_covers_every_code", str_covers_every_code},
+        CASE(must_unwraps),
+        CASE(or_else_falls_back),
+        CASE(try_propagates),
+        CASE(str_covers_every_code),
     };
     return test::Suite{.name = "result", .cases = cases, .count = ARRAY_COUNT(cases)};
 }

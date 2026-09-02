@@ -2,9 +2,7 @@
 #include "suites.h"
 
 static const char *mk_key(memory::Arena *a, u64 i) {
-    char *buf = push_array(a, char, 32);
-    snprintf(buf, 32, "assets/mesh_%llu.glb", (unsigned long long)i);
-    return buf;
+    return memory::push_fmt(a, "assets/mesh_%llu.glb", (unsigned long long)i);
 }
 
 static void basic(memory::Arena *a) {
@@ -112,12 +110,12 @@ static void delete_integrity_716(memory::Arena *a) { delete_integrity(a, 716); }
 
 test::Suite strmap_suite() {
     static const test::Case cases[] = {
-        {"basic", basic},
-        {"overwrite", overwrite},
-        {"clear", clear},
-        {"delete_integrity_5", delete_integrity_5},
-        {"delete_integrity_178", delete_integrity_178},
-        {"delete_integrity_716", delete_integrity_716},
+        CASE(basic),
+        CASE(overwrite),
+        CASE(clear),
+        CASE(delete_integrity_5),
+        CASE(delete_integrity_178),
+        CASE(delete_integrity_716),
     };
     return test::Suite{.name = "strmap", .cases = cases, .count = ARRAY_COUNT(cases)};
 }

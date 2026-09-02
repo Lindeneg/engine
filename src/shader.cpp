@@ -9,6 +9,7 @@
 #include "file.h"
 #include "logger.h"
 #include "path.h"
+#include "str.h"
 
 #define SHADER_DIR "shaders"
 #define SHADER_MANIFEST "shaders.cfg"
@@ -16,6 +17,9 @@
 #define PREAMBLE_CAP 512
 #define MAX_CHUNKS 64
 #define MAX_INCLUDE_DEPTH 8
+#define FMT_CAP 128                            // one generated #line or #define
+#define INFO_LOG_CAP 2048                      // driver compile/link messages
+#define VARIANT_LABEL_CAP (SHADER_NAME_CAP + 64) // "name[FEATURE|FEATURE]"
 
 namespace shader {
 
@@ -74,17 +78,11 @@ static b32 add_chunk(Chunks *c, const char *text, u64 len) {
 }
 
 static b32 add_fmt(Chunks *c, memory::Arena *a, const char *fmt, ...) {
-    char buf[128];
-
     va_list ap;
     va_start(ap, fmt);
-    i32 n = vsnprintf(buf, sizeof(buf), fmt, ap);
+    char *text = memory::push_vfmt(a, fmt, ap);
     va_end(ap);
-    ASSERT(n > 0 && (u64)n < sizeof(buf));
-
-    char *copy = push_array_nz(a, char, (u64)n);
-    memcpy(copy, buf, (u64)n);
-    return add_chunk(c, copy, (u64)n);
+    return add_chunk(c, text, strlen(text));
 }
 
 // Recognises a line whose only content is #include "name". Returns the name
@@ -115,11 +113,7 @@ static const char *parse_include(memory::Arena *a, const char *line, u64 len) {
     if (i == len)
         return NULL;
 
-    u64 n = i - start;
-    char *out = push_array_nz(a, char, n + 1);
-    memcpy(out, line + start, n);
-    out[n] = 0;
-    return out;
+    return memory::push_fmt(a, "%.*s", (i32)(i - start), line + start);
 }
 
 // Appends one shader file, splicing in whatever it #includes. Each file gets a
@@ -194,9 +188,7 @@ static b32 add_preamble(Chunks *c, memory::Arena *a, u32 features) {
         ASSERT_MSG((u64)n < sizeof(buf), "shader preamble overflowed %d bytes", PREAMBLE_CAP);
     }
 
-    char *copy = push_array_nz(a, char, (u64)n);
-    memcpy(copy, buf, (u64)n);
-    return add_chunk(c, copy, (u64)n);
+    return add_chunk(c, (const char *)memory::push_bytes(a, buf, (u64)n), (u64)n);
 }
 
 static u32 compile_stage(u32 type, const Chunks *c, const char *label) {
@@ -209,7 +201,7 @@ static u32 compile_stage(u32 type, const Chunks *c, const char *label) {
     if (ok)
         return id;
 
-    char info[2048];
+    char info[INFO_LOG_CAP];
     glGetShaderInfoLog(id, sizeof(info), NULL, info);
     LOG_ERR("shader: %s failed to compile\n%s", label, info);
     glDeleteShader(id);
@@ -219,10 +211,20 @@ static u32 compile_stage(u32 type, const Chunks *c, const char *label) {
 // Reads back every active uniform, so the draw side needs no struct field per
 // uniform. Block members report location -1 and are skipped: they are addressed
 // through the UBO, not by location.
-static void reflect(memory::Arena *a, Program *p) {
+static b32 reflect(memory::Arena *a, Program *p, const char *label) {
     i32 active = 0;
     glGetProgramiv(p->gl, GL_ACTIVE_UNIFORMS, &active);
     p->uniforms = strmap::create(a, (u64)(active > 0 ? active : 1));
+
+    // A name the buffer cannot hold would be truncated, and a truncated name
+    // resolves to no location -- a uniform that silently does nothing forever.
+    i32 longest = 0;
+    glGetProgramiv(p->gl, GL_ACTIVE_UNIFORM_MAX_LENGTH, &longest);
+    if (longest > UNIFORM_NAME_CAP) {
+        LOG_ERR("shader: %s has a uniform name of %d bytes; the cap is %d", label, longest,
+                UNIFORM_NAME_CAP);
+        return false;
+    }
 
     for (i32 i = 0; i < active; i++) {
         char buf[UNIFORM_NAME_CAP];
@@ -247,15 +249,14 @@ static void reflect(memory::Arena *a, Program *p) {
             continue;
 
         // the map keys on the pointer, so the name has to outlive the program
-        char *key = push_array_nz(a, char, (u64)len + 1);
-        memcpy(key, buf, (u64)len + 1);
-        strmap::insert(&p->uniforms, key, (u32)loc);
+        strmap::insert(&p->uniforms, memory::push_str(a, buf), (u32)loc);
     }
 
     for (u32 b = 0; b < BUILTIN_COUNT; b++) {
         u32 *loc = strmap::find(&p->uniforms, BUILTIN_NAMES[b]);
         p->builtin[b] = loc ? (i32)*loc : -1;
     }
+    return true;
 }
 
 static b32 link_program(memory::Arena *a, const Chunks *vc, const Chunks *fc, const char *label,
@@ -282,7 +283,7 @@ static b32 link_program(memory::Arena *a, const Chunks *vc, const Chunks *fc, co
     i32 ok = 0;
     glGetProgramiv(prog, GL_LINK_STATUS, &ok);
     if (!ok) {
-        char info[2048];
+        char info[INFO_LOG_CAP];
         glGetProgramInfoLog(prog, sizeof(info), NULL, info);
         LOG_ERR("shader: %s failed to link\n%s", label, info);
         glDeleteProgram(prog);
@@ -290,7 +291,11 @@ static b32 link_program(memory::Arena *a, const Chunks *vc, const Chunks *fc, co
     }
 
     out->gl = prog;
-    reflect(a, out);
+    if (!reflect(a, out, label)) {
+        glDeleteProgram(prog);
+        out->gl = 0;
+        return false;
+    }
 
     u32 frame = glGetUniformBlockIndex(prog, "Frame");
     if (frame != GL_INVALID_INDEX)
@@ -345,13 +350,19 @@ static result::Error load_one(memory::Arena *a, memory::Arena *scratch, const ch
         LOG_ERR("shader: a 'shader' block has no name");
         return result::ERR_PARSE;
     }
+    // refused rather than truncated: a clipped name would later fail the
+    // default_shader lookup with a misleading "no shader named"
+    if (strlen(name_) >= SHADER_NAME_CAP) {
+        LOG_ERR("shader: name '%s' is longer than the %d bytes allowed", name_, SHADER_NAME_CAP - 1);
+        return result::ERR_PARSE;
+    }
     if (g_reg.count >= SHADER_MAX_COUNT) {
         LOG_ERR("shader: more than %d shaders declared, '%s' dropped", SHADER_MAX_COUNT, name_);
         return result::ERR_EXHAUSTED;
     }
 
-    const char *vert_file = config::value(config::find(decl->first_child, "vert"), 0, NULL);
-    const char *frag_file = config::value(config::find(decl->first_child, "frag"), 0, NULL);
+    const char *vert_file = config::get(decl->first_child, "vert", NULL);
+    const char *frag_file = config::get(decl->first_child, "frag", NULL);
     if (!vert_file || !frag_file) {
         LOG_ERR("shader: '%s' needs both a vert and a frag", name_);
         return result::ERR_PARSE;
@@ -368,7 +379,10 @@ static result::Error load_one(memory::Arena *a, memory::Arena *scratch, const ch
         supported |= bit;
     }
 
+    // zeroed first: a previous init's or a failed build's program ids must not
+    // survive in the variants this manifest does not claim
     Shader *sh = &g_reg.items[g_reg.count];
+    memset(sh, 0, sizeof(*sh));
     snprintf(sh->name, SHADER_NAME_CAP, "%s", name_);
     sh->supported = supported;
 
@@ -378,7 +392,7 @@ static result::Error load_one(memory::Arena *a, memory::Arena *scratch, const ch
             continue; // this shader does not claim that combination
         wanted++;
 
-        char label[SHADER_NAME_CAP + 64];
+        char label[VARIANT_LABEL_CAP];
         variant_label(label, sizeof(label), name_, v);
         if (!build_variant(a, scratch, root, vert_file, frag_file, v, label, &sh->variants[v]))
             return result::ERR_INVALID;
@@ -404,6 +418,12 @@ result::Error init(memory::Arena *a, memory::Arena *scratch, const char *root) {
         memory::temp_end(t);
         return doc.err;
     }
+    // the manifest is infrastructure: a damaged one is a broken deployment
+    if (doc.val->problems) {
+        LOG_ERR("shader: %s has %u structural problem(s)", manifest, doc.val->problems);
+        memory::temp_end(t);
+        return result::ERR_PARSE;
+    }
 
     for (config::Node *n = config::find(doc.val->first, "shader"); n;
          n = config::find_next(n, "shader")) {
@@ -420,7 +440,7 @@ result::Error init(memory::Arena *a, memory::Arena *scratch, const char *root) {
         return result::ERR_PARSE;
     }
 
-    const char *dflt = config::value(config::find(doc.val->first, "default_shader"), 0, NULL);
+    const char *dflt = config::get(doc.val->first, "default_shader", NULL);
     if (!dflt) {
         LOG_ERR("shader: %s has no default_shader", manifest);
         memory::temp_end(t);
@@ -441,11 +461,14 @@ result::Error init(memory::Arena *a, memory::Arena *scratch, const char *root) {
 }
 
 void shutdown() {
-    for (u32 i = 0; i < g_reg.count; i++)
+    for (u32 i = 0; i < g_reg.count; i++) {
         for (u32 v = 0; v < SHADER_VARIANT_COUNT; v++)
             if (g_reg.items[i].variants[v].gl)
                 glDeleteProgram(g_reg.items[i].variants[v].gl);
+        memset(&g_reg.items[i], 0, sizeof(g_reg.items[i]));
+    }
     g_reg.count = 0;
+    g_reg.dflt = Handle{0};
 }
 
 HandleResult find(const char *name_) {
@@ -494,11 +517,8 @@ u32 count() { return g_reg.count; }
 const char *name(Handle h) { return h.v < g_reg.count ? g_reg.items[h.v].name : "<invalid>"; }
 
 u32 feature_from_name(const char *name_) {
-    ASSERT(name_);
-    for (u32 b = 0; b < SHADER_FEATURE_BITS; b++)
-        if (strcmp(FEATURE_DEFINES[b], name_) == 0)
-            return 1u << b;
-    return FEATURE_NONE;
+    i32 bit = str::name_index(FEATURE_DEFINES, SHADER_FEATURE_BITS, name_);
+    return bit < 0 ? FEATURE_NONE : 1u << bit;
 }
 
 const char *feature_name(u32 bit_index) {

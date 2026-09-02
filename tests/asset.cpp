@@ -1,7 +1,6 @@
 #include <string.h>
 
 #include "asset.h"
-#include "logger.h"
 #include "suites.h"
 
 static asset::Config small_config() {
@@ -106,9 +105,9 @@ static void unload_invalidates_only_its_own_scope(memory::Arena *a) {
 
     CHECK(strcmp(asset::get(m, keep)->name, "player") == 0);
 
-    logger::set_level(logger::FATAL); // the stale lookup warns, by design
+    test::mute();
     asset::Model *gone = asset::get(m, drop);
-    logger::set_level(logger::TRACE);
+    CHECK(test::unmute() == 1); // the stale lookup warns, by design
     CHECK(strcmp(gone->name, "<fallback>") == 0);
 }
 
@@ -117,7 +116,11 @@ static void unload_invalidates_only_its_own_scope(memory::Arena *a) {
 static void recycled_slots_reject_stale_handles(memory::Arena *a) {
     asset::Manager *m = make(a);
 
+    // fill the scope, so that after the unload the first slot comes back
+    // around and gets reused rather than sitting at the back of the free line
     asset::ModelHandle old{MUST(asset::create_model(m, asset::SCOPE_TRANSIENT, "old"))};
+    while (asset::create_model(m, asset::SCOPE_TRANSIENT, "filler").err == result::OK)
+        ;
     asset::unload_scope(m, asset::SCOPE_TRANSIENT);
 
     asset::ModelHandle fresh{MUST(asset::create_model(m, asset::SCOPE_TRANSIENT, "fresh"))};
@@ -127,19 +130,19 @@ static void recycled_slots_reject_stale_handles(memory::Arena *a) {
 
     CHECK(strcmp(asset::get(m, fresh)->name, "fresh") == 0);
 
-    logger::set_level(logger::FATAL);
+    test::mute();
     asset::Model *stale = asset::get(m, old);
-    logger::set_level(logger::TRACE);
+    CHECK(test::unmute() == 1);
     CHECK(strcmp(stale->name, "<fallback>") == 0);
 }
 
 static void garbage_handles_yield_the_fallback(memory::Arena *a) {
     asset::Manager *m = make(a);
 
-    logger::set_level(logger::FATAL);
+    test::mute();
     CHECK(strcmp(asset::get(m, asset::ModelHandle{0xDEADBEEF})->name, "<fallback>") == 0);
     CHECK(asset::get(m, asset::MeshHandle{999})->vertex_count == 8);
-    logger::set_level(logger::TRACE);
+    CHECK(test::unmute() == 2);
 }
 
 static void remove_is_catalog_only(memory::Arena *a) {
@@ -152,23 +155,23 @@ static void remove_is_catalog_only(memory::Arena *a) {
 
     asset::remove(m, h);
 
-    logger::set_level(logger::FATAL);
+    test::mute();
     CHECK(strcmp(asset::get(m, h)->name, "<fallback>") == 0);
-    logger::set_level(logger::TRACE);
+    CHECK(test::unmute() == 1);
 
     CHECK(scope->used == used_before); // bytes survive until unload_scope
 }
 
 test::Suite asset_suite() {
     static const test::Case cases[] = {
-        {"fallbacks_are_drawable", fallbacks_are_drawable},
-        {"created_handles_resolve", created_handles_resolve},
-        {"payloads_live_in_the_scope_arena", payloads_live_in_the_scope_arena},
-        {"exhausting_a_pool_reports_it", exhausting_a_pool_reports_it},
-        {"unload_invalidates_only_its_own_scope", unload_invalidates_only_its_own_scope},
-        {"recycled_slots_reject_stale_handles", recycled_slots_reject_stale_handles},
-        {"garbage_handles_yield_the_fallback", garbage_handles_yield_the_fallback},
-        {"remove_is_catalog_only", remove_is_catalog_only},
+        CASE(fallbacks_are_drawable),
+        CASE(created_handles_resolve),
+        CASE(payloads_live_in_the_scope_arena),
+        CASE(exhausting_a_pool_reports_it),
+        CASE(unload_invalidates_only_its_own_scope),
+        CASE(recycled_slots_reject_stale_handles),
+        CASE(garbage_handles_yield_the_fallback),
+        CASE(remove_is_catalog_only),
     };
     return test::Suite{.name = "asset", .cases = cases, .count = ARRAY_COUNT(cases)};
 }
