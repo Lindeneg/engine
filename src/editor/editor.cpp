@@ -31,6 +31,7 @@
 #define DEFAULT_MARKER_SIZE 0.3f
 #define DEFAULT_FRUSTUM_DEPTH 10.0f
 #define DEFAULT_UNDO_DEPTH 256
+#define DEFAULT_UNDO_BLOB 4096
 
 #define DEFAULT_GIZMO_SIZE 90.0f
 #define DEFAULT_GIZMO_TOLERANCE 8.0f
@@ -125,7 +126,10 @@ Config config_from(memory::Arena *a, config::Node *first) {
         config::value_vec4(config::find(first, "collider_color"), DEFAULT_COLLIDER_COLOR);
     c.marker_size = config::get_f32(first, "marker_size", DEFAULT_MARKER_SIZE);
     c.frustum_depth = config::get_f32(first, "frustum_depth", DEFAULT_FRUSTUM_DEPTH);
-    c.undo_depth = (u32)config::get_i32(first, "undo_depth", DEFAULT_UNDO_DEPTH);
+    config::Node *undo_block = config::find(first, "undo");
+    config::Node *un = undo_block ? undo_block->first_child : NULL;
+    c.undo_depth = (u32)config::get_i32(un, "depth", DEFAULT_UNDO_DEPTH);
+    c.undo_blob = (u32)config::get_i32(un, "blob", DEFAULT_UNDO_BLOB);
 
     if (c.camera.z_near <= 0.0f || c.camera.z_far <= c.camera.z_near) {
         LOG_WARN("editor: camera near/far of %.3f/%.3f is not a valid range, using %.3f/%.1f",
@@ -135,8 +139,12 @@ Config config_from(memory::Arena *a, config::Node *first) {
         c.camera.z_far = DEFAULT_Z_FAR;
     }
     if (c.undo_depth == 0) {
-        LOG_WARN("editor: undo_depth 0 remembers nothing, using %d", DEFAULT_UNDO_DEPTH);
+        LOG_WARN("editor: an undo depth of 0 remembers nothing, using %d", DEFAULT_UNDO_DEPTH);
         c.undo_depth = DEFAULT_UNDO_DEPTH;
+    }
+    if (c.undo_blob == 0) {
+        LOG_WARN("editor: an undo blob of 0 bytes holds nothing, using %d", DEFAULT_UNDO_BLOB);
+        c.undo_blob = DEFAULT_UNDO_BLOB;
     }
     return c;
 }
@@ -170,6 +178,9 @@ struct Editor {
     b32 active;
     b32 looking; // editor_look held: the cursor is captured and the mouse turns the camera
 
+    // by id, resolved to a handle at the top of each frame; the handle is what
+    // the rest of the frame reads
+    u32 selected_id;
     entity::Handle selected;
     undo::Journal *journal;
     char level[ENTITY_NAME_CAP];
@@ -205,13 +216,14 @@ struct Editor {
     input::Action snap;
 };
 
-Editor *init(memory::Arena *a, Config cfg, input::State *in, const char *level) {
-    ASSERT(a && in && level);
+Editor *init(memory::Arena *a, memory::Arena *scratch, Config cfg, input::State *in,
+             const char *level) {
+    ASSERT(a && scratch && in && level);
 
     Editor *ed = push_struct(a, Editor);
     ed->cfg = cfg;
     ed->view = cfg.camera.start;
-    ed->journal = undo::create(a, cfg.undo_depth);
+    ed->journal = undo::create(a, scratch, cfg.undo_depth, cfg.undo_blob);
     ed->pending_component = PENDING_NONE;
     ed->hot_handle = gizmo::HANDLE_NONE;
     ed->drag.handle = gizmo::HANDLE_NONE;
@@ -263,14 +275,15 @@ b32 active(const Editor *ed) {
     return ed->active;
 }
 
-entity::Handle selected(const Editor *ed) {
-    ASSERT(ed);
-    return ed->selected;
+void select(Editor *ed, entity::World *w, entity::Handle h) {
+    ASSERT(ed && w);
+    ed->selected = h;
+    ed->selected_id = entity::id_of(w, h);
 }
 
-void select(Editor *ed, entity::Handle h) {
-    ASSERT(ed);
-    ed->selected = h;
+entity::Handle selected(const Editor *ed, entity::World *w) {
+    ASSERT(ed && w);
+    return entity::find_by_id(w, ed->selected_id);
 }
 
 const Viewpoint *viewpoint(const Editor *ed) {
@@ -406,8 +419,31 @@ static void look_through(Editor *ed, entity::Entity *e) {
     ed->view.yaw = RAD2DEG(atan2f(-f.x, -f.z));
 }
 
-// a structural change: the journal cannot follow a recycled handle, so it forgets
+// a subtree too big for an entry: the journal cannot follow it, so it forgets
 static void forget_history(Editor *ed) { undo::clear(ed->journal); }
+
+// A row dropped on another, or on nothing: the child moves under the target,
+// or to the top level, keeping its place in the world. Refused where the
+// entity layer refuses, a parent inside the child's own subtree.
+static void drop_reparent(Editor *ed, entity::World *w, asset::Manager *m, entity::Handle child,
+                          entity::Handle parent) {
+    entity::Entity *e = entity::get(w, child);
+    if (!e || child.v == parent.v || e->parent.v == parent.v)
+        return;
+
+    u32 old_parent = entity::id_of(w, e->parent);
+    char old_joint[ENTITY_NAME_CAP];
+    memcpy(old_joint, e->attach_joint, sizeof(old_joint));
+    entity::Transform before = e->local;
+    linalg::Vec3 world = linalg::mat4_translation(e->world);
+
+    if (!entity::set_parent(w, m, child, parent, NULL))
+        return;
+    entity::set_world_position(w, child, world);
+
+    undo::record_reparent(ed->journal, e->id, old_parent, entity::id_of(w, parent),
+                          old_joint[0] ? old_joint : NULL, &before, &e->local);
+}
 
 static void save_level(Editor *ed, entity::World *w, asset::Manager *m) {
     result::Error e = entity::save_level(w, m, ed->level);
@@ -426,8 +462,8 @@ static void draw_tree(Editor *ed, entity::World *w, entity::Handle h) {
     ui::push_id(h.v);
 
     b32 open = false;
-    if (ui::tree_item(e->name, e->first_child.v != 0, ed->selected.v == h.v, &open))
-        ed->selected = h;
+    if (ui::tree_item(e->name, e->first_child.v != 0, ed->selected.v == h.v, &open, h.v))
+        select(ed, w, h);
 
     if (open) {
         for (entity::Handle c = e->first_child; c.v; c = entity::get(w, c)->next_sibling)
@@ -445,8 +481,8 @@ static void hierarchy_panel(Editor *ed, entity::World *w, asset::Manager *m, i32
     if (ui::button("New entity")) {
         entity::Handle h = entity::spawn(w, NEW_ENTITY_NAME);
         if (h.v) {
-            ed->selected = h;
-            forget_history(ed);
+            select(ed, w, h);
+            undo::record_create(ed->journal, w, h);
         }
     }
     if (ui::button("Save"))
@@ -458,6 +494,12 @@ static void hierarchy_panel(Editor *ed, entity::World *w, asset::Manager *m, i32
         if (entity::get(w, h)->parent.v == 0)
             draw_tree(ed, w, h);
     ui::end_panel();
+
+    // a row dragged onto another row, or onto the panel's empty space
+    u32 dragged = 0;
+    u32 onto = 0;
+    if (ui::dropped(&dragged, &onto))
+        drop_reparent(ed, w, m, entity::Handle{dragged}, entity::Handle{onto});
 }
 
 // a drag, in a panel or on the gizmo, or a run of typing is one edit
@@ -647,7 +689,7 @@ static void component_section(Editor *ed, entity::World *w, asset::Manager *m, e
                 continue;
 
             mark_overridden(e, c);
-            undo::record_field(ed->journal, h, (i32)c, f->offset, size, before, at,
+            undo::record_field(ed->journal, e->id, (i32)c, f->offset, size, before, at,
                                continuing(ed));
 
             // a path resolves when typing stops; anything else right away
@@ -670,7 +712,7 @@ static void component_section(Editor *ed, entity::World *w, asset::Manager *m, e
     ui::pop_id();
 
     if (remove) {
-        undo::record_remove(ed->journal, h, c, comp);
+        undo::record_remove(ed->journal, e->id, c, comp);
         entity::remove_component(w, h, c);
     }
 }
@@ -703,7 +745,7 @@ static void transform_section(Editor *ed, entity::World *w, entity::Handle h) {
         return;
     if (memcmp(&before.euler, &e->local.euler, sizeof(before.euler)) != 0)
         entity::set_euler(&e->local, e->local.euler);
-    undo::record_field(ed->journal, h, UNDO_ENTITY, (u32)offsetof(entity::Entity, local),
+    undo::record_field(ed->journal, e->id, UNDO_ENTITY, (u32)offsetof(entity::Entity, local),
                        sizeof(entity::Transform), &before, &e->local, false);
 }
 
@@ -726,13 +768,13 @@ static void inspector_panel(Editor *ed, entity::World *w, asset::Manager *m, i32
     char name_before[ENTITY_NAME_CAP];
     memcpy(name_before, e->name, sizeof(name_before));
     if (ui::text_field("name", e->name, ENTITY_NAME_CAP))
-        undo::record_field(ed->journal, h, UNDO_ENTITY, (u32)offsetof(entity::Entity, name),
+        undo::record_field(ed->journal, e->id, UNDO_ENTITY, (u32)offsetof(entity::Entity, name),
                            ENTITY_NAME_CAP, name_before, e->name, true);
     ui::columns(1);
 
     b32 active_before = e->active;
     if (ui::checkbox("active", &e->active))
-        undo::record_field(ed->journal, h, UNDO_ENTITY, (u32)offsetof(entity::Entity, active),
+        undo::record_field(ed->journal, e->id, UNDO_ENTITY, (u32)offsetof(entity::Entity, active),
                            sizeof(e->active), &active_before, &e->active, false);
 
     if (e->definition[0]) {
@@ -763,7 +805,7 @@ static void inspector_panel(Editor *ed, entity::World *w, asset::Manager *m, i32
                 continue;
             d->after_read(w, m, h, comp);
             mark_overridden(e, (entity::Component)c);
-            undo::record_add(ed->journal, h, (entity::Component)c, comp);
+            undo::record_add(ed->journal, e->id, (entity::Component)c, comp);
         }
         ui::tree_pop();
     }
@@ -893,7 +935,7 @@ static b32 update_gizmo(Editor *ed, entity::World *w, input::State *in, intersec
         f32 snap = input::down(in, ed->snap) ? ed->cfg.gizmo.snap : 0.0f;
         linalg::Vec3 moved = gizmo::delta(&ed->drag, ray, snap);
         entity::set_world_position(w, ed->selected, ed->drag_world_start + moved);
-        undo::record_field(ed->journal, ed->selected, UNDO_ENTITY,
+        undo::record_field(ed->journal, ed->selected_id, UNDO_ENTITY,
                            (u32)offsetof(entity::Entity, local), sizeof(entity::Transform),
                            &ed->drag_before, &e->local, true);
         return true;
@@ -1019,8 +1061,8 @@ void frame(Editor *ed, entity::World *w, asset::Manager *m, input::State *in, wi
     ASSERT(ed && w && m && in && win);
     ASSERT_MSG(ed->active, "editor: frame while not editing");
 
-    if (ed->selected.v && !entity::alive(w, ed->selected))
-        ed->selected = entity::NONE;
+    // the id is the truth; the handle is this frame's way to it
+    ed->selected = entity::find_by_id(w, ed->selected_id);
 
     f32 aspect = (f32)fb_width / (f32)fb_height;
 
@@ -1036,7 +1078,7 @@ void frame(Editor *ed, entity::World *w, asset::Manager *m, input::State *in, wi
     b32 on_gizmo = update_gizmo(ed, w, in, ray, fb_height, pointer_free);
 
     if (input::pressed(in, ed->select) && pointer_free && !on_gizmo)
-        ed->selected = pick(w, m, ray, ed->cfg.marker_size, ed->cfg.camera.z_far);
+        select(ed, w, pick(w, m, ray, ed->cfg.marker_size, ed->cfg.camera.z_far));
 
     // keys go to a focused field before they mean anything here
     if (!ui::wants_keyboard()) {
@@ -1047,9 +1089,10 @@ void frame(Editor *ed, entity::World *w, asset::Manager *m, input::State *in, wi
             ed->gizmo_local = !ed->gizmo_local;
 
         if (input::pressed(in, ed->delete_entity) && ed->selected.v) {
+            if (!undo::record_delete(ed->journal, w, ed->selected))
+                forget_history(ed);
             entity::destroy(w, ed->selected);
-            ed->selected = entity::NONE;
-            forget_history(ed);
+            select(ed, w, entity::NONE);
         }
 
         // an undone setting must show its restored value, so what is shown is looked up again

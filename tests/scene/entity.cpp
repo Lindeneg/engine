@@ -145,6 +145,7 @@ static void inline_entity_round_trips(memory::Arena *a) {
     asset::Manager *m = shared_assets(a);
 
     const char *expected = "entity probe {\n"
+                           "    id 1\n"
                            "    transform {\n"
                            "        position 1 2 3\n"
                            "        rotation 0 90 0\n"
@@ -169,9 +170,61 @@ static void inline_entity_round_trips(memory::Arena *a) {
     const char *w1 = written(a, w, h1, "entity", false);
     CHECK(strcmp(w1, expected) == 0);
 
-    entity::Handle h2 = entity::spawn_from_config(w, m, block(a, w1, "entity"), entity::NONE);
-    const char *w2 = written(a, w, h2, "entity", false);
+    // read back into a fresh world, where its id is free to be the same
+    entity::World *w2_world = make_world(a);
+    entity::Handle h2 =
+        entity::spawn_from_config(w2_world, m, block(a, w1, "entity"), entity::NONE);
+    const char *w2 = written(a, w2_world, h2, "entity", false);
     CHECK(strcmp(w1, w2) == 0);
+}
+
+static void ids_are_unique_and_kept_by_the_file(memory::Arena *a) {
+    entity::World *w = make_world(a);
+    asset::Manager *m = shared_assets(a);
+
+    entity::Handle first = entity::spawn(w, "first");
+    entity::Handle second = entity::spawn(w, "second");
+    CHECK(entity::id_of(w, first) == 1 && entity::id_of(w, second) == 2);
+
+    // a freed id is never handed out again
+    entity::destroy(w, first);
+    CHECK(entity::id_of(w, entity::spawn(w, "third")) == 3);
+    CHECK(entity::find_by_id(w, 2).v == second.v);
+    CHECK(entity::find_by_id(w, 1).v == 0);
+
+    // a file's id is taken, and the counter moves past it
+    entity::Handle from_file = entity::spawn_from_config(
+        w, m, block(a, "entity seven {\n    id 7\n}\n", "entity"), entity::NONE);
+    CHECK(entity::id_of(w, from_file) == 7);
+    CHECK(entity::id_of(w, entity::spawn(w, "eighth")) == 8);
+
+    // an id already alive is refused, loudly, and a fresh one stands in
+    test::mute();
+    entity::Handle clash = entity::spawn_with_id(w, "clash", 2);
+    CHECK(test::unmute() == 1);
+    CHECK(entity::id_of(w, clash) == 9);
+    CHECK(entity::find_by_id(w, 2).v == second.v);
+}
+
+// the children a definition spawns are not written, so the instance names their ids
+static void owned_ids_come_back_the_same(memory::Arena *a) {
+    entity::World *w = make_world(a);
+    asset::Manager *m = shared_assets(a);
+
+    entity::Handle h = entity::spawn_from_config(
+        w, m, block(a, "instance \"player\" {\n    definition soldier\n}\n", "instance"),
+        entity::NONE);
+    entity::Handle weapon = entity::get(w, h)->first_child;
+    u32 weapon_id = entity::id_of(w, weapon);
+    CHECK(weapon_id != 0 && weapon_id != entity::id_of(w, h));
+
+    const char *text = written(a, w, h, "instance", false);
+    CHECK(strstr(text, "owned_ids ") != NULL);
+
+    entity::World *w2 = make_world(a);
+    entity::Handle h2 = entity::spawn_from_config(w2, m, block(a, text, "instance"), entity::NONE);
+    CHECK(entity::id_of(w2, h2) == entity::id_of(w, h));
+    CHECK(entity::id_of(w2, entity::get(w2, h2)->first_child) == weapon_id);
 }
 
 static void quaternion_rotation_is_written_as_four_values(memory::Arena *a) {
@@ -217,6 +270,7 @@ static void reference_applies_overrides(memory::Arena *a) {
 
     // written as a reference: definition, transform, and only the overridden component
     const char *expected = "instance cam {\n"
+                           "    id 1\n"
                            "    definition templates/camera3d\n"
                            "    transform {\n"
                            "        position 0 1 3\n"
@@ -255,15 +309,13 @@ static void definition_children_are_owned(memory::Arena *a) {
     CHECK(weapon->attach_joint_index >= 0);
     CHECK(strcmp(weapon->definition, "pistol") == 0);
 
+    // the reference, its id, the ids its definition spawned, and the transform; no child blocks
     const char *as_instance = written(a, w, h, "instance", false);
-    CHECK(strcmp(as_instance, "instance player {\n"
-                              "    definition soldier\n"
-                              "    transform {\n"
-                              "        position 0 0 0\n"
-                              "        rotation 0 0 0\n"
-                              "        scale 1\n"
-                              "    }\n"
-                              "}\n") == 0);
+    CHECK(strstr(as_instance, "instance player {\n    id 1\n    definition soldier\n") != NULL);
+    CHECK(strstr(as_instance, "owned_ids ") != NULL);
+    CHECK(strstr(as_instance, "transform {") != NULL);
+    CHECK(strstr(as_instance, "child") == NULL);
+    CHECK(strstr(as_instance, "renderable") == NULL);
 
     const char *expanded = written(a, w, h, "entity", true);
     CHECK(strstr(expanded, "entity player {") != NULL);
@@ -311,6 +363,8 @@ test::Suite entity_suite() {
         CASE(fields_read_every_type),
         CASE(bad_values_warn_and_keep_defaults),
         CASE(inline_entity_round_trips),
+        CASE(ids_are_unique_and_kept_by_the_file),
+        CASE(owned_ids_come_back_the_same),
         CASE(quaternion_rotation_is_written_as_four_values),
         CASE(reference_applies_overrides),
         CASE(definition_children_are_owned),

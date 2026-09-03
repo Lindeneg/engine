@@ -355,6 +355,83 @@ static void later_panel_wins_the_pointer(memory::Arena *a) {
     teardown();
 }
 
+// two rows with payloads; a press on the first, moved onto the second and
+// released, is a drop and not a click
+static void a_dragged_row_drops_on_another(memory::Arena *a) {
+    setup(a);
+    linalg::Vec2 first = row(PANEL, 0, 60.0f);
+    linalg::Vec2 second = row(PANEL, 1, 60.0f);
+
+    b32 clicked = false;
+    b32 got_drop = false;
+    u32 payload = 0;
+    u32 target = 0;
+
+    ui::Input frames[] = {at(first), press(first), hold(second), release(second)};
+    for (u32 i = 0; i < ARRAY_COUNT(frames); i++) {
+        canvas::begin_frame(FB_W, FB_H);
+        ui::begin_frame(&frames[i]);
+        ui::begin_panel("Tree", PANEL);
+        b32 open = false;
+        clicked = ui::tree_item("one", false, false, &open, 1u) || clicked;
+        ui::tree_item("two", false, false, &open, 2u);
+        ui::end_panel();
+        u32 p = 0;
+        u32 t = 0;
+        if (ui::dropped(&p, &t)) {
+            got_drop = true;
+            payload = p;
+            target = t;
+        }
+        ui::end_frame();
+    }
+    CHECK(!clicked);
+    CHECK(got_drop && payload == 1u && target == 2u);
+
+    // released over nothing lands on nothing; escape lands nowhere at all
+    ui::Input off = release(linalg::Vec2{-5.0f, -5.0f});
+    ui::Input frames2[] = {at(first), press(first), hold(second), off};
+    got_drop = false;
+    for (u32 i = 0; i < ARRAY_COUNT(frames2); i++) {
+        canvas::begin_frame(FB_W, FB_H);
+        ui::begin_frame(&frames2[i]);
+        ui::begin_panel("Tree", PANEL);
+        b32 open = false;
+        ui::tree_item("one", false, false, &open, 1u);
+        ui::tree_item("two", false, false, &open, 2u);
+        ui::end_panel();
+        u32 p = 0;
+        u32 t = 0;
+        if (ui::dropped(&p, &t)) {
+            got_drop = true;
+            target = t;
+        }
+        ui::end_frame();
+    }
+    CHECK(got_drop && target == 0u);
+
+    ui::Input escape = hold(second);
+    escape.key_pressed[window::KEY_ESCAPE] = 1;
+    ui::Input frames3[] = {at(first), press(first), hold(second), escape, release(second)};
+    got_drop = false;
+    for (u32 i = 0; i < ARRAY_COUNT(frames3); i++) {
+        canvas::begin_frame(FB_W, FB_H);
+        ui::begin_frame(&frames3[i]);
+        ui::begin_panel("Tree", PANEL);
+        b32 open = false;
+        ui::tree_item("one", false, false, &open, 1u);
+        ui::tree_item("two", false, false, &open, 2u);
+        ui::end_panel();
+        u32 p = 0;
+        u32 t = 0;
+        got_drop = ui::dropped(&p, &t) || got_drop;
+        ui::end_frame();
+    }
+    CHECK(!got_drop);
+
+    teardown();
+}
+
 static void int_and_enum_fields(memory::Arena *a) {
     setup(a);
     linalg::Vec2 p = row(PANEL, 0, 20.0f);
@@ -420,6 +497,7 @@ test::Suite ui_suite() {
         CASE(panel_scrolls_with_the_wheel),
         CASE(later_panel_wins_the_pointer),
         CASE(int_and_enum_fields),
+        CASE(a_dragged_row_drops_on_another),
         CASE(style_reads_the_file_shape),
     };
     return test::Suite{.name = "ui", .cases = cases, .count = ARRAY_COUNT(cases)};

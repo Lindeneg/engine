@@ -25,6 +25,9 @@ namespace entity {
 #define DEFAULT_MAX_FIXED_STEPS 8
 #define DEFAULT_MAX_ENTITIES 4096
 #define DEFAULT_MAX_COLLIDERS 256
+
+// 0 means no id, so the counter starts above it
+#define FIRST_ID 1u
 #define DEFAULT_MAX_RENDERABLES 2048
 #define DEFAULT_MAX_ANIMATORS 64
 #define DEFAULT_MAX_CAMERAS 8
@@ -153,6 +156,8 @@ struct World {
     pool::Pool entities;
     pool::Pool components[COMPONENT_COUNT];
 
+    u32 next_id; // ids only ever go up; a load moves this past what the file holds
+
     linalg::Mat4 *skin;   // per animator slot, slot * SHADER_MAX_JOINTS; sized once at init
     linalg::Mat4 *global; // same, joint model-space transforms for attachments
 };
@@ -180,6 +185,7 @@ WorldResult init(memory::Arena *a, Config cfg) {
     w->cfg = cfg;
     w->fixed_dt = 1.0f / (cfg.fixed_hz > 0.0f ? cfg.fixed_hz : DEFAULT_FIXED_HZ);
     w->max_fixed_steps = cfg.max_fixed_steps ? cfg.max_fixed_steps : DEFAULT_MAX_FIXED_STEPS;
+    w->next_id = FIRST_ID;
 
     // +1: a pool reserves index 0 and there is no fallback entity to fill it,
     // so the configured count is the usable one
@@ -231,12 +237,54 @@ Handle spawn(World *w, const char *name) {
 
     Entity *e = (Entity *)pool::at(&w->entities, idx);
     snprintf(e->name, ENTITY_NAME_CAP, "%s", name ? name : "<unnamed>");
+    e->id = w->next_id++;
     e->local = transform_identity();
     e->world = linalg::mat4_identity(); // zeroed would be degenerate
     e->attach_joint_index = -1;
     e->active = true;
 
+    ASSERT_MSG(w->next_id != 0, "entity: the id counter wrapped");
     return Handle{pool::make_handle(&w->entities, idx)};
+}
+
+// takes the id the file or the journal asks for, unless something alive has it
+static void assign_id(World *w, Handle h, u32 id) {
+    Entity *e = get(w, h);
+    if (!id || !e)
+        return;
+
+    Handle holder = find_by_id(w, id);
+    if (holder.v && holder.v != h.v) {
+        LOG_WARN("entity: id %u is already taken by \"%s\"; \"%s\" keeps a fresh one", id,
+                 get(w, holder)->name, e->name);
+        return;
+    }
+
+    e->id = id;
+    if (id >= w->next_id)
+        w->next_id = id + 1;
+}
+
+Handle spawn_with_id(World *w, const char *name, u32 id) {
+    Handle h = spawn(w, name);
+    assign_id(w, h, id);
+    return h;
+}
+
+u32 id_of(World *w, Handle h) {
+    Entity *e = get(w, h);
+    return e ? e->id : 0;
+}
+
+Handle find_by_id(World *w, u32 id) {
+    ASSERT(w);
+    if (!id)
+        return NONE;
+
+    for (Handle h = first(w); h.v; h = next(w, h))
+        if (get(w, h)->id == id)
+            return h;
+    return NONE;
 }
 
 static void unlink(World *w, Handle h) {
@@ -309,13 +357,13 @@ static b32 descends_from(World *w, Handle h, Handle ancestor) {
     return false;
 }
 
-void set_parent(World *w, asset::Manager *m, Handle child, Handle parent, const char *joint) {
+b32 set_parent(World *w, asset::Manager *m, Handle child, Handle parent, const char *joint) {
     ASSERT(w && m);
 
     Entity *ce = get(w, child);
     if (!ce) {
         LOG_WARN("entity: set_parent on a dead child handle %u", child.v);
-        return;
+        return false;
     }
 
     // every refusal precedes the unlink, so a rejected reparent leaves the child where it was
@@ -324,12 +372,12 @@ void set_parent(World *w, asset::Manager *m, Handle child, Handle parent, const 
         pe = get(w, parent);
         if (!pe) {
             LOG_WARN("entity: \"%s\" parented to a dead handle %u", ce->name, parent.v);
-            return;
+            return false;
         }
         // a cycle never terminates in resolve_world or destroy
         if (parent.v == child.v || descends_from(w, parent, child)) {
             LOG_WARN("entity: \"%s\" cannot be parented under its own subtree", ce->name);
-            return;
+            return false;
         }
     }
 
@@ -339,7 +387,7 @@ void set_parent(World *w, asset::Manager *m, Handle child, Handle parent, const 
     ce->attach_joint_index = -1;
 
     if (!pe)
-        return;
+        return true;
 
     // appended, not prepended: sibling order is file order and a save must reproduce it
     ce->parent = parent;
@@ -355,7 +403,7 @@ void set_parent(World *w, asset::Manager *m, Handle child, Handle parent, const 
     }
 
     if (!joint || !joint[0])
-        return;
+        return true;
 
     // skeletons store joint names canonicalized
     str::canonical_name(ce->attach_joint, ENTITY_NAME_CAP, joint);
@@ -366,7 +414,7 @@ void set_parent(World *w, asset::Manager *m, Handle child, Handle parent, const 
     if (!found) {
         LOG_WARN("entity: \"%s\" attaches to joint \"%s\", which \"%s\" does not have", ce->name,
                  ce->attach_joint, pe->name);
-        return;
+        return true;
     }
 
     ce->attach_joint_index = (i32)*found;
@@ -375,6 +423,7 @@ void set_parent(World *w, asset::Manager *m, Handle child, Handle parent, const 
         LOG_WARN("entity: \"%s\" attaches to joint \"%s\" of \"%s\", which has no animator to "
                  "pose it",
                  ce->name, ce->attach_joint, pe->name);
+    return true;
 }
 
 void set_world_position(World *w, Handle h, linalg::Vec3 world) {
@@ -1019,6 +1068,7 @@ static void write_transform(memory::Arena *a, config::Doc *doc, config::Node *pa
 
 static Handle build_entity(World *w, asset::Manager *m, config::Node *decl, Handle parent,
                            u32 depth);
+static u32 assign_owned_ids(World *w, Handle h, config::Node *ids, u32 n);
 
 static void build_children(World *w, asset::Manager *m, config::Node *body, Handle self,
                            u32 depth) {
@@ -1130,6 +1180,12 @@ static Handle build_entity(World *w, asset::Manager *m, config::Node *decl, Hand
             return NONE;
     }
 
+    // ids first: a level names its own, and for a reference the ones its definition spawned
+    assign_id(w, h, (u32)config::get_i32(body, "id", 0));
+    config::Node *owned = def ? config::find(body, "owned_ids") : NULL;
+    if (owned)
+        assign_owned_ids(w, h, owned, 0);
+
     // for a reference, the components present are overrides; remembered so a save writes only them
     Entity *e = get(w, h);
     u32 present = read_components(w, m, h, body);
@@ -1154,6 +1210,40 @@ Handle spawn_from_config(World *w, asset::Manager *m, config::Node *decl, Handle
     return build_entity(w, m, decl, parent, 0);
 }
 
+// how many definition-spawned descendants one instance can name; a warning past it
+#define OWNED_IDS_CAP CONFIG_MAX_TOKENS
+
+// depth first in sibling order, the order instantiate spawned them
+static u32 collect_owned_ids(memory::Arena *a, World *w, Handle h, const char **out, u32 n) {
+    for (Handle c = get(w, h)->first_child; c.v; c = get(w, c)->next_sibling) {
+        Entity *ce = get(w, c);
+        if (!ce->owned_by_definition)
+            continue;
+        if (n == OWNED_IDS_CAP) {
+            LOG_WARN_ONCE("entity: \"%s\" has more than %d definition children; the rest get "
+                          "fresh ids on load",
+                          get(w, h)->name, OWNED_IDS_CAP);
+            return n;
+        }
+        out[n++] = memory::push_fmt(a, "%u", ce->id);
+        n = collect_owned_ids(a, w, c, out, n);
+    }
+    return n;
+}
+
+// the same walk, handing the ids back
+static u32 assign_owned_ids(World *w, Handle h, config::Node *ids, u32 n) {
+    for (Handle c = get(w, h)->first_child; c.v; c = get(w, c)->next_sibling) {
+        if (!get(w, c)->owned_by_definition)
+            continue;
+        if (n < ids->value_count)
+            assign_id(w, c, (u32)config::value_i32(ids, n, 0));
+        n++;
+        n = assign_owned_ids(w, c, ids, n);
+    }
+    return n;
+}
+
 void write_entity(memory::Arena *a, config::Doc *doc, config::Node *parent, World *w, Handle h,
                   const char *key, b32 expand) {
     ASSERT(a && doc && w && key);
@@ -1166,10 +1256,23 @@ void write_entity(memory::Arena *a, config::Doc *doc, config::Node *parent, Worl
     config::Node *node = config::append(a, doc, parent, key, label, 1);
     node->is_block = true;
 
+    // identity is an instance's, never a definition's: a template is shared
+    if (!expand) {
+        const char *id[] = {memory::push_fmt(a, "%u", e->id)};
+        config::append(a, doc, node, "id", id, 1);
+    }
+
     b32 by_ref = !expand && e->definition[0];
     if (by_ref) {
         const char *def[] = {e->definition};
         config::append(a, doc, node, "definition", def, 1);
+
+        // the children the definition spawned are not written, so their ids
+        // are, in spawn order, and the reader hands them back the same way
+        const char *ids[OWNED_IDS_CAP];
+        u32 n = collect_owned_ids(a, w, h, ids, 0);
+        if (n)
+            config::append(a, doc, node, "owned_ids", ids, n);
     }
     if (parent && e->attach_joint[0]) {
         const char *joint[] = {e->attach_joint};

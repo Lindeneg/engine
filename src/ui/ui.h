@@ -62,8 +62,9 @@ struct Style {
     f32 border;
     f32 scrollbar_width;
     f32 indent;        // per open tree node
-    f32 scroll_step;   // pixels per wheel tick
-    f32 checkbox_size; // the box, centred in its row
+    f32 scroll_step;    // pixels per wheel tick
+    f32 checkbox_size;  // the box, centred in its row
+    f32 drag_threshold; // pixels a press must move before it is a drag
 
     linalg::Vec4 panel_background;
     linalg::Vec4 panel_border;
@@ -153,7 +154,16 @@ void tree_pop();
 // was clicked. *out_open is the fold, remembered by id; a row without children
 // has no mark and is never open. When open, what follows up to tree_pop is
 // indented and scoped, as with tree_node.
-b32 tree_item(const char *label, b32 has_children, b32 selected, b32 *out_open);
+//
+// A non-zero payload makes the row draggable: pressed and moved past the
+// style's threshold, it becomes the drag, and the release is not a click. Rows
+// with a payload are drop targets while a drag is on.
+b32 tree_item(const char *label, b32 has_children, b32 selected, b32 *out_open, u32 payload);
+
+// True on the frame a drag was released, with what was dragged and the payload
+// of the row it landed on, 0 for none. Ask after the rows were drawn. Escape
+// cancels a drag with no drop.
+b32 dropped(u32 *out_payload, u32 *out_target);
 
 const Style *style();
 

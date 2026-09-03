@@ -136,6 +136,11 @@ struct Collider {
 struct Entity {
     char name[ENTITY_NAME_CAP];
 
+    // Identity for a level's lifetime: handed out from a counter, written to
+    // the file, never reused. A handle is a slot that recycles; an id is the
+    // thing itself, which is what a journal or a selection must refer to.
+    u32 id;
+
     Transform local;
     linalg::Mat4 world; // recomputed every update from the hierarchy
 
@@ -218,11 +223,21 @@ b32 alive(World *w, Handle h);
 
 Handle spawn(World *w, const char *name);
 
+// With a particular id, for a loader or an undo bringing an entity back. An id
+// already alive in the world is refused with a warning and a fresh one is used.
+Handle spawn_with_id(World *w, const char *name, u32 id);
+
+// 0 for a dead handle; NONE for an id nothing carries. The lookup is a walk of
+// the live entities, which an editor does a few times a frame.
+u32 id_of(World *w, Handle h);
+Handle find_by_id(World *w, u32 id);
+
 // Recursive over children.
 void destroy(World *w, Handle h);
 
-// NONE detaches; joint may be NULL or empty for plain parenting.
-void set_parent(World *w, asset::Manager *m, Handle child, Handle parent, const char *joint);
+// NONE detaches; joint may be NULL or empty for plain parenting. False when
+// refused: a dead handle, or a parent inside the child's own subtree.
+b32 set_parent(World *w, asset::Manager *m, Handle child, Handle parent, const char *joint);
 
 // Places the entity at a world position by setting its local one, through the
 // parent's world matrix as of the last end_frame. For a gizmo, which drags in

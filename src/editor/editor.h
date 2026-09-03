@@ -71,7 +71,8 @@ struct Config {
     linalg::Vec4 collider_color;
     f32 marker_size;   // the axes drawn for an entity with nothing to see, and its pick radius
     f32 frustum_depth; // how far a selected camera's frustum is drawn
-    u32 undo_depth;
+    u32 undo_depth;    // edits remembered
+    u32 undo_blob;     // bytes an entry holds for a created or deleted subtree
 };
 
 // The document's top level; NULL or missing keys take the defaults. Strings are copied into a.
@@ -85,8 +86,10 @@ ConfigResult load_config(memory::Arena *a, memory::Arena *scratch, const char *r
 struct Editor;
 
 // Resolves the maps and actions once. Starts inactive, with the editor map off.
-// level is the name save_level writes, copied.
-Editor *init(memory::Arena *a, Config cfg, input::State *in, const char *level);
+// level is the name save_level writes, copied; scratch serves the journal's
+// subtree text.
+Editor *init(memory::Arena *a, memory::Arena *scratch, Config cfg, input::State *in,
+             const char *level);
 
 void set_active(Editor *ed, input::State *in, window::Window *win, b32 on);
 b32 active(const Editor *ed);
@@ -99,8 +102,9 @@ void frame(Editor *ed, entity::World *w, asset::Manager *m, input::State *in, wi
 // The view for the renderer, from the free camera.
 b32 build_frame(Editor *ed, entity::World *w, f32 aspect, shader::FrameData *out);
 
-entity::Handle selected(const Editor *ed);
-void select(Editor *ed, entity::Handle h);
+// The selection is held by id, so it survives the entity being rebuilt.
+entity::Handle selected(const Editor *ed, entity::World *w);
+void select(Editor *ed, entity::World *w, entity::Handle h);
 
 const Viewpoint *viewpoint(const Editor *ed);
 

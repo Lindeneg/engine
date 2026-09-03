@@ -21,6 +21,11 @@
 #define DEFAULT_INDENT 16.0f
 #define DEFAULT_SCROLL_STEP 40.0f
 #define DEFAULT_CHECKBOX_SIZE 14.0f
+#define DEFAULT_DRAG_THRESHOLD 4.0f
+
+// the label carried beside the pointer while dragging
+#define DRAG_LABEL_CAP 64
+#define DRAG_LABEL_OFFSET 12.0f
 
 // the focused number field edits here; no number needs more
 #define EDIT_CAP 64
@@ -63,6 +68,7 @@ Style style_from(config::Node *first) {
     s.indent = config::get_f32(first, "indent", DEFAULT_INDENT);
     s.scroll_step = config::get_f32(first, "scroll_step", DEFAULT_SCROLL_STEP);
     s.checkbox_size = config::get_f32(first, "checkbox_size", DEFAULT_CHECKBOX_SIZE);
+    s.drag_threshold = config::get_f32(first, "drag_threshold", DEFAULT_DRAG_THRESHOLD);
 
     s.panel_background =
         config::value_vec4(config::find(first, "panel_background"), DEFAULT_PANEL_BACKGROUND);
@@ -187,6 +193,13 @@ static struct {
     u32 anchor;
     f32 scroll;
     char edit[EDIT_CAP];
+
+    // a drag: where the press was, what is being carried, and where it is over
+    linalg::Vec2 press_at;
+    b32 drag_active;
+    u32 drag_payload;
+    u32 drop_candidate;
+    char drag_label[DRAG_LABEL_CAP];
 } g;
 
 void init(memory::Arena *a, Config cfg, Style style, font::Font *font) {
@@ -257,6 +270,8 @@ static Retained *retained(Id id, b32 *out_created) {
     return r;
 }
 
+static void text_left(canvas::Rect r, const char *s, linalg::Vec4 color, f32 inset);
+
 void begin_frame(const Input *in) {
     ASSERT(in);
     ASSERT_MSG(g.retained, "ui: init before begin_frame");
@@ -266,6 +281,14 @@ void begin_frame(const Input *in) {
     g.in_frame = true;
     g.mouse_over_panel = false;
     g.focus_seen = false;
+    g.drop_candidate = 0;
+
+    // escape drops the payload where nobody sees it, and the press with it
+    if (g.drag_active && in->key_pressed[window::KEY_ESCAPE]) {
+        g.drag_active = false;
+        g.drag_payload = 0;
+        g.active = ID_NONE;
+    }
 }
 
 void end_frame() {
@@ -283,6 +306,21 @@ void end_frame() {
     // a field that was not drawn this frame cannot keep the keyboard
     if (g.focus && !g.focus_seen)
         g.focus = ID_NONE;
+
+    // the drag rides beside the pointer, and ends with the button
+    if (g.drag_active) {
+        const Style *s = &g.style;
+        f32 w = font::width(g.font, g.drag_label) + 2.0f * s->padding;
+        canvas::Rect tag{g.in.mouse.x + DRAG_LABEL_OFFSET, g.in.mouse.y + DRAG_LABEL_OFFSET, w,
+                         s->row_height};
+        canvas::rect(tag, s->widget_active);
+        text_left(tag, g.drag_label, s->text, s->padding);
+
+        if (!g.in.mouse_down) {
+            g.drag_active = false;
+            g.drag_payload = 0;
+        }
+    }
 
     g.in_frame = false;
 }
@@ -800,7 +838,7 @@ b32 tree_node(const char *label_, b32 open_by_default) {
     return true;
 }
 
-b32 tree_item(const char *label_, b32 has_children, b32 selected, b32 *out_open) {
+b32 tree_item(const char *label_, b32 has_children, b32 selected, b32 *out_open, u32 payload) {
     ASSERT(label_ && out_open);
     canvas::Rect r = next_rect();
     Id id = make_id(label_);
@@ -827,15 +865,34 @@ b32 tree_item(const char *label_, b32 has_children, b32 selected, b32 *out_open)
     }
 
     b32 hov = hovered(id, body);
-    if (hov && g.in.mouse_pressed)
+    if (hov && g.in.mouse_pressed) {
         g.active = id;
+        g.press_at = g.in.mouse;
+    }
+
+    // held and moved far enough, the press becomes a drag and stops being a click
+    if (payload && g.active == id && !g.drag_active) {
+        linalg::Vec2 moved = linalg::vec2_sub(g.in.mouse, g.press_at);
+        if (moved.x * moved.x + moved.y * moved.y > s->drag_threshold * s->drag_threshold) {
+            g.drag_active = true;
+            g.drag_payload = payload;
+            snprintf(g.drag_label, sizeof(g.drag_label), "%s", label_);
+        }
+    }
+
     b32 clicked = false;
     if (g.active == id && g.in.mouse_released) {
-        clicked = inside(body);
+        clicked = inside(body) && !g.drag_active;
         g.active = ID_NONE;
     }
 
-    canvas::rect(r, selected ? s->widget_active : face_color(id));
+    // while something else is carried, this row is where it may land
+    b32 target = g.drag_active && payload && payload != g.drag_payload && inside(r);
+    if (target)
+        g.drop_candidate = payload;
+
+    linalg::Vec4 face = selected ? s->widget_active : face_color(id);
+    canvas::rect(r, target ? s->widget_hot : face);
     if (has_children)
         canvas::text(g.font, r.x + s->padding, baseline_in(r),
                      st->open ? TREE_OPEN_MARK : TREE_CLOSED_MARK, s->text_dim);
@@ -847,6 +904,16 @@ b32 tree_item(const char *label_, b32 has_children, b32 selected, b32 *out_open)
         g.panel.indent += s->indent;
     }
     return clicked;
+}
+
+b32 dropped(u32 *out_payload, u32 *out_target) {
+    ASSERT(out_payload && out_target);
+    if (!g.drag_active || !g.in.mouse_released)
+        return false;
+
+    *out_payload = g.drag_payload;
+    *out_target = g.drop_candidate;
+    return true;
 }
 
 void tree_pop() {

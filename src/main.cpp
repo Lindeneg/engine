@@ -185,8 +185,9 @@ int main() {
         config::find(debug_cfg ? debug_cfg->first_child : NULL, "collider_color"),
         DEFAULT_COLLIDER_COLOR);
 
-    editor::Editor *ed = editor::init(&perm, MUST(editor::load_config(&perm, &scratch, root)), in,
-                                      config::get(cfg, "level", DEFAULT_LEVEL));
+    editor::Editor *ed =
+        editor::init(&perm, &scratch, MUST(editor::load_config(&perm, &scratch, root)), in,
+                     config::get(cfg, "level", DEFAULT_LEVEL));
 
     asset::Manager *assets{
         MUST(asset::init(&perm, &scratch,

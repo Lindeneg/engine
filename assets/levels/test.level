@@ -1,8 +1,8 @@
 instance camera {
     definition templates/camera3d
     transform {
-        position 1.04056 2.27135 -1.61529
-        rotation -25 15 0
+        position 0.0157416 2.05032 0.825369
+        rotation -17.64 332.52 0
         scale 1
     }
     camera {
@@ -24,7 +24,7 @@ instance player {
     definition soldier
     transform {
         position 1.16934 0.350319 -1.39256
-        rotation 0 204.36 0
+        rotation 0 332.52 0
         scale 1
     }
     renderable {
@@ -35,12 +35,6 @@ instance player {
         clip animations/pistol_idle.glb
         speed 1
         playing true
-    }
-    collider {
-        shape box
-        size 1 1 1
-        radius 0.5
-        offset 0 0 0
     }
 }
 instance dropped_pistol {
