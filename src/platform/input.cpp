@@ -6,9 +6,7 @@
 #include "core/logger.h"
 #include "core/str.h"
 #include "core/strmap.h"
-#include "platform/path.h"
 
-#define INPUT_CFG "input.cfg"
 #define MAP_KEY "map"
 
 namespace input {
@@ -39,9 +37,11 @@ struct MapDef {
 struct State {
     MapDef *maps;
     u32 map_count;
+    u32 max_maps;
 
     ActionDef *actions;
     u32 action_count;
+    u32 max_actions;
 
     strmap::Map by_map;    // name -> map id
     strmap::Map by_action; // name -> action id
@@ -162,24 +162,21 @@ static const ActionDef *def(const State *s, Action a) {
     return s->maps[ad->map].enabled ? ad : NULL;
 }
 
-static void count_declared(config::Node *first, u32 *out_maps, u32 *out_actions) {
-    for (config::Node *m = config::find(first, MAP_KEY); m; m = config::find_next(m, MAP_KEY)) {
-        (*out_maps)++;
-        for (config::Node *a = m->first_child; a; a = a->next_sibling)
-            if (a->key)
-                (*out_actions)++;
-    }
-}
-
-static void read_map(State *s, memory::Arena *a, config::Node *mn) {
+static void read_map(State *s, memory::Arena *a, config::Node *mn, const char *path) {
     const char *mname = config::value(mn, 0, NULL);
     if (!mname) {
-        LOG_WARN("input: %s: a map with no name is ignored", INPUT_CFG);
+        LOG_WARN("input: %s: a map with no name is ignored", path);
         return;
     }
 
     if (lookup(&s->by_map, mname)) {
-        LOG_WARN("input: %s: map '%s' is declared twice; the second is ignored", INPUT_CFG, mname);
+        LOG_WARN("input: %s: map '%s' is declared twice; the second is ignored", path, mname);
+        return;
+    }
+
+    if (s->map_count == s->max_maps) {
+        LOG_WARN("input: %s: more than %u maps across the files read; '%s' is ignored", path,
+                 s->max_maps, mname);
         return;
     }
 
@@ -195,8 +192,14 @@ static void read_map(State *s, memory::Arena *a, config::Node *mn) {
             continue;
 
         if (lookup(&s->by_action, an->key)) {
-            LOG_WARN("input: %s: action '%s' is declared twice; the second is ignored", INPUT_CFG,
+            LOG_WARN("input: %s: action '%s' is declared twice; the second is ignored", path,
                      an->key);
+            continue;
+        }
+
+        if (s->action_count == s->max_actions) {
+            LOG_WARN("input: %s: more than %u actions across the files read; '%s' is ignored",
+                     path, s->max_actions, an->key);
             continue;
         }
 
@@ -211,13 +214,13 @@ static void read_map(State *s, memory::Arena *a, config::Node *mn) {
             Binding src;
             if (!parse_binding(an->values[i], &src)) {
                 LOG_WARN("input: %s: '%s' is not a key, a button or a chord, in action '%s'",
-                         INPUT_CFG, an->values[i], ad->name);
+                         path, an->values[i], ad->name);
                 continue;
             }
 
             if (ad->binding_count == INPUT_MAX_BINDINGS) {
-                LOG_WARN("input: %s: action '%s' takes at most %d bindings; '%s' is ignored",
-                         INPUT_CFG, ad->name, INPUT_MAX_BINDINGS, an->values[i]);
+                LOG_WARN("input: %s: action '%s' takes at most %d bindings; '%s' is ignored", path,
+                         ad->name, INPUT_MAX_BINDINGS, an->values[i]);
                 break;
             }
 
@@ -226,60 +229,83 @@ static void read_map(State *s, memory::Arena *a, config::Node *mn) {
 
         // it still exists, so the editor shows it as unbound rather than losing it
         if (!ad->binding_count)
-            LOG_WARN("input: %s: action '%s' has no usable binding", INPUT_CFG, ad->name);
+            LOG_WARN("input: %s: action '%s' has no usable binding", path, ad->name);
     }
 }
 
-StateResult init(memory::Arena *a, memory::Arena *scratch, const char *root) {
-    ASSERT(a && scratch && root);
-    ASSERT_MSG(a != scratch, "input: the state cannot live in the arena it is parsed from");
-
+// every map block of one file into the state; the file is infrastructure
+static result::Error read_file(State *s, memory::Arena *a, memory::Arena *scratch,
+                               const char *path) {
     memory::ArenaTemp t = memory::temp_begin(scratch);
 
-    config::DocResult dr = config::load(scratch, FPATH(scratch, root, INPUT_CFG));
+    config::DocResult dr = config::load(scratch, path);
     if (dr.err != result::OK) {
-        LOG_ERR("input: cannot read %s", INPUT_CFG);
+        LOG_ERR("input: cannot read %s", path);
         memory::temp_end(t);
-        return StateResult{.err = dr.err};
+        return dr.err;
     }
 
     config::Doc *doc = dr.val;
     if (doc->problems) {
-        LOG_ERR("input: %s has %u structural problem(s)", INPUT_CFG, doc->problems);
+        LOG_ERR("input: %s has %u structural problem(s)", path, doc->problems);
         memory::temp_end(t);
-        return StateResult{.err = result::ERR_PARSE};
+        return result::ERR_PARSE;
     }
 
-    u32 n_maps = 0;
-    u32 n_actions = 0;
-    count_declared(doc->first, &n_maps, &n_actions);
+    u32 before = s->map_count;
+    for (config::Node *mn = config::find(doc->first, MAP_KEY); mn;
+         mn = config::find_next(mn, MAP_KEY))
+        read_map(s, a, mn, path);
 
-    if (!n_maps) {
-        LOG_ERR("input: %s declares no maps", INPUT_CFG);
-        memory::temp_end(t);
-        return StateResult{.err = result::ERR_PARSE};
+    memory::temp_end(t);
+
+    if (s->map_count == before) {
+        LOG_ERR("input: %s declares no maps", path);
+        return result::ERR_PARSE;
     }
+    return result::OK;
+}
+
+StateResult init(memory::Arena *a, memory::Arena *scratch, const char *path, u32 max_maps,
+                 u32 max_actions) {
+    ASSERT(a && scratch && path);
+    ASSERT_MSG(a != scratch, "input: the state cannot live in the arena it is parsed from");
+    ASSERT_MSG(max_maps && max_actions, "input: zero capacity");
 
     State *s = push_struct(a, State);
+    s->max_maps = max_maps;
+    s->max_actions = max_actions;
 
     // index 0 in both tables is the reserved "nothing" id
-    s->maps = push_array(a, MapDef, n_maps + 1);
-    s->actions = push_array(a, ActionDef, n_actions + 1);
+    s->maps = push_array(a, MapDef, max_maps + 1);
+    s->actions = push_array(a, ActionDef, max_actions + 1);
 
-    s->by_map = strmap::create(a, n_maps);
-    s->by_action = strmap::create(a, n_actions);
+    s->by_map = strmap::create(a, max_maps);
+    s->by_action = strmap::create(a, max_actions);
 
     // no delta across the first frame: the cursor has not moved, we just looked
     s->warp = true;
 
-    for (config::Node *mn = config::find(doc->first, MAP_KEY); mn;
-         mn = config::find_next(mn, MAP_KEY))
-        read_map(s, a, mn);
+    result::Error e = read_file(s, a, scratch, path);
+    if (e != result::OK)
+        return StateResult{.err = e};
 
-    memory::temp_end(t);
-
-    LOG_INFO("input: %u action(s) in %u map(s)", s->action_count, s->map_count);
+    LOG_INFO("input: %u action(s) in %u map(s) from %s", s->action_count, s->map_count, path);
     return StateResult{.val = s};
+}
+
+result::Error add_maps(State *s, memory::Arena *a, memory::Arena *scratch, const char *path) {
+    ASSERT(s && a && scratch && path);
+
+    u32 maps_before = s->map_count;
+    u32 actions_before = s->action_count;
+    result::Error e = read_file(s, a, scratch, path);
+    if (e != result::OK)
+        return e;
+
+    LOG_INFO("input: %u action(s) in %u map(s) added from %s", s->action_count - actions_before,
+             s->map_count - maps_before, path);
+    return result::OK;
 }
 
 void update(State *s, window::Window *w) {
@@ -347,7 +373,7 @@ Action find(State *s, const char *name) {
 
     u32 i = lookup(&s->by_action, name);
     if (!i) {
-        LOG_WARN("input: %s has no action named '%s'", INPUT_CFG, name ? name : "");
+        LOG_WARN("input: no map declares an action named '%s'", name ? name : "");
         return ACTION_NONE;
     }
 
@@ -359,7 +385,7 @@ Map find_map(State *s, const char *name) {
 
     u32 i = lookup(&s->by_map, name);
     if (!i) {
-        LOG_WARN("input: %s has no map named '%s'", INPUT_CFG, name ? name : "");
+        LOG_WARN("input: no file declares a map named '%s'", name ? name : "");
         return MAP_NONE;
     }
 

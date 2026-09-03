@@ -6,6 +6,7 @@
 #include "core/frametime.h"
 #include "core/logger.h"
 #include "core/memory.h"
+#include "editor/dashboard.h"
 #include "editor/editor.h"
 #include "game/player.h"
 #include "gfx/canvas.h"
@@ -16,26 +17,32 @@
 #include "platform/input.h"
 #include "platform/path.h"
 #include "platform/window.h"
+#include "project/project.h"
 #include "scene/entity.h"
 #include "ui/ui.h"
 
-// the assets folder in the source tree, baked in by CMake; a shipped build would
-// take a launch argument instead
-#ifndef CL_ASSET_ROOT
-#error "CL_ASSET_ROOT must be defined by the build; see CMakeLists.txt"
+// The engine's own resources -- shaders, the UI font, its settings, the
+// project template -- baked in by CMake for development; a shipped build finds
+// them beside the binary. Nothing about any game lives there: a game is a
+// project, given as the argument or chosen on the dashboard.
+#ifndef CL_ENGINE_ROOT
+#error "CL_ENGINE_ROOT must be defined by the build; see CMakeLists.txt"
 #endif
 
 #define ENGINE_CFG "engine.cfg"
+#define INPUT_CFG "input.cfg"
 
 // address space only, free to reserve; every arena is carved from it, sized by engine.cfg
 #define RESERVE_BYTES GiB(4)
 
-// holds engine.cfg, which sizes every other arena
+// holds engine.cfg, which sizes every other arena, and a few paths
 #define BOOT_ARENA_BYTES MiB(1)
 
-#define DEFAULT_LEVEL "test"
 #define DEFAULT_PERM_MIB 64
 #define DEFAULT_SCRATCH_MIB 64
+#define DEFAULT_MAX_MAPS 8
+#define DEFAULT_MAX_ACTIONS 128
+#define DEFAULT_RECENT_PROJECTS 8
 #define DEFAULT_PLAYER_BODY "player"
 #define DEFAULT_BOUNDS_COLOR linalg::Vec4{1.0f, 0.85f, 0.1f, 1.0f}
 #define DEFAULT_COLLIDER_COLOR linalg::Vec4{0.3f, 0.9f, 0.9f, 1.0f}
@@ -140,14 +147,48 @@ static game::Player make_player(config::Node *player_cfg, input::State *in, enti
     return game::create(player_cfg, in, body);
 }
 
-int main() {
+// Frames until a project is chosen: the dashboard alone over a cleared screen.
+// No world exists yet, so nothing else draws. False when the window closed or
+// Quit was chosen.
+static b32 choose_project(dashboard::Dashboard *dash, window::Window *win, input::State *in,
+                          memory::Arena *perm, memory::Arena *scratch, linalg::Vec4 clear,
+                          char *out_dir, u32 cap) {
+    while (!window::should_close(win)) {
+        window::poll(win);
+        input::update(in, win);
+
+        i32 w = 0;
+        i32 h = 0;
+        window::framebuffer_size(win, &w, &h);
+        render::resize(w, h);
+
+        canvas::begin_frame(w, h);
+        ui::Input ui_in = ui::input_from(in);
+        ui::begin_frame(&ui_in);
+        dashboard::Result r = dashboard::frame(dash, perm, scratch, w, h, out_dir, cap);
+        ui::end_frame();
+
+        shader::FrameData frame{};
+        render::begin_frame(&frame, clear);
+        canvas::flush();
+        window::swap(win);
+
+        if (r == dashboard::RESULT_OPEN)
+            return true;
+        if (r == dashboard::RESULT_QUIT)
+            return false;
+    }
+    return false;
+}
+
+int main(int argc, char **argv) {
     logger::init(NULL);
     memory::init(RESERVE_BYTES);
 
-    const char *root = CL_ASSET_ROOT;
+    const char *engine_root = CL_ENGINE_ROOT;
 
     memory::Arena boot = memory::create(BOOT_ARENA_BYTES);
-    config::Doc *engine = MUST(config::load(&boot, FPATH(&boot, root, ENGINE_CFG)));
+    config::Doc *engine = MUST(config::load(&boot, FPATH(&boot, engine_root, ENGINE_CFG)));
     if (engine->problems)
         LOG_FATAL("main: %s has %u structural problem(s)", ENGINE_CFG, engine->problems);
     config::Node *cfg = engine->first;
@@ -167,59 +208,99 @@ int main() {
     window::Window *win{
         MUST(window::create(&perm, window::config_from(config::find(cfg, "window"))))};
 
-    input::State *in{MUST(input::init(&perm, &scratch, root))};
+    // the engine's maps now; the project's join them once it is known
+    config::Node *input_block = config::find(cfg, "input");
+    config::Node *input_body = input_block ? input_block->first_child : NULL;
+    input::State *in{MUST(input::init(
+        &perm, &scratch, FPATH(&boot, engine_root, INPUT_CFG),
+        (u32)config::get_i32(input_body, "max_maps", DEFAULT_MAX_MAPS),
+        (u32)config::get_i32(input_body, "max_actions", DEFAULT_MAX_ACTIONS)))};
 
     i32 fb_w = 0;
     i32 fb_h = 0;
     window::framebuffer_size(win, &fb_w, &fb_h);
 
     // shaders before assets: materials get their program at load
-    MUST(shader::init(&perm, &scratch, root));
+    MUST(shader::init(&perm, &scratch, engine_root));
 
     render::Config render_cfg = render::config_from(config::find(cfg, "render"));
     render::init(&perm, render_cfg, fb_w, fb_h);
 
     config::Node *debug_cfg = config::find(cfg, "debug_draw");
     debugdraw::init(&perm, debugdraw::config_from(debug_cfg));
+    config::Node *debug_body = debug_cfg ? debug_cfg->first_child : NULL;
     linalg::Vec4 bounds_color =
-        config::value_vec4(config::find(debug_cfg ? debug_cfg->first_child : NULL, "bounds_color"),
-                           DEFAULT_BOUNDS_COLOR);
+        config::value_vec4(config::find(debug_body, "bounds_color"), DEFAULT_BOUNDS_COLOR);
+    linalg::Vec4 collider_color =
+        config::value_vec4(config::find(debug_body, "collider_color"), DEFAULT_COLLIDER_COLOR);
 
     canvas::init(&perm, canvas::config_from(config::find(cfg, "canvas")));
-    font::Font *ui_font{
-        MUST(font::load(&perm, &scratch, root, font::config_from(config::find(cfg, "font"))))};
-    ui::init(&perm, ui::config_from(config::find(cfg, "ui")), MUST(ui::load_style(&scratch, root)),
-             ui_font);
+    font::Font *ui_font{MUST(
+        font::load(&perm, &scratch, engine_root, font::config_from(config::find(cfg, "font"))))};
+    ui::init(&perm, ui::config_from(config::find(cfg, "ui")),
+             MUST(ui::load_style(&scratch, engine_root)), ui_font);
 
-    Overlay overlay = overlay_from(config::find(cfg, "overlay"));
-    DebugView view{.bounds = true, .body_sphere = true, .colliders = true};
-    linalg::Vec4 collider_color = config::value_vec4(
-        config::find(debug_cfg ? debug_cfg->first_child : NULL, "collider_color"),
-        DEFAULT_COLLIDER_COLOR);
+    editor::Config editor_cfg = MUST(editor::load_config(&perm, &scratch, engine_root));
+    u32 recent_cap = (u32)config::get_i32(cfg, "recent_projects", DEFAULT_RECENT_PROJECTS);
 
-    editor::Editor *ed =
-        editor::init(&perm, &scratch, MUST(editor::load_config(&perm, &scratch, root)), in,
-                     config::get(cfg, "level", DEFAULT_LEVEL));
+    // the project: the argument, or the dashboard
+    char project_dir[PROJECT_PATH_CAP];
+    if (argc > 1) {
+        snprintf(project_dir, sizeof(project_dir), "%s", argv[1]);
+    } else {
+        dashboard::Dashboard *dash = dashboard::init(
+            &perm, engine_root,
+            dashboard::Config{editor_cfg.dashboard_width, editor_cfg.dashboard_height, recent_cap});
+        if (!choose_project(dash, win, in, &perm, &scratch, render_cfg.clear_color, project_dir,
+                            sizeof(project_dir))) {
+            ui::shutdown();
+            font::destroy(ui_font);
+            canvas::shutdown();
+            debugdraw::shutdown();
+            render::shutdown();
+            shader::shutdown();
+            window::destroy(win);
+            logger::shutdown();
+            return EXIT_SUCCESS;
+        }
+    }
 
-    asset::Manager *assets{
-        MUST(asset::init(&perm, &scratch,
-                         asset::config_from(config::find(cfg, "assets"), root,
-                                            shader::role_handle(shader::ROLE_DEFAULT))))};
+    project::Project proj;
+    if (project::open(&perm, project_dir, &proj) != result::OK) {
+        LOG_ERR("main: %s is not a project that can be opened", project_dir);
+        return EXIT_FAILURE;
+    }
+    project::remember(&scratch, engine_root, proj.dir, recent_cap);
+    window::set_title(win, proj.title);
+
+    if (input::add_maps(in, &perm, &scratch, FPATH(&boot, proj.dir, PROJECT_INPUT_CFG)) !=
+        result::OK)
+        return EXIT_FAILURE;
+
+    asset::Manager *assets{MUST(asset::init(
+        &perm, &scratch,
+        asset::config_from(config::find(cfg, "assets"), proj.dir,
+                           shader::role_handle(shader::ROLE_DEFAULT))))};
 
     render::attach_assets(&perm, assets);
 
-    entity::World *world{
-        MUST(entity::init(&perm, entity::config_from(config::find(cfg, "world"))))};
+    entity::World *world{MUST(
+        entity::init(&perm, entity::config_from(config::find(proj.doc->first, "world"))))};
 
     // everything in the world comes from the level file
-    MUST(entity::load_level(world, assets, config::get(cfg, "level", DEFAULT_LEVEL)));
+    MUST(entity::load_level(world, assets, proj.level));
 
-    config::Node *player_cfg = config::find(cfg, "player");
+    config::Node *player_cfg = config::find(proj.doc->first, "player");
     const char *body_name =
         config::get(player_cfg ? player_cfg->first_child : NULL, "body", DEFAULT_PLAYER_BODY);
 
     // built when play starts, from the copy of the level play runs on
     game::Player player{};
+
+    Overlay overlay = overlay_from(config::find(cfg, "overlay"));
+    DebugView view{.bounds = true, .body_sphere = true, .colliders = true};
+
+    editor::Editor *ed = editor::init(&perm, &scratch, editor_cfg, in, proj.level);
 
     input::Map gameplay = input::find_map(in, "gameplay");
     input::Action quit = input::find(in, "quit");

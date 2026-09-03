@@ -203,6 +203,11 @@ b32 should_close(Window *w) {
 
 void poll(Window *) { glfwPollEvents(); }
 
+void set_title(Window *w, const char *title) {
+    ASSERT(w && title);
+    glfwSetWindowTitle(w->handle, title);
+}
+
 void swap(Window *w) {
     ASSERT(w);
     glfwSwapBuffers(w->handle);

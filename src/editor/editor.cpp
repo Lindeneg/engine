@@ -28,6 +28,8 @@
 #define DEFAULT_PITCH -10.0f
 #define DEFAULT_HIERARCHY_WIDTH 260.0f
 #define DEFAULT_INSPECTOR_WIDTH 320.0f
+#define DEFAULT_DASHBOARD_WIDTH 640.0f
+#define DEFAULT_DASHBOARD_HEIGHT 520.0f
 #define DEFAULT_MARKER_SIZE 0.3f
 #define DEFAULT_FRUSTUM_DEPTH 10.0f
 #define DEFAULT_UNDO_DEPTH 256
@@ -122,6 +124,11 @@ Config config_from(memory::Arena *a, config::Node *first) {
 
     c.hierarchy_width = config::get_f32(panels, "hierarchy_width", DEFAULT_HIERARCHY_WIDTH);
     c.inspector_width = config::get_f32(panels, "inspector_width", DEFAULT_INSPECTOR_WIDTH);
+
+    config::Node *dash_block = config::find(first, "dashboard");
+    config::Node *dash = dash_block ? dash_block->first_child : NULL;
+    c.dashboard_width = config::get_f32(dash, "width", DEFAULT_DASHBOARD_WIDTH);
+    c.dashboard_height = config::get_f32(dash, "height", DEFAULT_DASHBOARD_HEIGHT);
 
     c.selection_color =
         config::value_vec4(config::find(first, "selection_color"), DEFAULT_SELECTION_COLOR);

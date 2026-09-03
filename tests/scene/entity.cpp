@@ -15,7 +15,7 @@ static asset::Manager *shared_assets(memory::Arena *scratch) {
     arena = memory::create(MiB(4));
     m = MUST(asset::init(&arena, scratch,
                          asset::Config{
-                             .root = CL_ASSET_ROOT,
+                             .root = CL_TEST_FIXTURE,
                              .default_shader = shader::Handle{0},
                              .max_models = 16,
                              .max_meshes = 128,

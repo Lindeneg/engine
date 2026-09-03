@@ -67,6 +67,8 @@ struct Config {
     GizmoConfig gizmo;
     f32 hierarchy_width;
     f32 inspector_width;
+    f32 dashboard_width;
+    f32 dashboard_height;
     linalg::Vec4 selection_color;
     linalg::Vec4 collider_color;
     f32 marker_size;   // the axes drawn for an entity with nothing to see, and its pick radius

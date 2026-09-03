@@ -22,6 +22,7 @@ test::Suite memory_suite();
 test::Suite motion_suite();
 test::Suite path_suite();
 test::Suite pool_suite();
+test::Suite project_suite();
 test::Suite result_suite();
 test::Suite shader_suite();
 test::Suite str_suite();

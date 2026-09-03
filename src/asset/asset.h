@@ -182,7 +182,7 @@ struct Model {
 };
 
 struct Config {
-    // the assets folder, baked in by CMake as CL_ASSET_ROOT; passed in because
+    // the project folder every relative path is under; passed in because
     // shader:: needs it before a manager exists
     const char *root;
 

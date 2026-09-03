@@ -22,7 +22,7 @@ static font::Font *shared_font(memory::Arena *scratch) {
 
     static memory::Arena arena;
     arena = memory::create(MiB(1));
-    f = MUST(font::load(&arena, scratch, CL_ASSET_ROOT, small(TEST_FONT)));
+    f = MUST(font::load(&arena, scratch, CL_ENGINE_ROOT, small(TEST_FONT)));
     return f;
 }
 
@@ -84,13 +84,13 @@ static void bad_requests_are_refused(memory::Arena *a) {
     memory::Arena arena = memory::create(MiB(1));
 
     test::mute();
-    CHECK(font::load(&arena, a, CL_ASSET_ROOT, small(NULL)).err == result::ERR_INVALID);
-    CHECK(font::load(&arena, a, CL_ASSET_ROOT, small("fonts/nope.ttf")).err != result::OK);
-    CHECK(font::load(&arena, a, CL_ASSET_ROOT, small("engine.cfg")).err == result::ERR_PARSE);
+    CHECK(font::load(&arena, a, CL_ENGINE_ROOT, small(NULL)).err == result::ERR_INVALID);
+    CHECK(font::load(&arena, a, CL_ENGINE_ROOT, small("fonts/nope.ttf")).err != result::OK);
+    CHECK(font::load(&arena, a, CL_ENGINE_ROOT, small("engine.cfg")).err == result::ERR_PARSE);
 
     font::Config tiny = small(TEST_FONT);
     tiny.atlas = 16;
-    CHECK(font::load(&arena, a, CL_ASSET_ROOT, tiny).err == result::ERR_EXHAUSTED);
+    CHECK(font::load(&arena, a, CL_ENGINE_ROOT, tiny).err == result::ERR_EXHAUSTED);
     CHECK(test::unmute() == 4);
 }
 

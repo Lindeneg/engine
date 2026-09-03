@@ -3,6 +3,8 @@
 #include <math.h>
 #include <string.h>
 
+#include "platform/path.h"
+#include "project/project.h"
 #include "suites.h"
 
 #define NEAR(a, b) (fabsf((a) - (b)) < 1e-4f)
@@ -162,7 +164,11 @@ static void play_leaves_the_edited_level_untouched(memory::Arena *a) {
 
     // the input state outlives init's temp scope, so it cannot share init's scratch
     memory::Arena input_arena = memory::create(KiB(64));
-    input::State *in = MUST(input::init(&input_arena, a, CL_ASSET_ROOT));
+    input::State *in =
+        MUST(input::init(&input_arena, a, FPATH(a, CL_ENGINE_ROOT, "input.cfg"), 8, 128));
+    CHECK(input::add_maps(in, &input_arena, a,
+                          FPATH(a, CL_ENGINE_ROOT, PROJECT_TEMPLATE_DIR, "input.cfg")) ==
+          result::OK);
     editor::Config cfg = editor::config_from(a, NULL);
     editor::Editor *ed = editor::init(a, a, cfg, in, "test");
 
@@ -215,7 +221,7 @@ static void config_reads_the_file_shape(memory::Arena *a) {
     CHECK(c.camera.z_far > c.camera.z_near && c.camera.z_near > 0.0f);
     CHECK(c.marker_size > 0.0f && c.hierarchy_width > 0.0f);
 
-    CHECK(editor::load_config(a, a, CL_ASSET_ROOT).err == result::OK);
+    CHECK(editor::load_config(a, a, CL_ENGINE_ROOT).err == result::OK);
 }
 
 test::Suite editor_suite() {

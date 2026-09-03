@@ -16,8 +16,8 @@ int main() {
         drawkey_suite(),   editor_suite(), entity_suite(), file_suite(),   font_suite(),
         frametime_suite(), gfx_suite(),    gizmo_suite(),  input_suite(),  intersect_suite(),
         linalg_suite(),
-        memory_suite(),    motion_suite(), path_suite(),   pool_suite(),   result_suite(),
-        shader_suite(),
+        memory_suite(),    motion_suite(), path_suite(),   pool_suite(),   project_suite(),
+        result_suite(),    shader_suite(),
         str_suite(),       strmap_suite(), textedit_suite(), ui_suite(),      undo_suite(),
     };
 

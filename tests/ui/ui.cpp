@@ -21,7 +21,7 @@ static font::Font *shared_font(memory::Arena *scratch) {
     cfg.file = "fonts/arial.ttf";
     cfg.atlas = 256;
     cfg.oversample = 1;
-    f = MUST(font::load(&arena, scratch, CL_ASSET_ROOT, cfg));
+    f = MUST(font::load(&arena, scratch, CL_ENGINE_ROOT, cfg));
     return f;
 }
 
@@ -482,7 +482,7 @@ static void style_reads_the_file_shape(memory::Arena *a) {
     CHECK(s.accent.x == 1.0f && s.accent.y == 0.0f && s.accent.w == 1.0f);
     CHECK(s.padding > 0.0f); // a default stood in
 
-    CHECK(ui::load_style(a, CL_ASSET_ROOT).err == result::OK);
+    CHECK(ui::load_style(a, CL_ENGINE_ROOT).err == result::OK);
 }
 
 test::Suite ui_suite() {

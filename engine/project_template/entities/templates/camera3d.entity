@@ -1,0 +1,35 @@
+# A template. There is nothing special about this file to the engine -- it is a
+# definition like any other. What makes it a template is where it lives: the
+# editor lists this folder under "new entity from...".
+#
+# Two ways to use it, and they mean different things:
+#
+#   definition templates/camera3d   a live reference. Change this file and every
+#                                   camera changes with it.
+#   copy the file                   a starting point that then goes its own way.
+#
+# A camera usually wants the second: every camera has its own fov and place, and
+# there is no shared behaviour to fix later. A pistol wants the first.
+
+entity "camera3d" {
+    transform {
+        position 0 0 0
+        rotation 0 0 0
+        scale    1
+    }
+
+    camera {
+        # Vertical field of view, in degrees.
+        fov 60
+
+        # Near is the expensive one. Depth precision is spent almost entirely
+        # between near and about ten times near, so halving this to "be safe"
+        # costs far more than it looks like it should.
+        near 0.05
+        far  500
+
+        # The world renders through the first active camera it finds. A level
+        # with two of them lit is a mistake the editor should catch.
+        active true
+    }
+}

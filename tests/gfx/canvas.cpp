@@ -24,7 +24,7 @@ static font::Font *shared_font(memory::Arena *scratch) {
     cfg.file = "fonts/arial.ttf";
     cfg.atlas = 256;
     cfg.oversample = 1;
-    f = MUST(font::load(&arena, scratch, CL_ASSET_ROOT, cfg));
+    f = MUST(font::load(&arena, scratch, CL_ENGINE_ROOT, cfg));
     return f;
 }
 

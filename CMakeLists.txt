@@ -37,6 +37,8 @@ set(ENGINE_SOURCES
         src/platform/platform.cpp
         src/platform/window.cpp
 
+        src/project/project.cpp
+
         src/gfx/canvas.cpp
         src/gfx/debugdraw.cpp
         src/gfx/drawkey.cpp
@@ -58,6 +60,7 @@ set(ENGINE_SOURCES
         src/scene/entity.cpp
         src/scene/motion.cpp
 
+        src/editor/dashboard.cpp
         src/editor/editor.cpp
         src/editor/gizmo.cpp
         src/editor/undo.cpp
@@ -78,12 +81,14 @@ add_executable(ExploreApp
 target_include_directories(ExploreApp PRIVATE src third_party)
 target_link_libraries(ExploreApp PRIVATE glfw glad::glad)
 
-# the native file picker
+# the native file and folder pickers
 if (WIN32)
-    target_link_libraries(ExploreApp PRIVATE comdlg32)
+    target_link_libraries(ExploreApp PRIVATE comdlg32 ole32 uuid)
 endif ()
 
-target_compile_definitions(ExploreApp PRIVATE CL_ASSET_ROOT="${CMAKE_SOURCE_DIR}/assets")
+# The engine's own resources. A game is a project folder given at launch or
+# chosen on the dashboard; the engine binary knows no content of its own.
+target_compile_definitions(ExploreApp PRIVATE CL_ENGINE_ROOT="${CMAKE_SOURCE_DIR}/engine")
 
 add_custom_command(TARGET ExploreApp POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
@@ -103,9 +108,13 @@ if (CL_BUILD_TESTS)
     target_include_directories(ExploreTests PRIVATE src tests third_party)
     target_link_libraries(ExploreTests PRIVATE glfw glad::glad)
     if (WIN32)
-        target_link_libraries(ExploreTests PRIVATE comdlg32)
+        target_link_libraries(ExploreTests PRIVATE comdlg32 ole32 uuid)
     endif ()
-    target_compile_definitions(ExploreTests PRIVATE CL_ASSET_ROOT="${CMAKE_SOURCE_DIR}/assets")
+
+    # the tests' own project: a fixture they read and never edit by hand
+    target_compile_definitions(ExploreTests PRIVATE
+            CL_ENGINE_ROOT="${CMAKE_SOURCE_DIR}/engine"
+            CL_TEST_FIXTURE="${CMAKE_SOURCE_DIR}/tests/fixture")
 
     # so `make test` alone still refreshes clangd's view of tests/
     add_custom_command(TARGET ExploreTests POST_BUILD

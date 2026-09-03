@@ -312,7 +312,7 @@ static void a_subtree_too_big_is_refused(memory::Arena *a) {
 #define SIDECAR_TEST_FILE_CFG "zz_undo_test.import.cfg"
 
 static void asset_settings_write_the_sidecar_both_ways(memory::Arena *a) {
-    asset::Manager *m = make_assets(a, CL_ASSET_ROOT);
+    asset::Manager *m = make_assets(a, CL_TEST_FIXTURE);
     entity::World *w = make_world(a);
     undo::Journal *j = undo::create(a, a, DEPTH, BLOB);
 
@@ -338,7 +338,7 @@ static void asset_settings_write_the_sidecar_both_ways(memory::Arena *a) {
     CHECK(undo::undo(j, w, m));
     CHECK(asset::import_options(m, SIDECAR_TEST_FILE).scale == 1.0f);
 
-    CHECK(file::remove(FPATH(a, CL_ASSET_ROOT, SIDECAR_TEST_FILE_CFG)));
+    CHECK(file::remove(FPATH(a, CL_TEST_FIXTURE, SIDECAR_TEST_FILE_CFG)));
 }
 
 static void a_dead_entity_is_skipped(memory::Arena *a) {

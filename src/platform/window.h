@@ -80,6 +80,9 @@ b32 should_close(Window *w);
 void poll(Window *w);
 void swap(Window *w);
 
+// The title bar; a project names it once it is open.
+void set_title(Window *w, const char *title);
+
 b32 key_down(Window *w, Key k);
 b32 button_down(Window *w, Button b);
 

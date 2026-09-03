@@ -166,10 +166,10 @@ static void remove_is_catalog_only(memory::Arena *a) {
 
 static void sidecars_round_trip(memory::Arena *a) {
     asset::Config cfg = small_config();
-    cfg.root = CL_ASSET_ROOT;
+    cfg.root = CL_TEST_FIXTURE;
     asset::Manager *m = MUST(asset::init(a, a, cfg));
 
-    CHECK(asset::exists(m, "engine.cfg"));
+    CHECK(asset::exists(m, "characters/soldier.glb"));
     CHECK(!asset::exists(m, "definitely/not/here.glb"));
     CHECK(!asset::has_import_sidecar(m, SIDECAR_TEST_FILE));
 
@@ -190,7 +190,7 @@ static void sidecars_round_trip(memory::Arena *a) {
     CHECK(!asset::clip_options(m, SIDECAR_TEST_FILE).rotation_only);
     CHECK(test::unmute() == 1); // no 'clip' block in an 'import' sidecar
 
-    CHECK(file::remove(FPATH(a, CL_ASSET_ROOT, SIDECAR_TEST_FILE_CFG)));
+    CHECK(file::remove(FPATH(a, CL_TEST_FIXTURE, SIDECAR_TEST_FILE_CFG)));
     CHECK(!asset::has_import_sidecar(m, SIDECAR_TEST_FILE));
 }
 
@@ -198,7 +198,7 @@ static void sidecars_round_trip(memory::Arena *a) {
 // are read at draw and at sample time, never baked
 static void settings_apply_to_loaded_assets(memory::Arena *a) {
     asset::Config cfg = small_config();
-    cfg.root = CL_ASSET_ROOT;
+    cfg.root = CL_TEST_FIXTURE;
     cfg.max_meshes = 32;
     cfg.max_materials = 32;
     cfg.scope_bytes[asset::SCOPE_PERSISTENT] = MiB(4);

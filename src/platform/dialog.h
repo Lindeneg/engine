@@ -13,4 +13,7 @@ namespace dialog {
 b32 open_file(const char *title, const char *filter_label, const char *extension,
               const char *start_dir, char *out, u32 cap);
 
+// A folder, the same way. Forward slashes in the result.
+b32 choose_folder(const char *title, char *out, u32 cap);
+
 } // namespace dialog

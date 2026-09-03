@@ -1,0 +1,27 @@
+# A directional light has no position, only a direction, and that direction is
+# the entity's forward -- -Z, the same convention the camera looks down. So you
+# aim it by rotating the entity, and its position is ignored.
+#
+# Rotation is degrees about X, Y, Z. Identity points the light along -Z, which
+# is straight into the scene; the values below tip it down and to one side, the
+# way a sun at mid-morning falls.
+
+entity "directional_light" {
+    transform {
+        position 0 0 0
+        rotation -55 49 0
+        scale    1
+    }
+
+    light {
+        color     1 1 1
+        intensity 0.72
+
+        # Flat term applied regardless of facing, so surfaces turned away from
+        # the light are readable instead of pure black. Stands in for bounced
+        # light until there is anything better.
+        ambient 0.28
+
+        active true
+    }
+}

@@ -1,0 +1,31 @@
+# A new project's first level: a camera, a light and a floor to stand on.
+instance camera {
+    id 1
+    definition templates/camera3d
+    transform {
+        position 0 2 6
+        rotation -10 0 0
+        scale 1
+    }
+}
+instance sun {
+    id 2
+    definition templates/directional_light
+    transform {
+        position 0 0 0
+        rotation -55 49 0
+        scale 1
+    }
+}
+instance floor {
+    id 3
+    transform {
+        position 0 -0.5 0
+        rotation 0 0 0
+        scale 1
+    }
+    collider {
+        shape box
+        size 40 1 40
+    }
+}

@@ -76,12 +76,17 @@ struct State;
 
 RESULT_TYPE(State *, StateResult);
 
-// Reads assets/input.cfg. A file that is missing, will not parse, or declares
-// no maps is a broken deployment, not a content problem: without bindings
-// nothing can be played. Inside a map the engine is forgiving -- an unknown key
-// name is skipped with a warning, and an action with no usable binding still
-// exists, so the editor can show it as unbound rather than lose it.
-StateResult init(memory::Arena *a, memory::Arena *scratch, const char *root);
+// Reads one map file into a state with room for max_maps and max_actions
+// across every file added to it: the engine's own maps at init, a project's
+// with add_maps once the project is known. A file that is missing, will not
+// parse, or declares no maps is a broken deployment, not a content problem:
+// without bindings nothing can be played. Inside a map the engine is forgiving
+// -- an unknown key name is skipped with a warning, and an action with no
+// usable binding still exists, so the editor can show it as unbound rather
+// than lose it.
+StateResult init(memory::Arena *a, memory::Arena *scratch, const char *path, u32 max_maps,
+                 u32 max_actions);
+result::Error add_maps(State *s, memory::Arena *a, memory::Arena *scratch, const char *path);
 
 // Samples the devices and works out this frame's edges. Call once per frame,
 // after window::poll.

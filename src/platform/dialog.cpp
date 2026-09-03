@@ -8,6 +8,7 @@
 #include <windows.h>
 
 #include <commdlg.h>
+#include <shobjidl.h>
 #endif
 
 // "glTF binary\0*.glb\0\0": the picker's filter is a run of NUL-separated pairs
@@ -58,12 +59,68 @@ b32 open_file(const char *title, const char *filter_label, const char *extension
     return true;
 }
 
+// The folder picker is the newer shell dialog, which speaks COM and wide
+// strings; the result is brought back to UTF-8 with forward slashes.
+b32 choose_folder(const char *title, char *out, u32 cap) {
+    ASSERT(title && out && cap);
+    out[0] = 0;
+
+    HRESULT init = CoInitializeEx(NULL, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
+    b32 we_initialized = SUCCEEDED(init);
+    if (init == RPC_E_CHANGED_MODE)
+        we_initialized = false; // already up in another mode; use it as is
+
+    IFileOpenDialog *dlg = NULL;
+    b32 ok = false;
+    if (SUCCEEDED(CoCreateInstance(CLSID_FileOpenDialog, NULL, CLSCTX_INPROC_SERVER,
+                                   IID_PPV_ARGS(&dlg)))) {
+        WCHAR wtitle[FILTER_CAP];
+        MultiByteToWideChar(CP_UTF8, 0, title, -1, wtitle, FILTER_CAP);
+        dlg->SetTitle(wtitle);
+
+        DWORD options = 0;
+        dlg->GetOptions(&options);
+        dlg->SetOptions(options | FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM | FOS_NOCHANGEDIR);
+
+        if (SUCCEEDED(dlg->Show(NULL))) {
+            IShellItem *item = NULL;
+            if (SUCCEEDED(dlg->GetResult(&item))) {
+                PWSTR wpath = NULL;
+                if (SUCCEEDED(item->GetDisplayName(SIGDN_FILESYSPATH, &wpath))) {
+                    ok = WideCharToMultiByte(CP_UTF8, 0, wpath, -1, out, (i32)cap, NULL, NULL) > 0;
+                    CoTaskMemFree(wpath);
+                }
+                item->Release();
+            }
+        }
+        dlg->Release();
+    } else {
+        LOG_WARN("dialog: the folder picker could not be created");
+    }
+
+    if (we_initialized)
+        CoUninitialize();
+
+    if (ok)
+        for (char *c = out; *c; c++)
+            if (*c == '\\')
+                *c = '/';
+    return ok;
+}
+
 #else
 
 b32 open_file(const char *, const char *, const char *, const char *, char *out, u32 cap) {
     ASSERT(out && cap);
     out[0] = 0;
     LOG_WARN_ONCE("dialog: no file picker on this platform yet; type the path instead");
+    return false;
+}
+
+b32 choose_folder(const char *, char *out, u32 cap) {
+    ASSERT(out && cap);
+    out[0] = 0;
+    LOG_WARN_ONCE("dialog: no folder picker on this platform yet; pass the project as an argument");
     return false;
 }
 
