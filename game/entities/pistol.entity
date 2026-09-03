@@ -1,0 +1,11 @@
+entity pistol {
+    transform {
+        position 0 0 0
+        rotation 0 0 0
+        scale 1
+    }
+    renderable {
+        model models/pistol.glb
+        visible true
+    }
+}

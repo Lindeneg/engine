@@ -37,12 +37,34 @@ instance floor {
         offset 0 0 0
     }
 }
-instance soldier1 {
+instance player {
     id 19
     definition soldier
     transform {
         position 0 0 0
         rotation 0 0 0
         scale 1
+    }
+    animator {
+        clips {
+            new1 animations/pistol_idle.glb
+            new2 animations/pistol_walk.glb
+        }
+        start new1
+        speed 1
+        autoplay true
+    }
+    child pistol {
+        id 20
+        definition pistol
+        transform {
+            position -0.0259295 1.66843 0.530861
+            rotation 0 -90 0
+            scale 1
+        }
+        renderable {
+            model models/pistol.glb
+            visible true
+        }
     }
 }
