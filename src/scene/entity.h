@@ -29,7 +29,8 @@
     X(RENDERABLE, Renderable, "renderable")                                                        \
     X(ANIMATOR, Animator, "animator")                                                              \
     X(CAMERA, Camera, "camera")                                                                    \
-    X(LIGHT, Light, "light")
+    X(LIGHT, Light, "light")                                                                       \
+    X(COLLIDER, Collider, "collider")
 
 namespace entity {
 
@@ -118,6 +119,20 @@ struct Light {
     b32 active;
 };
 
+enum ColliderShape { COLLIDER_BOX, COLLIDER_SPHERE, COLLIDER_SHAPE_COUNT };
+
+// What the world is made of, to a moving body or a bullet. Sizes are metres in
+// the entity's frame: its position and rotation apply, its scale does not,
+// since a scaled sphere is not a sphere and a body sweeping against one would
+// be wrong in ways nobody could see. Nothing here draws.
+struct Collider {
+    Handle owner;
+    ColliderShape shape;
+    linalg::Vec3 size;   // COLLIDER_BOX: full extents
+    f32 radius;          // COLLIDER_SPHERE
+    linalg::Vec3 offset; // the shape's centre from the entity's origin
+};
+
 struct Entity {
     char name[ENTITY_NAME_CAP];
 
@@ -179,6 +194,7 @@ struct Config {
     u32 max_animators;
     u32 max_cameras;
     u32 max_lights;
+    u32 max_colliders;
 
     // simulation rate; physics must never see a framerate-dependent step. 0 takes the default
     f32 fixed_hz;
@@ -223,11 +239,21 @@ Renderable *add_renderable(World *w, Handle h);
 Animator *add_animator(World *w, Handle h);
 Camera *add_camera(World *w, Handle h);
 Light *add_light(World *w, Handle h);
+Collider *add_collider(World *w, Handle h);
 
 Renderable *renderable(World *w, Handle h); // NULL when absent
 Animator *animator(World *w, Handle h);
 Camera *camera(World *w, Handle h);
 Light *light(World *w, Handle h);
+Collider *collider(World *w, Handle h);
+
+// A collider's frame in the world: its owner's rotation and position with the
+// offset applied and the scale dropped. A box is axis-aligned in it, centred
+// at its origin with half its size each way; a sphere sits at its origin.
+linalg::Mat4 collider_frame(World *w, const Collider *c);
+
+// Every collider as a wire shape, through gfx/debugdraw.
+void draw_colliders(World *w, linalg::Vec4 color);
 
 // The same by index, for code working from the descriptor table.
 void *component(World *w, Handle h, Component c);

@@ -151,6 +151,44 @@ b32 ray_triangle(Ray r, linalg::Vec3 a, linalg::Vec3 b, linalg::Vec3 c, f32 max_
     return true;
 }
 
+b32 sweep_sphere_sphere(linalg::Vec3 center, f32 radius, linalg::Vec3 motion,
+                        linalg::Vec3 other, f32 other_radius, Hit *out) {
+    f32 len = linalg::vec3_length(motion);
+    if (len < LINALG_ZERO_EPSILON)
+        return false;
+
+    f32 sum = radius + other_radius;
+    Ray r{center, motion * (1.0f / len)};
+    Hit h;
+    if (!ray_sphere(r, other, sum, len, &h))
+        return false;
+
+    if (out) {
+        // ray_sphere reports a start inside with a zero normal; keep that meaning
+        b32 inside = linalg::vec3_length_sq(h.normal) < LINALG_ZERO_EPSILON;
+        linalg::Vec3 at = center + r.dir * h.t;
+        linalg::Vec3 n = inside ? linalg::Vec3{0.0f, 0.0f, 0.0f}
+                                : linalg::vec3_normalize_or(at - other, linalg::Vec3{0, 1, 0});
+        *out = Hit{h.t / len, other + n * other_radius, n};
+    }
+    return true;
+}
+
+b32 depenetrate_sphere_sphere(linalg::Vec3 center, f32 radius, linalg::Vec3 other,
+                              f32 other_radius, linalg::Vec3 *out_normal, f32 *out_depth) {
+    f32 sum = radius + other_radius;
+    linalg::Vec3 d = center - other;
+    f32 dist = linalg::vec3_length(d);
+    if (dist >= sum)
+        return false;
+
+    if (out_normal)
+        *out_normal = linalg::vec3_normalize_or(d, linalg::Vec3{0.0f, 1.0f, 0.0f});
+    if (out_depth)
+        *out_depth = sum - dist;
+    return true;
+}
+
 b32 depenetrate_sphere_aabb(linalg::Vec3 center, f32 radius, Aabb box, linalg::Vec3 *out_normal,
                             f32 *out_depth) {
     linalg::Vec3 d = center - aabb_closest_point(box, center);

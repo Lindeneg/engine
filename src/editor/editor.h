@@ -68,6 +68,7 @@ struct Config {
     f32 hierarchy_width;
     f32 inspector_width;
     linalg::Vec4 selection_color;
+    linalg::Vec4 collider_color;
     f32 marker_size;   // the axes drawn for an entity with nothing to see, and its pick radius
     f32 frustum_depth; // how far a selected camera's frustum is drawn
     u32 undo_depth;

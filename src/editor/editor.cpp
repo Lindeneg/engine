@@ -66,6 +66,7 @@ namespace editor {
 
 static const linalg::Vec3 DEFAULT_START_POSITION = {0.0f, 2.0f, 6.0f};
 static const linalg::Vec4 DEFAULT_SELECTION_COLOR = {1.0f, 0.5f, 0.1f, 1.0f};
+static const linalg::Vec4 DEFAULT_COLLIDER_COLOR = {0.3f, 0.9f, 0.9f, 1.0f};
 
 // one asset of each kind can be on show at a time: the inspector shows one entity
 enum AssetShownSlot { SHOWN_MODEL, SHOWN_CLIP, ASSET_SHOWN_COUNT };
@@ -120,6 +121,8 @@ Config config_from(memory::Arena *a, config::Node *first) {
 
     c.selection_color =
         config::value_vec4(config::find(first, "selection_color"), DEFAULT_SELECTION_COLOR);
+    c.collider_color =
+        config::value_vec4(config::find(first, "collider_color"), DEFAULT_COLLIDER_COLOR);
     c.marker_size = config::get_f32(first, "marker_size", DEFAULT_MARKER_SIZE);
     c.frustum_depth = config::get_f32(first, "frustum_depth", DEFAULT_FRUSTUM_DEPTH);
     c.undo_depth = (u32)config::get_i32(first, "undo_depth", DEFAULT_UNDO_DEPTH);
@@ -810,8 +813,9 @@ static void draw_markers(Editor *ed, entity::World *w, asset::Manager *m, f32 as
         entity::Renderable *r = entity::renderable(w, h);
         b32 is_selected = ed->selected.v == h.v;
 
-        // something to see draws itself; anything else gets its axes
-        if (!r || !r->visible)
+        // something to see draws itself, and a collider is drawn already;
+        // anything else gets its axes
+        if ((!r || !r->visible) && !entity::collider(w, h))
             debugdraw::axes(e->world, ed->cfg.marker_size);
 
         if (!is_selected)
@@ -1061,6 +1065,7 @@ void frame(Editor *ed, entity::World *w, asset::Manager *m, input::State *in, wi
     if (!continuing(ed))
         undo::close(ed->journal);
 
+    entity::draw_colliders(w, ed->cfg.collider_color);
     draw_markers(ed, w, m, aspect);
     draw_gizmo(ed);
 }

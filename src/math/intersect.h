@@ -139,6 +139,18 @@ b32 ray_triangle(Ray r, linalg::Vec3 a, linalg::Vec3 b, linalg::Vec3 c, f32 max_
 // Hit::t is the fraction of motion, in [0, 1].
 b32 sweep_sphere_aabb(linalg::Vec3 center, f32 radius, linalg::Vec3 motion, Aabb box, Hit *out);
 
+// A moving sphere against a still one: a ray against the sum of the radii.
+// Hit::t is the fraction of motion, the normal points from the still sphere
+// toward the moving one, and a start already overlapping reports t = 0 and a
+// zero normal, as the box sweep does.
+b32 sweep_sphere_sphere(linalg::Vec3 center, f32 radius, linalg::Vec3 motion,
+                        linalg::Vec3 other, f32 other_radius, Hit *out);
+
+// The shortest push that takes two overlapping spheres apart, false when they
+// do not overlap. Concentric spheres are pushed up, which is a choice, not a fact.
+b32 depenetrate_sphere_sphere(linalg::Vec3 center, f32 radius, linalg::Vec3 other,
+                              f32 other_radius, linalg::Vec3 *out_normal, f32 *out_depth);
+
 // The shortest push that takes an already-overlapping sphere clear of a box,
 // false when they do not overlap. The normal points from the box toward the
 // sphere, so moving by normal * depth leaves it exactly touching. A sweep

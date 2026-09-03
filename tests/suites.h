@@ -19,6 +19,7 @@ test::Suite input_suite();
 test::Suite intersect_suite();
 test::Suite linalg_suite();
 test::Suite memory_suite();
+test::Suite motion_suite();
 test::Suite path_suite();
 test::Suite pool_suite();
 test::Suite result_suite();

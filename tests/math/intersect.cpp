@@ -373,6 +373,43 @@ static void aabb_helpers_agree(memory::Arena *) {
         unit_box(), intersect::Aabb{Vec3{1.0f, 0.0f, 0.0f}, Vec3{2.0f, 1.0f, 1.0f}}));
 }
 
+static void sphere_sweeps_and_depenetrates_against_a_sphere(memory::Arena *) {
+    Vec3 still{0.0f, 0.0f, -5.0f};
+
+    // a unit sphere moving 10 down -Z meets a unit sphere at z = -5 after 3,
+    // touching at the still sphere's near pole with the normal back at the mover
+    intersect::Hit h;
+    CHECK(intersect::sweep_sphere_sphere(Vec3{0, 0, 0}, 1.0f, Vec3{0, 0, -10}, still, 1.0f, &h));
+    CHECK(near_f32(h.t, 0.3f));
+    CHECK(near_vec3(h.normal, Vec3{0, 0, 1}));
+    CHECK(near_vec3(h.point, Vec3{0, 0, -4}));
+
+    // a glancing pass at the tangent distance touches; one further misses
+    CHECK(intersect::sweep_sphere_sphere(Vec3{1.999f, 0, 0}, 1.0f, Vec3{0, 0, -10}, still, 1.0f,
+                                         &h));
+    CHECK(!intersect::sweep_sphere_sphere(Vec3{2.001f, 0, 0}, 1.0f, Vec3{0, 0, -10}, still, 1.0f,
+                                          &h));
+
+    // moving away, and not moving, are misses
+    CHECK(!intersect::sweep_sphere_sphere(Vec3{0, 0, 0}, 1.0f, Vec3{0, 0, 10}, still, 1.0f, &h));
+    CHECK(!intersect::sweep_sphere_sphere(Vec3{0, 0, 0}, 1.0f, Vec3{0, 0, 0}, still, 1.0f, &h));
+
+    // starting inside reports t = 0 and no surface
+    CHECK(intersect::sweep_sphere_sphere(Vec3{0, 0, -4.5f}, 1.0f, Vec3{0, 0, -1}, still, 1.0f, &h));
+    CHECK(h.t == 0.0f && near_vec3(h.normal, Vec3{0, 0, 0}));
+
+    // and depenetration pushes along the line of centres by the overlap
+    Vec3 n;
+    f32 depth;
+    CHECK(intersect::depenetrate_sphere_sphere(Vec3{0, 0, -4.5f}, 1.0f, still, 1.0f, &n, &depth));
+    CHECK(near_vec3(n, Vec3{0, 0, 1}) && near_f32(depth, 1.5f));
+    CHECK(!intersect::depenetrate_sphere_sphere(Vec3{0, 0, -2.0f}, 1.0f, still, 1.0f, &n, &depth));
+
+    // concentric: some direction is chosen rather than none
+    CHECK(intersect::depenetrate_sphere_sphere(still, 1.0f, still, 1.0f, &n, &depth));
+    CHECK(near_f32(linalg::vec3_length(n), 1.0f) && near_f32(depth, 2.0f));
+}
+
 static const test::Case CASES[] = {
     CASE(ray_aabb_enters_the_near_face),
     CASE(ray_aabb_misses_and_respects_max_t),
@@ -393,6 +430,7 @@ static const test::Case CASES[] = {
     CASE(depenetrate_from_deep_inside_takes_the_short_way),
     CASE(aabb_transform_bounds_the_rotated_box),
     CASE(aabb_helpers_agree),
+    CASE(sphere_sweeps_and_depenetrates_against_a_sphere),
 };
 
 test::Suite intersect_suite() { return test::Suite{"intersect", CASES, ARRAY_COUNT(CASES)}; }

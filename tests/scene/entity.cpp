@@ -34,6 +34,7 @@ static entity::World *make_world(memory::Arena *a) {
                                     .max_animators = 8,
                                     .max_cameras = 4,
                                     .max_lights = 4,
+                                    .max_colliders = 8,
                                 }));
 }
 

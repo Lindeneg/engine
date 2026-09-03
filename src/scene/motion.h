@@ -16,10 +16,10 @@
 // answers walls and floors and reports enough for a caller to cancel its own
 // velocity against them.
 //
-// Colliders are every renderable's world bounds, because there is no collider
-// component yet. That is a stand-in, and a blunt one -- a bush stops you, and a
-// doorway is as solid as the wall around it. It goes away when geometry can say
-// what it is, not when this file gets cleverer.
+// The world is its collider components, each swept in its own rigid frame, so
+// a rotated box is exact and a sphere stays a sphere. A level with no
+// colliders has no floor: a model is something to look at, not something to
+// stand on, and the two are declared separately on purpose.
 
 #define MOTION_MAX_SLIDES 4
 
@@ -60,8 +60,8 @@ struct Result {
 
 // Sweeps `motion` from `position`, sliding along what it meets, up to
 // MOTION_MAX_SLIDES surfaces. `ignore` and everything parented below it are not
-// colliders, which is how a body misses its own model and the gun in its hand;
-// entity::NONE collides with everything.
+// colliders, which is how a body misses its own collider and the gun in its
+// hand; entity::NONE collides with everything.
 Result move_and_slide(entity::World *w, asset::Manager *m, linalg::Vec3 position, f32 radius,
                       linalg::Vec3 motion, entity::Handle ignore);
 

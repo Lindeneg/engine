@@ -24,6 +24,7 @@ namespace entity {
 #define DEFAULT_FIXED_HZ 120.0f
 #define DEFAULT_MAX_FIXED_STEPS 8
 #define DEFAULT_MAX_ENTITIES 4096
+#define DEFAULT_MAX_COLLIDERS 256
 #define DEFAULT_MAX_RENDERABLES 2048
 #define DEFAULT_MAX_ANIMATORS 64
 #define DEFAULT_MAX_CAMERAS 8
@@ -37,6 +38,7 @@ Config config_from(config::Node *block) {
         .max_animators = (u32)config::get_i32(body, "max_animators", DEFAULT_MAX_ANIMATORS),
         .max_cameras = (u32)config::get_i32(body, "max_cameras", DEFAULT_MAX_CAMERAS),
         .max_lights = (u32)config::get_i32(body, "max_lights", DEFAULT_MAX_LIGHTS),
+        .max_colliders = (u32)config::get_i32(body, "max_colliders", DEFAULT_MAX_COLLIDERS),
         .fixed_hz = config::get_f32(body, "fixed_hz", DEFAULT_FIXED_HZ),
         .max_fixed_steps = (u32)config::get_i32(body, "max_fixed_steps", DEFAULT_MAX_FIXED_STEPS),
     };
@@ -102,10 +104,30 @@ static const FieldDesc LIGHT_FIELDS[] = {
     {.key = "active", .type = FIELD_B32, .offset = FIELD(Light, active)},
 };
 
+static const char *COLLIDER_SHAPE_NAMES[COLLIDER_SHAPE_COUNT] = {"box", "sphere"};
+static_assert(sizeof(ColliderShape) == sizeof(i32), "FIELD_ENUM reads enums as i32");
+
+static const Collider COLLIDER_DEFAULTS = {
+    .shape = COLLIDER_BOX,
+    .size = {1.0f, 1.0f, 1.0f},
+    .radius = 0.5f,
+};
+static const FieldDesc COLLIDER_FIELDS[] = {
+    {.key = "shape",
+     .type = FIELD_ENUM,
+     .offset = FIELD(Collider, shape),
+     .names = COLLIDER_SHAPE_NAMES,
+     .name_count = COLLIDER_SHAPE_COUNT},
+    {.key = "size", .type = FIELD_VEC3, .offset = FIELD(Collider, size)},
+    {.key = "radius", .type = FIELD_F32, .offset = FIELD(Collider, radius)},
+    {.key = "offset", .type = FIELD_VEC3, .offset = FIELD(Collider, offset)},
+};
+
 static void after_read_RENDERABLE(World *w, asset::Manager *m, Handle h, void *c);
 static void after_read_ANIMATOR(World *w, asset::Manager *m, Handle h, void *c);
 static void after_read_CAMERA(World *w, asset::Manager *m, Handle h, void *c);
 static void after_read_LIGHT(World *w, asset::Manager *m, Handle h, void *c);
+static void after_read_COLLIDER(World *w, asset::Manager *m, Handle h, void *c);
 
 static const ComponentDesc DESCS[COMPONENT_COUNT] = {
 #define X(ID, Type, key)                                                                           \
@@ -168,6 +190,7 @@ WorldResult init(memory::Arena *a, Config cfg) {
         cfg.max_animators + 1,
         cfg.max_cameras + 1,
         cfg.max_lights + 1,
+        cfg.max_colliders + 1,
     };
     for (u32 c = 0; c < COMPONENT_COUNT; c++)
         w->components[c] = pool::create(a, caps[c], DESCS[c].size);
@@ -429,6 +452,10 @@ Camera *add_camera(World *w, Handle h) { return (Camera *)add_component(w, h, CO
 
 Light *add_light(World *w, Handle h) { return (Light *)add_component(w, h, COMPONENT_LIGHT); }
 
+Collider *add_collider(World *w, Handle h) {
+    return (Collider *)add_component(w, h, COMPONENT_COLLIDER);
+}
+
 u32 component_first(World *w, Component c) {
     ASSERT(w && c < COMPONENT_COUNT);
     return pool::first(&w->components[c]);
@@ -460,6 +487,61 @@ Animator *animator(World *w, Handle h) {
 Camera *camera(World *w, Handle h) { return (Camera *)component_of(w, h, COMPONENT_CAMERA); }
 
 Light *light(World *w, Handle h) { return (Light *)component_of(w, h, COMPONENT_LIGHT); }
+
+Collider *collider(World *w, Handle h) {
+    return (Collider *)component_of(w, h, COMPONENT_COLLIDER);
+}
+
+linalg::Mat4 collider_frame(World *w, const Collider *c) {
+    ASSERT(w && c);
+
+    Entity *e = get(w, c->owner);
+    if (!e)
+        return linalg::mat4_from_translation(c->offset);
+
+    // the owner's basis with the scale divided out; a flattened axis keeps the world's
+    static const linalg::Vec3 WORLD_AXES[3] = {
+        {1.0f, 0.0f, 0.0f},
+        {0.0f, 1.0f, 0.0f},
+        {0.0f, 0.0f, 1.0f},
+    };
+    linalg::Mat4 frame = linalg::mat4_identity();
+    for (u32 i = 0; i < 3; i++) {
+        linalg::Vec3 axis =
+            linalg::vec3_normalize_or(linalg::mat4_axis(e->world, i), WORLD_AXES[i]);
+        frame.m[i * 4 + 0] = axis.x;
+        frame.m[i * 4 + 1] = axis.y;
+        frame.m[i * 4 + 2] = axis.z;
+    }
+
+    // the offset is in the owner's frame, so it turns with it but does not scale
+    linalg::Vec3 origin =
+        linalg::mat4_translation(e->world) + linalg::mat4_mul_dir(frame, c->offset);
+    frame.m[12] = origin.x;
+    frame.m[13] = origin.y;
+    frame.m[14] = origin.z;
+    return frame;
+}
+
+void draw_colliders(World *w, linalg::Vec4 color) {
+    ASSERT(w);
+
+    pool::Pool *p = &w->components[COMPONENT_COLLIDER];
+    for (u32 i = pool::first(p); i; i = pool::next(p, i)) {
+        Collider *c = (Collider *)pool::at(p, i);
+        Entity *e = get(w, c->owner);
+        if (!e || !e->active)
+            continue;
+
+        linalg::Mat4 frame = collider_frame(w, c);
+        if (c->shape == COLLIDER_SPHERE) {
+            debugdraw::sphere(linalg::mat4_translation(frame), c->radius, color);
+        } else {
+            linalg::Vec3 half = c->size * 0.5f;
+            debugdraw::box(frame, -1.0f * half, half, color);
+        }
+    }
+}
 
 Handle active_camera(World *w) {
     ASSERT(w);
@@ -748,6 +830,23 @@ static void after_read_CAMERA(World *, asset::Manager *, Handle, void *c) {
 }
 
 static void after_read_LIGHT(World *, asset::Manager *, Handle, void *) {}
+
+// a shape with no extent is a hole in the world, not a wall; it is put back to the default
+static void after_read_COLLIDER(World *w, asset::Manager *, Handle h, void *c) {
+    Collider *col = (Collider *)c;
+    const char *name = get(w, h)->name;
+
+    if (col->size.x <= 0.0f || col->size.y <= 0.0f || col->size.z <= 0.0f) {
+        LOG_WARN("entity: \"%s\" has a collider of size %.3f %.3f %.3f; using the default", name,
+                 (f64)col->size.x, (f64)col->size.y, (f64)col->size.z);
+        col->size = COLLIDER_DEFAULTS.size;
+    }
+    if (col->radius <= 0.0f) {
+        LOG_WARN("entity: \"%s\" has a collider of radius %.3f; using the default", name,
+                 (f64)col->radius);
+        col->radius = COLLIDER_DEFAULTS.radius;
+    }
+}
 
 // absent keys keep what is there: the default for a fresh component, the definition's value for an
 // override

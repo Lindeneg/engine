@@ -23,49 +23,95 @@ static b32 under(entity::World *w, entity::Handle h, entity::Handle root) {
     return false;
 }
 
-static b32 collider_box(entity::World *w, asset::Manager *m, entity::Renderable *r,
-                        intersect::Aabb *out) {
-    entity::Entity *e = entity::get(w, r->owner);
-    if (!e)
+// A sphere against one collider, in the collider's own frame: the frame is
+// rigid, so the sphere stays a sphere there and a box is axis-aligned, and the
+// answer comes back through the same frame. `motion` may be zero for a
+// depenetration query.
+struct Contact {
+    entity::Collider *collider;
+    linalg::Mat4 frame;
+    linalg::Mat4 inverse;
+    linalg::Vec3 center; // the body, in the collider's frame
+};
+
+static b32 contact_of(entity::World *w, entity::Collider *c, linalg::Vec3 body,
+                      entity::Handle ignore, Contact *out) {
+    entity::Entity *e = entity::get(w, c->owner);
+    if (!e || !e->active || under(w, c->owner, ignore))
         return false;
 
-    linalg::Vec3 lo;
-    linalg::Vec3 hi;
-    asset::model_bounds(m, r->model, &lo, &hi);
+    out->collider = c;
+    out->frame = entity::collider_frame(w, c);
+    out->inverse = linalg::mat4_inverse_affine(out->frame);
+    out->center = linalg::mat4_mul_point(out->inverse, body);
+    return true;
+}
 
-    intersect::Aabb local{lo, hi};
-    if (!intersect::aabb_valid(local))
+static intersect::Aabb box_of(const entity::Collider *c) {
+    linalg::Vec3 half = c->size * 0.5f;
+    return intersect::Aabb{-1.0f * half, half};
+}
+
+static b32 sweep(const Contact *k, f32 radius, linalg::Vec3 motion, intersect::Hit *out) {
+    linalg::Vec3 local_motion = linalg::mat4_mul_dir(k->inverse, motion);
+
+    intersect::Hit h;
+    b32 hit;
+    if (k->collider->shape == entity::COLLIDER_SPHERE)
+        hit = intersect::sweep_sphere_sphere(k->center, radius, local_motion,
+                                             linalg::Vec3{0.0f, 0.0f, 0.0f},
+                                             k->collider->radius, &h);
+    else
+        hit = intersect::sweep_sphere_aabb(k->center, radius, local_motion, box_of(k->collider),
+                                           &h);
+    if (!hit)
         return false;
 
-    *out = intersect::aabb_transform(local, e->world);
+    // t is a fraction either way; the point and normal go back to the world
+    out->t = h.t;
+    out->point = linalg::mat4_mul_point(k->frame, h.point);
+    out->normal = linalg::mat4_mul_dir(k->frame, h.normal);
+    return true;
+}
+
+static b32 depenetrate(const Contact *k, f32 radius, linalg::Vec3 *out_normal, f32 *out_depth) {
+    linalg::Vec3 n;
+    b32 overlapping;
+    if (k->collider->shape == entity::COLLIDER_SPHERE)
+        overlapping = intersect::depenetrate_sphere_sphere(
+            k->center, radius, linalg::Vec3{0.0f, 0.0f, 0.0f}, k->collider->radius, &n, out_depth);
+    else
+        overlapping =
+            intersect::depenetrate_sphere_aabb(k->center, radius, box_of(k->collider), &n, out_depth);
+    if (!overlapping)
+        return false;
+
+    *out_normal = linalg::mat4_mul_dir(k->frame, n);
     return true;
 }
 
 // Everything a sweep cannot answer, because a body that starts inside geometry
 // has no surface to have hit. Deepest overlap first: it is the one most likely
 // to be the real problem, and leaving it often clears the shallower ones too.
-static linalg::Vec3 push_clear(entity::World *w, asset::Manager *m, linalg::Vec3 position,
-                               f32 radius, entity::Handle ignore, Result *res) {
+static linalg::Vec3 push_clear(entity::World *w, linalg::Vec3 position, f32 radius,
+                               entity::Handle ignore, Result *res) {
     for (u32 i = 0; i < MOTION_MAX_DEPENETRATIONS; i++) {
         f32 worst_depth = 0.0f;
         linalg::Vec3 worst_normal{};
         b32 found = false;
 
-        for (u32 s = entity::component_first(w, entity::COMPONENT_RENDERABLE); s;
-             s = entity::component_next(w, entity::COMPONENT_RENDERABLE, s)) {
-            entity::Renderable *r =
-                (entity::Renderable *)entity::component_at(w, entity::COMPONENT_RENDERABLE, s);
+        for (u32 s = entity::component_first(w, entity::COMPONENT_COLLIDER); s;
+             s = entity::component_next(w, entity::COMPONENT_COLLIDER, s)) {
+            entity::Collider *c =
+                (entity::Collider *)entity::component_at(w, entity::COMPONENT_COLLIDER, s);
 
-            if (under(w, r->owner, ignore))
-                continue;
-
-            intersect::Aabb box;
-            if (!collider_box(w, m, r, &box))
+            Contact k;
+            if (!contact_of(w, c, position, ignore, &k))
                 continue;
 
             linalg::Vec3 n;
             f32 depth;
-            if (!intersect::depenetrate_sphere_aabb(position, radius, box, &n, &depth))
+            if (!depenetrate(&k, radius, &n, &depth))
                 continue;
 
             if (!found || depth > worst_depth) {
@@ -105,7 +151,7 @@ Result move_and_slide(entity::World *w, asset::Manager *m, linalg::Vec3 position
     // Before anything else, get out of whatever we are already inside. Without
     // this the first sweep reports "started inside", there is no surface to
     // slide along, and the body never moves again.
-    res.position = push_clear(w, m, res.position, radius, ignore, &res);
+    res.position = push_clear(w, res.position, radius, ignore, &res);
 
     linalg::Vec3 left = motion;
 
@@ -116,21 +162,17 @@ Result move_and_slide(entity::World *w, asset::Manager *m, linalg::Vec3 position
         intersect::Hit best{};
         b32 found = false;
 
-        for (u32 s = entity::component_first(w, entity::COMPONENT_RENDERABLE); s;
-             s = entity::component_next(w, entity::COMPONENT_RENDERABLE, s)) {
-            entity::Renderable *r =
-                (entity::Renderable *)entity::component_at(w, entity::COMPONENT_RENDERABLE, s);
+        for (u32 s = entity::component_first(w, entity::COMPONENT_COLLIDER); s;
+             s = entity::component_next(w, entity::COMPONENT_COLLIDER, s)) {
+            entity::Collider *c =
+                (entity::Collider *)entity::component_at(w, entity::COMPONENT_COLLIDER, s);
 
-            if (under(w, r->owner, ignore))
-                continue;
-
-            intersect::Aabb box;
-            if (!collider_box(w, m, r, &box))
+            Contact k;
+            if (!contact_of(w, c, res.position, ignore, &k))
                 continue;
 
             intersect::Hit h;
-            if (intersect::sweep_sphere_aabb(res.position, radius, left, box, &h) &&
-                (!found || h.t < best.t)) {
+            if (sweep(&k, radius, left, &h) && (!found || h.t < best.t)) {
                 best = h;
                 found = true;
             }

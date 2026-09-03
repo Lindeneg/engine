@@ -76,7 +76,7 @@ static void pick_takes_the_nearest(memory::Arena *a) {
     entity::Handle near_cube = place(w, "near", linalg::Vec3{0.0f, 0.0f, -5.0f}, true);
     place(w, "far", linalg::Vec3{0.0f, 0.0f, -10.0f}, true);
     entity::Handle marker = place(w, "camera", linalg::Vec3{3.0f, 0.0f, -5.0f}, false);
-    entity::Handle hidden = place(w, "hidden", linalg::Vec3{0.0f, 0.0f, -2.0f}, true);
+    entity::Handle hidden = place(w, "hidden", linalg::Vec3{0.45f, 0.0f, -2.0f}, true);
     entity::renderable(w, hidden)->visible = false;
 
     entity::end_frame(w, m, a, 0.0f); // world transforms
@@ -84,8 +84,9 @@ static void pick_takes_the_nearest(memory::Arena *a) {
     linalg::Vec3 eye{0.0f, 0.0f, 0.0f};
     linalg::Vec3 ahead{0.0f, 0.0f, -1.0f};
 
-    // both cubes sit on the ray; the near one wins, and the hidden one in
-    // front of it is treated as a marker, which the ray passes beside
+    // both cubes sit on the ray; the near one wins. The hidden one in front
+    // of it is a marker rather than a box, so its cube (which the ray would
+    // cross) does not count and its marker sphere is off to the side
     CHECK(editor::pick(w, m, intersect::Ray{eye, ahead}, 0.3f, 100.0f).v == near_cube.v);
 
     // a marker is picked by its sphere
@@ -102,9 +103,11 @@ static void pick_respects_a_rotated_box(memory::Arena *a) {
     asset::Manager *m = make_assets(a);
     entity::World *w = make_world(a);
 
-    // a cube turned 45 degrees about Y: its corner points at the eye, so a ray
-    // that would miss the axis-aligned bound still hits, and one just outside
-    // the corner that the axis-aligned bound would report now misses
+    // A cube turned 45 degrees about Y is a diamond seen from above, |x| + |dz|
+    // <= corner, inside a world-aligned bound of |x|, |dz| <= corner. A ray
+    // running along one of the diamond's edges, offset outward, crosses that
+    // bound's corner region and never touches the cube; the same ray offset
+    // inward crosses the cube. Only an exact test in the cube's frame tells them apart.
     entity::Handle h = place(w, "turned", linalg::Vec3{0.0f, 0.0f, -5.0f}, true);
     entity::set_euler(&entity::get(w, h)->local, linalg::Vec3{0.0f, 45.0f, 0.0f});
     entity::end_frame(w, m, a, 0.0f);
@@ -112,15 +115,21 @@ static void pick_respects_a_rotated_box(memory::Arena *a) {
     linalg::Vec3 lo, hi;
     asset::model_bounds(m, asset::MODEL_FALLBACK, &lo, &hi);
     f32 half = (hi.x - lo.x) * 0.5f;
-    f32 corner = half * sqrtf(2.0f); // the turned cube's reach along X
+    f32 corner = half * sqrtf(2.0f);
 
-    linalg::Vec3 eye{0.0f, 0.0f, 0.0f};
-    linalg::Vec3 through{corner * 0.5f, 0.0f, -5.0f};
-    linalg::Vec3 beside{corner * 0.95f, 0.0f, -5.0f}; // inside the bound's box, outside the cube
-    CHECK(editor::pick(w, m, intersect::Ray{eye, linalg::vec3_normalize(through)}, 0.3f, 100.0f)
-              .v == h.v);
-    CHECK(editor::pick(w, m, intersect::Ray{eye, linalg::vec3_normalize(beside)}, 0.3f, 100.0f)
-              .v == 0);
+    // the line x + (z + 5) = sum, travelled toward -x and +z
+    linalg::Vec3 edge_dir = linalg::vec3_normalize(linalg::Vec3{-1.0f, 0.0f, 1.0f});
+    linalg::Vec3 outside{2.0f, 0.0f, -5.0f + (corner * 1.3f - 2.0f)};
+    linalg::Vec3 inside{2.0f, 0.0f, -5.0f + (corner * 0.6f - 2.0f)};
+
+    CHECK(editor::pick(w, m, intersect::Ray{inside, edge_dir}, 0.3f, 100.0f).v == h.v);
+    CHECK(editor::pick(w, m, intersect::Ray{outside, edge_dir}, 0.3f, 100.0f).v == 0);
+
+    // and the world-aligned bound would have said otherwise
+    intersect::Aabb bound = intersect::aabb_transform(intersect::Aabb{lo, hi},
+                                                      entity::get(w, h)->world);
+    intersect::Hit unused;
+    CHECK(intersect::ray_aabb(intersect::Ray{outside, edge_dir}, bound, 100.0f, &unused));
 }
 
 static void world_position_writes_into_the_parents_frame(memory::Arena *a) {

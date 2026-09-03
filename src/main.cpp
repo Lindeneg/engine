@@ -38,6 +38,7 @@
 #define DEFAULT_SCRATCH_MIB 64
 #define DEFAULT_PLAYER_BODY "player"
 #define DEFAULT_BOUNDS_COLOR linalg::Vec4{1.0f, 0.85f, 0.1f, 1.0f}
+#define DEFAULT_COLLIDER_COLOR linalg::Vec4{0.3f, 0.9f, 0.9f, 1.0f}
 
 #define DEFAULT_OVERLAY_PADDING 8.0f
 #define DEFAULT_OVERLAY_PANEL_W 340.0f
@@ -77,6 +78,7 @@ static Overlay overlay_from(config::Node *block) {
 struct DebugView {
     b32 bounds;
     b32 body_sphere;
+    b32 colliders;
 };
 
 static void timing_label(const char *fmt, f64 value) {
@@ -106,6 +108,7 @@ static void debug_panel(const Overlay *o, const frametime::Stats *t, u32 steps, 
     ui::separator();
     ui::checkbox("Bounds", &view->bounds);
     ui::checkbox("Body sphere", &view->body_sphere);
+    ui::checkbox("Colliders", &view->colliders);
 
     ui::columns(2);
     ui::label("Look sensitivity");
@@ -177,7 +180,10 @@ int main() {
              ui_font);
 
     Overlay overlay = overlay_from(config::find(cfg, "overlay"));
-    DebugView view{.bounds = true, .body_sphere = true};
+    DebugView view{.bounds = true, .body_sphere = true, .colliders = true};
+    linalg::Vec4 collider_color = config::value_vec4(
+        config::find(debug_cfg ? debug_cfg->first_child : NULL, "collider_color"),
+        DEFAULT_COLLIDER_COLOR);
 
     editor::Editor *ed = editor::init(&perm, MUST(editor::load_config(&perm, &scratch, root)), in,
                                       config::get(cfg, "level", DEFAULT_LEVEL));
@@ -295,6 +301,8 @@ int main() {
                 entity::draw_bounds(world, assets, bounds_color);
             if (view.body_sphere)
                 game::draw_debug(&player, world);
+            if (view.colliders && !editing) // the editor draws them itself
+                entity::draw_colliders(world, collider_color);
             debug_panel(&overlay, &timing, steps, &view, &player);
         }
         ui::end_frame();
