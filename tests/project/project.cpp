@@ -95,6 +95,14 @@ static void recent_projects_keep_order_and_cap(memory::Arena *a) {
     CHECK(project::recent(a, dir, found, 4) == 3);
     CHECK(strcmp(found[2], "D:/three") == 0);
 
+    // a folder that stopped being a project is dropped; the others keep their order
+    project::forget(a, dir, "D:/one", 3);
+    CHECK(project::recent(a, dir, found, 4) == 2);
+    CHECK(strcmp(found[0], "D:/four") == 0 && strcmp(found[1], "D:/three") == 0);
+
+    project::forget(a, dir, "D:/never-listed", 3);
+    CHECK(project::recent(a, dir, found, 4) == 2);
+
     CHECK(file::remove_directory(dir));
 }
 

@@ -19,7 +19,12 @@
 #define PROJECT_TEMPLATE_DIR "project_template"
 #define PROJECT_RECENT_FILE "recent.cfg"
 #define PROJECT_INPUT_CFG "input.cfg"
+
+// the folders a project keeps; where the editor's imports land, by kind
 #define PROJECT_LEVEL_DIR "levels"
+#define PROJECT_ENTITY_DIR "entities"
+#define PROJECT_MODEL_DIR "models"
+#define PROJECT_ANIMATION_DIR "animations"
 
 #define PROJECT_NAME_CAP 64
 #define PROJECT_PATH_CAP 512
@@ -51,9 +56,10 @@ result::Error save(memory::Arena *scratch, Project *p);
 result::Error create(memory::Arena *a, memory::Arena *scratch, const char *engine_root,
                      const char *parent, const char *name, Project *out);
 
-// The recent list: read into a, or a project moved to its front and the list
-// trimmed to cap.
+// The recent list: read into a; a project moved to its front and the list
+// trimmed to cap; or a folder dropped, once it is no project any more.
 u32 recent(memory::Arena *a, const char *engine_root, const char **out, u32 cap);
 void remember(memory::Arena *scratch, const char *engine_root, const char *dir, u32 cap);
+void forget(memory::Arena *scratch, const char *engine_root, const char *dir, u32 cap);
 
 } // namespace project

@@ -248,9 +248,12 @@ int main(int argc, char **argv) {
     if (argc > 1) {
         snprintf(project_dir, sizeof(project_dir), "%s", argv[1]);
     } else {
-        dashboard::Dashboard *dash = dashboard::init(
-            &perm, engine_root,
-            dashboard::Config{editor_cfg.dashboard_width, editor_cfg.dashboard_height, recent_cap});
+        dashboard::Dashboard *dash =
+            dashboard::init(&perm, engine_root,
+                            dashboard::Config{.width = editor_cfg.dashboard_width,
+                                              .height = editor_cfg.dashboard_height,
+                                              .padding = editor_cfg.dashboard_padding,
+                                              .recent_cap = recent_cap});
         if (!choose_project(dash, win, in, &perm, &scratch, render_cfg.clear_color, project_dir,
                             sizeof(project_dir))) {
             ui::shutdown();
@@ -300,7 +303,7 @@ int main(int argc, char **argv) {
     Overlay overlay = overlay_from(config::find(cfg, "overlay"));
     DebugView view{.bounds = true, .body_sphere = true, .colliders = true};
 
-    editor::Editor *ed = editor::init(&perm, &scratch, editor_cfg, in, proj.level);
+    editor::Editor *ed = editor::init(&perm, &scratch, editor_cfg, in, &proj);
 
     input::Map gameplay = input::find_map(in, "gameplay");
     input::Action quit = input::find(in, "quit");

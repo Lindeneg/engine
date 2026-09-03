@@ -10,6 +10,7 @@
 #include "math/linalg.h"
 #include "platform/input.h"
 #include "platform/window.h"
+#include "project/project.h"
 #include "scene/entity.h"
 
 // The editor: the level held still, looked at from a free camera, with panels
@@ -67,8 +68,10 @@ struct Config {
     GizmoConfig gizmo;
     f32 hierarchy_width;
     f32 inspector_width;
+    f32 assets_height; // the assets panel, under the hierarchy
     f32 dashboard_width;
     f32 dashboard_height;
+    f32 dashboard_padding;
     linalg::Vec4 selection_color;
     linalg::Vec4 collider_color;
     f32 marker_size;   // the axes drawn for an entity with nothing to see, and its pick radius
@@ -89,10 +92,11 @@ ConfigResult load_config(memory::Arena *a, memory::Arena *scratch, const char *r
 struct Editor;
 
 // Resolves the maps and actions once. Starts inactive, with the editor map off.
-// level is the name save_level writes, copied; scratch serves the journal's
-// subtree text.
+// The session opens on the project's start level; the project outlives the
+// editor, which writes its title and start level back through project::save.
+// scratch serves the journal's subtree text and the panels' listings.
 Editor *init(memory::Arena *a, memory::Arena *scratch, Config cfg, input::State *in,
-             const char *level);
+             project::Project *proj);
 
 // Edit mode is the authority and play runs on a copy: leaving edit mode takes
 // a snapshot of the world, and coming back clears the world and rebuilds it

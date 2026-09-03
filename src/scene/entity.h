@@ -25,6 +25,10 @@
 #define ENTITY_NAME_CAP 64
 #define ENTITY_PATH_CAP 128
 
+// the folder under entities/ the editor offers as "new entity from"; nothing
+// else about a definition there is special
+#define ENTITY_TEMPLATE_SUBDIR "templates"
+
 #define COMPONENT_LIST(X)                                                                          \
     X(RENDERABLE, Renderable, "renderable")                                                        \
     X(ANIMATOR, Animator, "animator")                                                              \
@@ -331,14 +335,42 @@ Handle next(World *w, Handle h);
 Handle spawn_from_config(World *w, asset::Manager *m, config::Node *decl, Handle parent);
 
 // The inverse: the subtree as a block under parent (NULL for top level), `key`
-// for this node and "child" below it. A definition reference is written as one
-// unless expand spells it out.
+// for this node and "child" below it. A definition reference stays one either
+// way; as_definition leaves out the ids, which are an instance's, never a file's.
 void write_entity(memory::Arena *a, config::Doc *doc, config::Node *parent, World *w, Handle h,
-                  const char *key, b32 expand);
+                  const char *key, b32 as_definition);
 
 // entities/<name>.entity, read fresh each time.
 HandleResult spawn_definition(World *w, asset::Manager *m, const char *name);
+
+// Writes the subtree as entities/<name>.entity. An entity that already
+// references that very file is spelled out in full, since the file cannot
+// reference itself; that flattens whatever its definition referenced in turn.
 result::Error save_definition(World *w, asset::Manager *m, Handle h, const char *name);
+
+// The link between an entity and its definition. attach makes h an instance of
+// the file, its subtree owned by it, with nothing overridden: what follows a
+// save_definition. detach makes it a plain entity that keeps everything the
+// definition gave it: a template copied rather than referenced.
+void attach_definition(World *w, Handle h, const char *name);
+void detach_definition(World *w, Handle h);
+
+// Rebuilds every instance of the definition from its file, in place: ids,
+// overrides and parents kept, so a definition saved while a level is open
+// shows at once. Returns how many were rebuilt. Instances of a definition that
+// references this one are not followed.
+u32 reload_definition(World *w, asset::Manager *m, const char *name);
+
+struct Name {
+    char v[ENTITY_NAME_CAP];
+};
+
+// What the project folder offers, by the names load_level and spawn_definition
+// take, sorted by name: levels/, or entities/ (subdir NULL) and entities/<subdir>/,
+// where names carry the subdir as "subdir/name". Returns how many there were,
+// which may exceed cap.
+u32 list_levels(asset::Manager *m, Name *out, u32 cap);
+u32 list_definitions(asset::Manager *m, const char *subdir, Name *out, u32 cap);
 
 // levels/<name>.level: one instance block per root entity.
 result::Error load_level(World *w, asset::Manager *m, const char *name);

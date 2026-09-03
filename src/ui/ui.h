@@ -115,8 +115,11 @@ void push_id(const char *s);
 void push_id(u32 v);
 void pop_id();
 
-// Only one panel at a time. The title is the panel's id.
+// Only one panel at a time. The title is the panel's id. The second form
+// insets the content by its own padding rather than the style's: a dialog
+// wants more air than a tool panel.
 void begin_panel(const char *title, canvas::Rect r);
+void begin_panel(const char *title, canvas::Rect r, f32 padding);
 void end_panel();
 
 // Rows fill left to right across n columns, then wrap. 1 is one widget per
@@ -126,6 +129,8 @@ void columns(u32 n);
 void columns(u32 n, const f32 *weights);
 
 void label(const char *text);
+void label_dim(const char *text); // secondary text: a path beside a name, a hint
+void spacer();                    // takes the next cell and draws nothing: an empty column, a blank row
 b32 button(const char *label);         // true on the click
 b32 checkbox(const char *label, b32 *value); // true when toggled
 void separator();

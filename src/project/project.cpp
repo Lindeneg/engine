@@ -110,7 +110,8 @@ result::Error create(memory::Arena *a, memory::Arena *scratch, const char *engin
     }
 
     // the template's own folders that ship empty do not survive a copy, so they are made
-    static const char *DIRS[] = {"levels", "entities", "models", "animations"};
+    static const char *DIRS[] = {PROJECT_LEVEL_DIR, PROJECT_ENTITY_DIR, PROJECT_MODEL_DIR,
+                                 PROJECT_ANIMATION_DIR};
     for (u32 i = 0; i < ARRAY_COUNT(DIRS); i++)
         if (!file::make_directory(FPATH(scratch, dir, DIRS[i]))) {
             memory::temp_end(t);
@@ -154,6 +155,17 @@ u32 recent(memory::Arena *a, const char *engine_root, const char **out, u32 cap)
     return n;
 }
 
+static void save_recent(memory::Arena *scratch, const char *engine_root, const char *const *dirs,
+                        u32 n) {
+    const char *path = FPATH(scratch, engine_root, PROJECT_RECENT_FILE);
+    config::Doc *doc = config::create(scratch, path);
+    for (u32 i = 0; i < n; i++) {
+        const char *vals[] = {dirs[i]};
+        config::append(scratch, doc, NULL, RECENT_KEY, vals, 1);
+    }
+    config::save(scratch, doc, path);
+}
+
 void remember(memory::Arena *scratch, const char *engine_root, const char *dir, u32 cap) {
     ASSERT(scratch && engine_root && dir);
     if (cap == 0)
@@ -164,21 +176,34 @@ void remember(memory::Arena *scratch, const char *engine_root, const char *dir, 
     const char **old = push_array(scratch, const char *, cap);
     u32 n = recent(scratch, engine_root, old, cap);
 
-    const char *path = FPATH(scratch, engine_root, PROJECT_RECENT_FILE);
-    config::Doc *doc = config::create(scratch, path);
-    const char *first[] = {dir};
-    config::append(scratch, doc, NULL, RECENT_KEY, first, 1);
+    const char **list = push_array(scratch, const char *, cap);
+    u32 kept = 0;
+    list[kept++] = dir;
+    for (u32 i = 0; i < n && kept < cap; i++)
+        if (strcmp(old[i], dir) != 0)
+            list[kept++] = old[i];
 
-    u32 kept = 1;
-    for (u32 i = 0; i < n && kept < cap; i++) {
-        if (strcmp(old[i], dir) == 0)
-            continue;
-        const char *vals[] = {old[i]};
-        config::append(scratch, doc, NULL, RECENT_KEY, vals, 1);
-        kept++;
-    }
+    save_recent(scratch, engine_root, list, kept);
+    memory::temp_end(t);
+}
 
-    config::save(scratch, doc, path);
+void forget(memory::Arena *scratch, const char *engine_root, const char *dir, u32 cap) {
+    ASSERT(scratch && engine_root && dir);
+    if (cap == 0)
+        return;
+
+    memory::ArenaTemp t = memory::temp_begin(scratch);
+
+    const char **list = push_array(scratch, const char *, cap);
+    u32 n = recent(scratch, engine_root, list, cap);
+
+    u32 kept = 0;
+    for (u32 i = 0; i < n; i++)
+        if (strcmp(list[i], dir) != 0)
+            list[kept++] = list[i];
+
+    if (kept != n)
+        save_recent(scratch, engine_root, list, kept);
     memory::temp_end(t);
 }
 

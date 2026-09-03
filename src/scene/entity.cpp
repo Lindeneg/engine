@@ -11,6 +11,7 @@
 #include "gfx/debugdraw.h"
 #include "gfx/render.h"
 #include "gfx/shader.h"
+#include "platform/file.h"
 #include "platform/path.h"
 
 #define ENTITY_DIR "entities"
@@ -1096,10 +1097,10 @@ static u32 read_components(World *w, asset::Manager *m, Handle h, config::Node *
     return present;
 }
 
-static void mark_owned(World *w, Handle h) {
+static void mark_owned(World *w, Handle h, b32 owned) {
     for (Handle c = get(w, h)->first_child; c.v; c = get(w, c)->next_sibling) {
-        get(w, c)->owned_by_definition = true;
-        mark_owned(w, c);
+        get(w, c)->owned_by_definition = owned;
+        mark_owned(w, c, owned);
     }
 }
 
@@ -1152,11 +1153,28 @@ static HandleResult instantiate(World *w, asset::Manager *m, const char *name, u
     if (!h.v)
         return HandleResult{.err = result::ERR_EXHAUSTED};
 
+    attach_definition(w, h, name);
+    return HandleResult{.val = h};
+}
+
+void attach_definition(World *w, Handle h, const char *name) {
+    ASSERT(w && name);
     Entity *e = get(w, h);
+    if (!e)
+        return;
     snprintf(e->definition, ENTITY_NAME_CAP, "%s", name);
     e->overridden = 0;
-    mark_owned(w, h);
-    return HandleResult{.val = h};
+    mark_owned(w, h, true);
+}
+
+void detach_definition(World *w, Handle h) {
+    ASSERT(w);
+    Entity *e = get(w, h);
+    if (!e)
+        return;
+    e->definition[0] = 0;
+    e->overridden = 0;
+    mark_owned(w, h, false);
 }
 
 // one "entity", "child" or "instance" block: either a definition reference with
@@ -1245,7 +1263,7 @@ static u32 assign_owned_ids(World *w, Handle h, config::Node *ids, u32 n) {
 }
 
 void write_entity(memory::Arena *a, config::Doc *doc, config::Node *parent, World *w, Handle h,
-                  const char *key, b32 expand) {
+                  const char *key, b32 as_definition) {
     ASSERT(a && doc && w && key);
 
     Entity *e = get(w, h);
@@ -1257,12 +1275,12 @@ void write_entity(memory::Arena *a, config::Doc *doc, config::Node *parent, Worl
     node->is_block = true;
 
     // identity is an instance's, never a definition's: a template is shared
-    if (!expand) {
+    if (!as_definition) {
         const char *id[] = {memory::push_fmt(a, "%u", e->id)};
         config::append(a, doc, node, "id", id, 1);
     }
 
-    b32 by_ref = !expand && e->definition[0];
+    b32 by_ref = e->definition[0] != 0;
     if (by_ref) {
         const char *def[] = {e->definition};
         config::append(a, doc, node, "definition", def, 1);
@@ -1270,7 +1288,7 @@ void write_entity(memory::Arena *a, config::Doc *doc, config::Node *parent, Worl
         // the children the definition spawned are not written, so their ids
         // are, in spawn order, and the reader hands them back the same way
         const char *ids[OWNED_IDS_CAP];
-        u32 n = collect_owned_ids(a, w, h, ids, 0);
+        u32 n = as_definition ? 0 : collect_owned_ids(a, w, h, ids, 0);
         if (n)
             config::append(a, doc, node, "owned_ids", ids, n);
     }
@@ -1320,6 +1338,10 @@ static const char *data_file_path(asset::Manager *m, memory::Arena *scratch, con
 result::Error save_definition(World *w, asset::Manager *m, Handle h, const char *name) {
     ASSERT(w && m && name);
 
+    Entity *e = get(w, h);
+    if (!e)
+        return result::ERR_INVALID;
+
     memory::Arena *scratch = asset::scratch_arena(m);
     memory::ArenaTemp t = memory::temp_begin(scratch);
 
@@ -1329,12 +1351,130 @@ result::Error save_definition(World *w, asset::Manager *m, Handle h, const char 
         return result::ERR_INVALID;
     }
 
+    // written detached while it would otherwise reference the file being written
+    b32 self = strcmp(e->definition, name) == 0;
+    u32 overridden = e->overridden;
+    if (self)
+        detach_definition(w, h);
+
     config::Doc *doc = config::create(scratch, abs);
     write_entity(scratch, doc, NULL, w, h, "entity", true);
-    result::Error e = config::save(scratch, doc, abs);
+    result::Error err = config::save(scratch, doc, abs);
+
+    if (self) {
+        attach_definition(w, h, name);
+        e->overridden = overridden;
+    }
+    if (err == result::OK)
+        LOG_INFO("entity: wrote %s", abs);
 
     memory::temp_end(t);
-    return e;
+    return err;
+}
+
+// the instance as its block, gone, and back from its definition under the same parent
+static b32 rebuild_instance(World *w, asset::Manager *m, Handle h) {
+    Entity *e = get(w, h);
+    Handle parent = e->parent;
+
+    memory::Arena *scratch = asset::scratch_arena(m);
+    memory::ArenaTemp t = memory::temp_begin(scratch);
+
+    // the writer leaves the joint to the referencing block, which this is
+    config::Doc *doc = config::create(scratch, "<reload>");
+    write_entity(scratch, doc, NULL, w, h, "instance", false);
+    if (parent.v && e->attach_joint[0]) {
+        const char *joint[] = {e->attach_joint};
+        config::append(scratch, doc, doc->first, "attach_joint", joint, 1);
+    }
+
+    // the block holds copies of every string, so the entity can go before it is read
+    destroy(w, h);
+    Handle back = build_entity(w, m, doc->first, parent, 0);
+
+    memory::temp_end(t);
+    return back.v != 0;
+}
+
+u32 reload_definition(World *w, asset::Manager *m, const char *name) {
+    ASSERT(w && m && name);
+
+    memory::Arena *scratch = asset::scratch_arena(m);
+    memory::ArenaTemp t = memory::temp_begin(scratch);
+
+    // by id, gathered first: a rebuild moves entities through the pool, which
+    // the walk could not survive
+    u32 count = 0;
+    for (Handle h = first(w); h.v; h = next(w, h))
+        if (strcmp(get(w, h)->definition, name) == 0)
+            count++;
+
+    u32 *ids = push_array(scratch, u32, count);
+    u32 n = 0;
+    for (Handle h = first(w); h.v && n < count; h = next(w, h))
+        if (strcmp(get(w, h)->definition, name) == 0)
+            ids[n++] = get(w, h)->id;
+
+    u32 rebuilt = 0;
+    for (u32 i = 0; i < n; i++) {
+        Handle h = find_by_id(w, ids[i]);
+        if (h.v && rebuild_instance(w, m, h))
+            rebuilt++;
+    }
+
+    memory::temp_end(t);
+    LOG_INFO("entity: definition '%s' rebuilt %u instance(s)", name, rebuilt);
+    return rebuilt;
+}
+
+// the names in <root>/<dir> ending in ext, without it, each behind prefix
+static u32 list_names(asset::Manager *m, const char *dir, const char *ext, const char *prefix,
+                      Name *out, u32 cap) {
+    memory::Arena *scratch = asset::scratch_arena(m);
+    memory::ArenaTemp t = memory::temp_begin(scratch);
+
+    file::Entry *entries = push_array(scratch, file::Entry, FILE_LIST_CAP);
+    u32 found = file::list(FPATH(scratch, asset::root(m), dir), entries, FILE_LIST_CAP);
+    if (found > FILE_LIST_CAP) {
+        LOG_WARN("entity: %s holds %u entries; only the first %d are listed", dir, found,
+                 FILE_LIST_CAP);
+        found = FILE_LIST_CAP;
+    }
+
+    u64 ext_len = strlen(ext);
+    u32 n = 0;
+    for (u32 i = 0; i < found; i++) {
+        u64 len = strlen(entries[i].name);
+        if (entries[i].is_directory || len <= ext_len ||
+            strcmp(entries[i].name + len - ext_len, ext) != 0)
+            continue;
+        if (n < cap)
+            snprintf(out[n].v, ENTITY_NAME_CAP, "%s%.*s", prefix, (int)(len - ext_len),
+                     entries[i].name);
+        n++;
+    }
+
+    memory::temp_end(t);
+    return n;
+}
+
+u32 list_levels(asset::Manager *m, Name *out, u32 cap) {
+    ASSERT(m && (out || cap == 0));
+    return list_names(m, LEVEL_DIR, LEVEL_EXT, "", out, cap);
+}
+
+u32 list_definitions(asset::Manager *m, const char *subdir, Name *out, u32 cap) {
+    ASSERT(m && (out || cap == 0));
+
+    memory::Arena *scratch = asset::scratch_arena(m);
+    memory::ArenaTemp t = memory::temp_begin(scratch);
+
+    const char *dir = subdir ? FPATH(scratch, ENTITY_DIR, subdir) : ENTITY_DIR;
+    const char *prefix = subdir ? FPATH(scratch, subdir, "") : ""; // "templates/"
+    u32 n = list_names(m, dir, ENTITY_EXT, prefix, out, cap);
+
+    memory::temp_end(t);
+    return n;
 }
 
 static u32 spawn_instances(World *w, asset::Manager *m, config::Doc *doc) {

@@ -170,7 +170,9 @@ static void play_leaves_the_edited_level_untouched(memory::Arena *a) {
                           FPATH(a, CL_ENGINE_ROOT, PROJECT_TEMPLATE_DIR, "input.cfg")) ==
           result::OK);
     editor::Config cfg = editor::config_from(a, NULL);
-    editor::Editor *ed = editor::init(a, a, cfg, in, "test");
+    project::Project proj{};
+    snprintf(proj.level, sizeof(proj.level), "test");
+    editor::Editor *ed = editor::init(a, a, cfg, in, &proj);
 
     entity::Handle box = place(w, "box", linalg::Vec3{0.0f, 5.0f, 0.0f}, true);
     entity::Handle marker = place(w, "marker", linalg::Vec3{1.0f, 1.0f, 1.0f}, false);

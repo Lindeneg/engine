@@ -68,11 +68,23 @@ static void relative_to_strips_the_root(memory::Arena *) {
                              sizeof(tiny)));
 }
 
+static void basename_is_the_final_segment(memory::Arena *) {
+    CHECK(strcmp(path::basename("D:/games/stuff"), "stuff") == 0);
+    CHECK(strcmp(path::basename("D:\\games\\stuff"), "stuff") == 0);
+    CHECK(strcmp(path::basename("stuff"), "stuff") == 0);
+    CHECK(strcmp(path::basename("D:/games/"), "") == 0);
+    CHECK(strcmp(path::basename(""), "") == 0);
+}
+
 test::Suite path_suite() {
     static const test::Case cases[] = {
-        CASE(joins_segments),      CASE(single_segment_gets_no_separator),
-        CASE(does_not_normalize),  CASE(result_is_nul_terminated),
-        CASE(swaps_the_extension), CASE(relative_to_strips_the_root),
+        CASE(joins_segments),
+        CASE(single_segment_gets_no_separator),
+        CASE(does_not_normalize),
+        CASE(result_is_nul_terminated),
+        CASE(swaps_the_extension),
+        CASE(relative_to_strips_the_root),
+        CASE(basename_is_the_final_segment),
     };
     return test::Suite{.name = "path", .cases = cases, .count = ARRAY_COUNT(cases)};
 }

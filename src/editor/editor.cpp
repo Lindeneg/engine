@@ -1,5 +1,6 @@
 #include "editor/editor.h"
 
+#include <ctype.h>
 #include <math.h>
 #include <stddef.h> // offsetof
 #include <string.h>
@@ -10,6 +11,7 @@
 #include "gfx/canvas.h"
 #include "gfx/debugdraw.h"
 #include "platform/dialog.h"
+#include "platform/file.h"
 #include "platform/path.h"
 #include "ui/ui.h"
 
@@ -28,8 +30,10 @@
 #define DEFAULT_PITCH -10.0f
 #define DEFAULT_HIERARCHY_WIDTH 260.0f
 #define DEFAULT_INSPECTOR_WIDTH 320.0f
+#define DEFAULT_ASSETS_HEIGHT 300.0f
 #define DEFAULT_DASHBOARD_WIDTH 640.0f
-#define DEFAULT_DASHBOARD_HEIGHT 520.0f
+#define DEFAULT_DASHBOARD_HEIGHT 600.0f
+#define DEFAULT_DASHBOARD_PADDING 24.0f
 #define DEFAULT_MARKER_SIZE 0.3f
 #define DEFAULT_FRUSTUM_DEPTH 10.0f
 #define DEFAULT_UNDO_DEPTH 256
@@ -58,12 +62,21 @@
 
 #define NEW_ENTITY_NAME "entity"
 #define INSPECTOR_LINE_CAP 160
+#define STATUS_CAP 256
 
 // the picker's filter: every asset is a .glb
 #define ASSET_EXTENSION "glb"
 #define ASSET_FILTER_LABEL "glTF binary"
 #define BROWSE_LABEL "..."
 #define ABS_PATH_CAP 1024
+
+// what the listings hold; the file layer lists no more than this either
+#define LIST_CAP FILE_LIST_CAP
+
+// what the panels say when they refuse
+#define STATUS_SAVE_FIRST "unsaved changes: save first, or open it again to discard them"
+#define STATUS_NEEDS_NAME "a name is needed first"
+#define STATUS_BAD_NAME "a name cannot hold a path separator"
 
 // no component: nothing waits for the keyboard to be released
 #define PENDING_NONE (-1)
@@ -74,8 +87,8 @@ static const linalg::Vec3 DEFAULT_START_POSITION = {0.0f, 2.0f, 6.0f};
 static const linalg::Vec4 DEFAULT_SELECTION_COLOR = {1.0f, 0.5f, 0.1f, 1.0f};
 static const linalg::Vec4 DEFAULT_COLLIDER_COLOR = {0.3f, 0.9f, 0.9f, 1.0f};
 
-// one asset of each kind can be on show at a time: the inspector shows one entity
-enum AssetShownSlot { SHOWN_MODEL, SHOWN_CLIP, ASSET_SHOWN_COUNT };
+// the two kinds of file the project imports; the assets panel shows one at a time
+enum AssetKind { ASSET_KIND_MODEL, ASSET_KIND_CLIP, ASSET_KIND_COUNT };
 
 // an asset's file and sidecar, looked up when its path first appears
 struct AssetShown {
@@ -85,12 +98,20 @@ struct AssetShown {
     asset::ClipOptions clip;
 };
 
+struct AssetPath {
+    char v[ENTITY_PATH_CAP];
+};
+
 static const linalg::Vec3 FORWARD = {0.0f, 0.0f, -1.0f};
 static const linalg::Vec3 RIGHT = {1.0f, 0.0f, 0.0f};
 static const linalg::Vec3 UP = {0.0f, 1.0f, 0.0f};
 
 // label, field, browse button: the field gets most of the row
 static const f32 ASSET_ROW_WEIGHTS[3] = {0.3f, 0.55f, 0.15f};
+
+// a label and the rest of the row; a level's name and its start mark
+static const f32 SPLIT_ROW[2] = {0.3f, 0.7f};
+static const f32 LEVEL_ROW[2] = {0.7f, 0.3f};
 
 Config config_from(memory::Arena *a, config::Node *first) {
     ASSERT(a);
@@ -124,11 +145,13 @@ Config config_from(memory::Arena *a, config::Node *first) {
 
     c.hierarchy_width = config::get_f32(panels, "hierarchy_width", DEFAULT_HIERARCHY_WIDTH);
     c.inspector_width = config::get_f32(panels, "inspector_width", DEFAULT_INSPECTOR_WIDTH);
+    c.assets_height = config::get_f32(panels, "assets_height", DEFAULT_ASSETS_HEIGHT);
 
     config::Node *dash_block = config::find(first, "dashboard");
     config::Node *dash = dash_block ? dash_block->first_child : NULL;
     c.dashboard_width = config::get_f32(dash, "width", DEFAULT_DASHBOARD_WIDTH);
     c.dashboard_height = config::get_f32(dash, "height", DEFAULT_DASHBOARD_HEIGHT);
+    c.dashboard_padding = config::get_f32(dash, "padding", DEFAULT_DASHBOARD_PADDING);
 
     c.selection_color =
         config::value_vec4(config::find(first, "selection_color"), DEFAULT_SELECTION_COLOR);
@@ -198,7 +221,43 @@ struct Editor {
     u32 selected_id;
     entity::Handle selected;
     undo::Journal *journal;
+
+    // the project, and the level being edited, which need not be its start level
+    project::Project *project;
+    b32 project_pending; // the title was typed into; written once the keyboard lets go
     char level[ENTITY_NAME_CAP];
+    char new_level_name[ENTITY_NAME_CAP];
+    char discard_level[ENTITY_NAME_CAP]; // opening this again abandons unsaved changes
+    char level_status[STATUS_CAP];
+
+    // the name the selection would be saved under, defaulted once per selection
+    char definition_name[ENTITY_NAME_CAP];
+    u32 definition_for_id;
+    char entity_status[STATUS_CAP];
+
+    // what the project folder holds, scanned when first shown and after anything is written
+    b32 scanned;
+    entity::Name *levels;
+    u32 level_count;
+    entity::Name *templates;
+    u32 template_count;
+    entity::Name *definitions;
+    u32 definition_count;
+    AssetPath *models;
+    u32 model_count;
+    AssetPath *animations;
+    u32 animation_count;
+
+    // the assets panel's selection, whose settings it shows
+    char asset_selected[ENTITY_PATH_CAP];
+    AssetKind asset_kind;
+    char asset_status[STATUS_CAP];
+
+    // the asset field whose list of imports is unfolded under it, if any: the
+    // entity, the component and the field's key, which is a static string
+    u32 picker_id;
+    i32 picker_component;
+    const char *picker_field;
 
     // the level as text from the moment play began; its own arena, reset per snapshot
     memory::Arena *scratch;
@@ -210,7 +269,7 @@ struct Editor {
     i32 pending_component;
 
     // the assets whose settings are on show, read once per path rather than per frame
-    AssetShown shown[ASSET_SHOWN_COUNT];
+    AssetShown shown[ASSET_KIND_COUNT];
 
     // the translate gizmo: its handles this frame, which one the pointer is
     // over, and the drag in progress
@@ -237,8 +296,8 @@ struct Editor {
 };
 
 Editor *init(memory::Arena *a, memory::Arena *scratch, Config cfg, input::State *in,
-             const char *level) {
-    ASSERT(a && scratch && in && level);
+             project::Project *proj) {
+    ASSERT(a && scratch && in && proj);
 
     Editor *ed = push_struct(a, Editor);
     ed->cfg = cfg;
@@ -249,7 +308,14 @@ Editor *init(memory::Arena *a, memory::Arena *scratch, Config cfg, input::State 
     ed->pending_component = PENDING_NONE;
     ed->hot_handle = gizmo::HANDLE_NONE;
     ed->drag.handle = gizmo::HANDLE_NONE;
-    snprintf(ed->level, sizeof(ed->level), "%s", level);
+    ed->project = proj;
+    snprintf(ed->level, sizeof(ed->level), "%s", proj->level);
+
+    ed->levels = push_array(a, entity::Name, LIST_CAP);
+    ed->templates = push_array(a, entity::Name, LIST_CAP);
+    ed->definitions = push_array(a, entity::Name, LIST_CAP);
+    ed->models = push_array(a, AssetPath, LIST_CAP);
+    ed->animations = push_array(a, AssetPath, LIST_CAP);
 
     ed->play_map = input::find_map(in, cfg.play_map);
     ed->editor_map = input::find_map(in, EDITOR_MAP);
@@ -506,10 +572,19 @@ static void save_level(Editor *ed, entity::World *w, asset::Manager *m) {
     result::Error e = entity::save_level(w, m, ed->level);
     if (e != result::OK) {
         LOG_ERR("editor: saving level '%s' failed: %s", ed->level, result::str(e));
+        snprintf(ed->level_status, sizeof(ed->level_status),
+                 "%s could not be written; the log says why", ed->level);
         return;
     }
     undo::mark_clean(ed->journal);
+    ed->discard_level[0] = 0;
+    ed->level_status[0] = 0;
     LOG_INFO("editor: saved level '%s'", ed->level);
+}
+
+static void save_project(Editor *ed) {
+    if (project::save(ed->scratch, ed->project) != result::OK)
+        LOG_ERR("editor: %s could not be written", PROJECT_CFG);
 }
 
 static void draw_tree(Editor *ed, entity::World *w, entity::Handle h) {
@@ -531,39 +606,6 @@ static void draw_tree(Editor *ed, entity::World *w, entity::Handle h) {
     }
 
     ui::pop_id();
-}
-
-static void hierarchy_panel(Editor *ed, entity::World *w, asset::Manager *m, i32 fb_height) {
-    ui::begin_panel("Hierarchy", canvas::Rect{0.0f, 0.0f, ed->cfg.hierarchy_width, (f32)fb_height});
-
-    // the level, and whether what is on screen is what is on disk
-    char title[INSPECTOR_LINE_CAP];
-    snprintf(title, sizeof(title), "level: %s%s", ed->level, dirty(ed) ? DIRTY_MARK : "");
-    ui::label(title);
-
-    ui::columns(2);
-    if (ui::button("New entity")) {
-        entity::Handle h = entity::spawn(w, NEW_ENTITY_NAME);
-        if (h.v) {
-            select(ed, w, h);
-            undo::record_create(ed->journal, w, h);
-        }
-    }
-    if (ui::button("Save"))
-        save_level(ed, w, m);
-    ui::columns(1);
-    ui::separator();
-
-    for (entity::Handle h = entity::first(w); h.v; h = entity::next(w, h))
-        if (entity::get(w, h)->parent.v == 0)
-            draw_tree(ed, w, h);
-    ui::end_panel();
-
-    // a row dragged onto another row, or onto the panel's empty space
-    u32 dragged = 0;
-    u32 onto = 0;
-    if (ui::dropped(&dragged, &onto))
-        drop_reparent(ed, w, m, entity::Handle{dragged}, entity::Handle{onto});
 }
 
 // a drag, in a panel or on the gizmo, or a run of typing is one edit
@@ -596,8 +638,48 @@ static void browse_asset(asset::Manager *m, char *path, u32 cap) {
                  asset::root(m));
 }
 
+static b32 picker_open(const Editor *ed, u32 id, entity::Component c, const entity::FieldDesc *f) {
+    return ed->picker_id == id && ed->picker_component == (i32)c && ed->picker_field == f->key;
+}
+
+static void close_picker(Editor *ed) { ed->picker_field = NULL; }
+
+// what the project has imported of the field's kind, one row each, and the OS
+// picker for a file the project does not hold yet; a choice writes the path
+// and the caller's change detection does the rest
+static void asset_picker_rows(Editor *ed, asset::Manager *m, const entity::FieldDesc *f,
+                              char *path) {
+    b32 model = f->asset == entity::ASSET_MODEL;
+    const AssetPath *paths = model ? ed->models : ed->animations;
+    u32 count = model ? ed->model_count : ed->animation_count;
+
+    ui::push_id("picker");
+    ui::columns(2, SPLIT_ROW);
+    if (count == 0) {
+        ui::spacer();
+        ui::label_dim(model ? "(no models imported)" : "(no animations imported)");
+    }
+    for (u32 i = 0; i < count; i++) {
+        ui::spacer();
+        ui::push_id(i);
+        if (ui::button(paths[i].v)) {
+            snprintf(path, f->cap, "%s", paths[i].v);
+            close_picker(ed);
+        }
+        ui::pop_id();
+    }
+    ui::spacer();
+    if (ui::button("Other file...")) {
+        browse_asset(m, path, f->cap);
+        close_picker(ed);
+    }
+    ui::columns(1);
+    ui::pop_id();
+}
+
 // one row per field, by type; the key is the row's label and the widget's id
-static void field_row(asset::Manager *m, const entity::FieldDesc *f, void *comp) {
+static void field_row(Editor *ed, asset::Manager *m, u32 id, entity::Component c,
+                      const entity::FieldDesc *f, void *comp) {
     u8 *at = (u8 *)comp + f->offset;
     switch (f->type) {
     case entity::FIELD_F32:
@@ -625,7 +707,7 @@ static void field_row(asset::Manager *m, const entity::FieldDesc *f, void *comp)
         ui::pop_id();
         break;
     }
-    case entity::FIELD_STRING:
+    case entity::FIELD_STRING: {
         if (f->asset == entity::ASSET_NONE) {
             ui::columns(2);
             ui::label(f->key);
@@ -636,10 +718,22 @@ static void field_row(asset::Manager *m, const entity::FieldDesc *f, void *comp)
         ui::label(f->key);
         ui::text_field(f->key, (char *)at, f->cap);
         ui::push_id(f->key);
-        if (ui::button(BROWSE_LABEL))
-            browse_asset(m, (char *)at, f->cap);
+        b32 open = picker_open(ed, id, c, f);
+        if (ui::button(BROWSE_LABEL)) {
+            open = !open;
+            if (open) {
+                ed->picker_id = id;
+                ed->picker_component = (i32)c;
+                ed->picker_field = f->key;
+            } else {
+                close_picker(ed);
+            }
+        }
+        if (open)
+            asset_picker_rows(ed, m, f, (char *)at);
         ui::pop_id();
         break;
+    }
     case entity::FIELD_ENUM:
         ui::columns(2);
         ui::label(f->key);
@@ -656,9 +750,8 @@ static void mark_overridden(entity::Entity *e, entity::Component c) {
 
 // the file and sidecar behind a path, looked up when the path changes and
 // forgotten after an undo, so the disk is not asked every frame
-static AssetShown *shown_for(Editor *ed, asset::Manager *m, AssetShownSlot slot,
-                             const char *path) {
-    AssetShown *s = &ed->shown[slot];
+static AssetShown *shown_for(Editor *ed, asset::Manager *m, AssetKind kind, const char *path) {
+    AssetShown *s = &ed->shown[kind];
     if (strcmp(s->path, path) == 0)
         return s;
 
@@ -666,7 +759,7 @@ static AssetShown *shown_for(Editor *ed, asset::Manager *m, AssetShownSlot slot,
     s->exists = asset::exists(m, path);
     if (!s->exists)
         return s;
-    if (slot == SHOWN_MODEL)
+    if (kind == ASSET_KIND_MODEL)
         s->model = asset::import_options(m, path);
     else
         s->clip = asset::clip_options(m, path);
@@ -674,8 +767,14 @@ static AssetShown *shown_for(Editor *ed, asset::Manager *m, AssetShownSlot slot,
 }
 
 static void forget_shown(Editor *ed) {
-    for (u32 i = 0; i < ASSET_SHOWN_COUNT; i++)
+    for (u32 i = 0; i < ASSET_KIND_COUNT; i++)
         ed->shown[i].path[0] = 0;
+}
+
+// what the assets panel shows the settings of
+static void select_asset(Editor *ed, const char *path, AssetKind kind) {
+    snprintf(ed->asset_selected, sizeof(ed->asset_selected), "%s", path);
+    ed->asset_kind = kind;
 }
 
 // The asset's own settings, beside the field that names it. They belong to the
@@ -708,28 +807,262 @@ static void clip_import_rows(Editor *ed, asset::Manager *m, AssetShown *s) {
     undo::record_clip_options(ed->journal, s->path, before, s->clip);
 }
 
-static void import_section(Editor *ed, asset::Manager *m, const entity::FieldDesc *f,
-                           const void *comp) {
+// a way from a component's asset path to where that asset's settings are edited
+static void asset_link_row(Editor *ed, const entity::FieldDesc *f, const void *comp) {
     if (f->type != entity::FIELD_STRING || f->asset == entity::ASSET_NONE)
         return;
     const char *path = (const char *)comp + f->offset;
     if (!path[0])
         return;
 
-    AssetShownSlot slot = f->asset == entity::ASSET_MODEL ? SHOWN_MODEL : SHOWN_CLIP;
-    AssetShown *s = shown_for(ed, m, slot, path);
-    if (!s->exists)
+    ui::push_id(f->key);
+    ui::columns(2, SPLIT_ROW);
+    ui::spacer();
+    if (ui::button("import settings..."))
+        select_asset(ed, path,
+                     f->asset == entity::ASSET_MODEL ? ASSET_KIND_MODEL : ASSET_KIND_CLIP);
+    ui::pop_id();
+}
+
+// "" is refused, and so is a name that would leave the folder it belongs in
+static b32 valid_name(const char *name, char *status) {
+    if (!name[0]) {
+        snprintf(status, STATUS_CAP, "%s", STATUS_NEEDS_NAME);
+        return false;
+    }
+    for (const char *c = name; *c; c++) {
+        if (*c == '\\' || *c == ':' || (c == name && *c == '/')) {
+            snprintf(status, STATUS_CAP, "%s", STATUS_BAD_NAME);
+            return false;
+        }
+    }
+    return true;
+}
+
+static b32 ends_with_ext(const char *name, const char *ext) {
+    const char *dot = strrchr(name, '.');
+    if (!dot)
+        return false;
+    for (dot++; *dot && *ext; dot++, ext++)
+        if (tolower((unsigned char)*dot) != tolower((unsigned char)*ext))
+            return false;
+    return *dot == 0 && *ext == 0;
+}
+
+// the .glb files directly in <root>/<dir>, as paths under the root
+static u32 scan_assets(Editor *ed, asset::Manager *m, const char *dir, AssetPath *out) {
+    memory::ArenaTemp t = memory::temp_begin(ed->scratch);
+
+    file::Entry *entries = push_array(ed->scratch, file::Entry, LIST_CAP);
+    u32 found = file::list(FPATH(ed->scratch, asset::root(m), dir), entries, LIST_CAP);
+    found = MIN(found, (u32)LIST_CAP);
+
+    u32 n = 0;
+    for (u32 i = 0; i < found; i++) {
+        if (entries[i].is_directory || !ends_with_ext(entries[i].name, ASSET_EXTENSION))
+            continue;
+        snprintf(out[n++].v, ENTITY_PATH_CAP, "%s/%s", dir, entries[i].name);
+    }
+
+    memory::temp_end(t);
+    return n;
+}
+
+// the project folder's listings, taken when first shown and after anything is written
+static void rescan(Editor *ed, asset::Manager *m) {
+    u32 levels = entity::list_levels(m, ed->levels, LIST_CAP);
+    u32 templates = entity::list_definitions(m, ENTITY_TEMPLATE_SUBDIR, ed->templates, LIST_CAP);
+    u32 definitions = entity::list_definitions(m, NULL, ed->definitions, LIST_CAP);
+    ed->level_count = MIN(levels, (u32)LIST_CAP);
+    ed->template_count = MIN(templates, (u32)LIST_CAP);
+    ed->definition_count = MIN(definitions, (u32)LIST_CAP);
+    ed->model_count = scan_assets(ed, m, PROJECT_MODEL_DIR, ed->models);
+    ed->animation_count = scan_assets(ed, m, PROJECT_ANIMATION_DIR, ed->animations);
+    ed->scanned = true;
+}
+
+static void project_section(Editor *ed) {
+    if (!ui::tree_node("Project", true))
         return;
 
-    ui::push_id(f->key);
-    if (ui::tree_node("import settings", true)) {
-        if (slot == SHOWN_MODEL)
-            model_import_rows(ed, m, s);
-        else
-            clip_import_rows(ed, m, s);
-        ui::tree_pop();
+    ui::columns(2, SPLIT_ROW);
+    ui::label("title");
+    if (ui::text_field("title", ed->project->title, sizeof(ed->project->title)))
+        ed->project_pending = true;
+    ui::label("starts in");
+    ui::label_dim(ed->project->level);
+    ui::columns(1);
+    ui::tree_pop();
+}
+
+// the world holds a level that was just read or written: nothing to undo, nothing pending
+static void fresh_level(Editor *ed, entity::World *w) {
+    select(ed, w, entity::NONE);
+    undo::clear(ed->journal);
+    undo::mark_clean(ed->journal);
+    forget_shown(ed);
+    ed->discard_level[0] = 0;
+    ed->level_status[0] = 0;
+}
+
+// an empty level under the typed name, written at once so it is there to come back to
+static void new_level(Editor *ed, entity::World *w, asset::Manager *m) {
+    const char *name = ed->new_level_name;
+    if (!valid_name(name, ed->level_status))
+        return;
+    if (dirty(ed)) {
+        snprintf(ed->level_status, sizeof(ed->level_status), "unsaved changes in %s: save first",
+                 ed->level);
+        return;
     }
-    ui::pop_id();
+    for (u32 i = 0; i < ed->level_count; i++) {
+        if (strcmp(ed->levels[i].v, name) == 0) {
+            snprintf(ed->level_status, sizeof(ed->level_status),
+                     "a level named %s exists; open it instead", name);
+            return;
+        }
+    }
+
+    entity::clear(w);
+    snprintf(ed->level, sizeof(ed->level), "%s", name);
+    fresh_level(ed, w);
+    save_level(ed, w, m);
+    ed->new_level_name[0] = 0;
+    rescan(ed, m);
+}
+
+// Unsaved changes are not thrown away on one click: the first says so, and the
+// same level clicked again is the answer.
+static void open_level(Editor *ed, entity::World *w, asset::Manager *m, const char *name) {
+    if (dirty(ed) && strcmp(ed->discard_level, name) != 0) {
+        snprintf(ed->discard_level, sizeof(ed->discard_level), "%s", name);
+        snprintf(ed->level_status, sizeof(ed->level_status), "%s", STATUS_SAVE_FIRST);
+        return;
+    }
+
+    entity::clear(w);
+    snprintf(ed->level, sizeof(ed->level), "%s", name);
+    result::Error e = entity::load_level(w, m, name);
+    fresh_level(ed, w);
+    if (e != result::OK)
+        snprintf(ed->level_status, sizeof(ed->level_status),
+                 "%s could not be read; the log says why", name);
+}
+
+static void set_start_level(Editor *ed, const char *name) {
+    snprintf(ed->project->level, sizeof(ed->project->level), "%s", name);
+    save_project(ed);
+}
+
+static void levels_section(Editor *ed, entity::World *w, asset::Manager *m) {
+    if (!ui::tree_node("Levels", true))
+        return;
+
+    // the level, and whether what is on screen is what is on disk
+    char line[INSPECTOR_LINE_CAP];
+    snprintf(line, sizeof(line), "editing %s%s", ed->level, dirty(ed) ? DIRTY_MARK : "");
+    ui::label(line);
+
+    ui::columns(2);
+    if (ui::button("Save"))
+        save_level(ed, w, m);
+    if (ui::button("New level"))
+        new_level(ed, w, m);
+    ui::columns(2, SPLIT_ROW);
+    ui::label("new");
+    ui::text_field("new_level", ed->new_level_name, sizeof(ed->new_level_name));
+
+    for (u32 i = 0; i < ed->level_count; i++) {
+        const char *name = ed->levels[i].v;
+        ui::push_id(i);
+        ui::columns(2, LEVEL_ROW);
+        if (ui::button(name))
+            open_level(ed, w, m, name);
+        if (strcmp(name, ed->project->level) == 0)
+            ui::label_dim("start");
+        else if (ui::button("start"))
+            set_start_level(ed, name);
+        ui::pop_id();
+    }
+    ui::columns(1);
+
+    if (ed->level_status[0])
+        ui::label_dim(ed->level_status);
+    ui::tree_pop();
+}
+
+// a new entity is the selection, and the journal knows it came
+static void created(Editor *ed, entity::World *w, entity::Handle h) {
+    if (!h.v)
+        return;
+    select(ed, w, h);
+    if (!undo::record_create(ed->journal, w, h))
+        forget_history(ed);
+}
+
+// a copy keeps what the file gave it and forgets the file; a reference follows it
+static void create_from_definition(Editor *ed, entity::World *w, asset::Manager *m,
+                                   const char *name, b32 copy) {
+    entity::HandleResult r = entity::spawn_definition(w, m, name);
+    if (r.err != result::OK)
+        return; // the loader said why
+    if (copy)
+        entity::detach_definition(w, r.val);
+    created(ed, w, r.val);
+}
+
+static void new_entity_section(Editor *ed, entity::World *w, asset::Manager *m) {
+    if (!ui::tree_node("New entity", false))
+        return;
+
+    if (ui::button("Empty"))
+        created(ed, w, entity::spawn(w, NEW_ENTITY_NAME));
+
+    if (ed->template_count) {
+        ui::label_dim("a copy of a template");
+        ui::push_id("templates");
+        for (u32 i = 0; i < ed->template_count; i++) {
+            ui::push_id(i);
+            if (ui::button(path::basename(ed->templates[i].v)))
+                create_from_definition(ed, w, m, ed->templates[i].v, true);
+            ui::pop_id();
+        }
+        ui::pop_id();
+    }
+
+    if (ed->definition_count) {
+        ui::label_dim("an instance of a definition");
+        ui::push_id("definitions");
+        for (u32 i = 0; i < ed->definition_count; i++) {
+            ui::push_id(i);
+            if (ui::button(ed->definitions[i].v))
+                create_from_definition(ed, w, m, ed->definitions[i].v, false);
+            ui::pop_id();
+        }
+        ui::pop_id();
+    }
+
+    ui::tree_pop();
+}
+
+static void hierarchy_panel(Editor *ed, entity::World *w, asset::Manager *m, f32 height) {
+    ui::begin_panel("Hierarchy", canvas::Rect{0.0f, 0.0f, ed->cfg.hierarchy_width, height});
+
+    project_section(ed);
+    levels_section(ed, w, m);
+    new_entity_section(ed, w, m);
+    ui::separator();
+
+    for (entity::Handle h = entity::first(w); h.v; h = entity::next(w, h))
+        if (entity::get(w, h)->parent.v == 0)
+            draw_tree(ed, w, h);
+    ui::end_panel();
+
+    // a row dragged onto another row, or onto the panel's empty space
+    u32 dragged = 0;
+    u32 onto = 0;
+    if (ui::dropped(&dragged, &onto))
+        drop_reparent(ed, w, m, entity::Handle{dragged}, entity::Handle{onto});
 }
 
 static void component_section(Editor *ed, entity::World *w, asset::Manager *m, entity::Handle h,
@@ -748,7 +1081,7 @@ static void component_section(Editor *ed, entity::World *w, asset::Manager *m, e
 
             u8 before[UNDO_VALUE_CAP];
             memcpy(before, at, size);
-            field_row(m, f, comp);
+            field_row(ed, m, e->id, c, f, comp);
             if (memcmp(before, at, size) == 0)
                 continue;
 
@@ -765,9 +1098,9 @@ static void component_section(Editor *ed, entity::World *w, asset::Manager *m, e
             }
         }
 
-        // the settings of the assets those paths name
+        // the settings of the assets those paths name live in the assets panel
         for (u32 i = 0; i < d->field_count; i++)
-            import_section(ed, m, &d->fields[i], comp);
+            asset_link_row(ed, &d->fields[i], comp);
 
         ui::columns(1);
         remove = ui::button("Remove");
@@ -811,6 +1144,30 @@ static void transform_section(Editor *ed, entity::World *w, entity::Handle h) {
         entity::set_euler(&e->local, e->local.euler);
     undo::record_field(ed->journal, e->id, UNDO_ENTITY, (u32)offsetof(entity::Entity, local),
                        sizeof(entity::Transform), &before, &e->local, false);
+}
+
+// The selection becomes a file and an instance of it, and every other instance
+// of that file is rebuilt to match. The journal cannot follow a change of
+// provenance, so it forgets; the level is dirty until it is saved with the reference.
+static void save_as_definition(Editor *ed, entity::World *w, asset::Manager *m,
+                               entity::Handle h) {
+    const char *name = ed->definition_name;
+    if (!valid_name(name, ed->entity_status))
+        return;
+
+    if (entity::save_definition(w, m, h, name) != result::OK) {
+        snprintf(ed->entity_status, sizeof(ed->entity_status),
+                 "%s could not be written; the log says why", name);
+        return;
+    }
+
+    entity::attach_definition(w, h, name);
+    u32 rebuilt = entity::reload_definition(w, m, name);
+    forget_history(ed);
+    forget_shown(ed);
+    rescan(ed, m);
+    snprintf(ed->entity_status, sizeof(ed->entity_status), "saved as %s; %u instance(s) rebuilt",
+             name, rebuilt);
 }
 
 static void inspector_panel(Editor *ed, entity::World *w, asset::Manager *m, i32 fb_width,
@@ -873,6 +1230,162 @@ static void inspector_panel(Editor *ed, entity::World *w, asset::Manager *m, i32
         }
         ui::tree_pop();
     }
+
+    // last: saving rebuilds the entity, so nothing below may touch it this frame
+    ui::separator();
+    if (ed->definition_for_id != e->id) {
+        snprintf(ed->definition_name, sizeof(ed->definition_name), "%s", e->name);
+        ed->definition_for_id = e->id;
+    }
+    ui::columns(2, SPLIT_ROW);
+    ui::label("definition");
+    ui::text_field("definition_name", ed->definition_name, sizeof(ed->definition_name));
+    ui::columns(1);
+    if (ed->entity_status[0])
+        ui::label_dim(ed->entity_status);
+    if (ui::button("Save as definition"))
+        save_as_definition(ed, w, m, h);
+
+    ui::end_panel();
+}
+
+// The model's own definition: entities/<stem>.entity holding a renderable of
+// it, written through a passing entity so the usual writer and loader do the
+// work. An existing file of that name is somebody's and is kept.
+static void define_model(Editor *ed, entity::World *w, asset::Manager *m, const char *rel) {
+    memory::ArenaTemp t = memory::temp_begin(ed->scratch);
+    const char *stem = path::swap_ext(ed->scratch, path::basename(rel), "");
+
+    for (u32 i = 0; i < ed->definition_count; i++) {
+        if (strcmp(ed->definitions[i].v, stem) == 0) {
+            snprintf(ed->asset_status, sizeof(ed->asset_status),
+                     "%s imported; the definition %s already exists and was kept", rel, stem);
+            memory::temp_end(t);
+            return;
+        }
+    }
+
+    entity::Handle h = entity::spawn(w, stem);
+    entity::Renderable *r = entity::add_renderable(w, h);
+    result::Error e = result::ERR_EXHAUSTED;
+    if (r) {
+        snprintf(r->model_path, sizeof(r->model_path), "%s", rel);
+        entity::component_desc(entity::COMPONENT_RENDERABLE)->after_read(w, m, h, r);
+        e = entity::save_definition(w, m, h, stem);
+    }
+    entity::destroy(w, h);
+
+    if (e == result::OK)
+        snprintf(ed->asset_status, sizeof(ed->asset_status), "imported %s as the definition %s",
+                 rel, stem);
+    else
+        snprintf(ed->asset_status, sizeof(ed->asset_status),
+                 "%s imported; its definition could not be written, the log says why", rel);
+    memory::temp_end(t);
+}
+
+// A file from anywhere is copied into the project by kind and given its
+// sidecar; one already inside the project is used where it is. A model gets a
+// definition to place it by.
+static void import_asset(Editor *ed, entity::World *w, asset::Manager *m, AssetKind kind) {
+    b32 model = kind == ASSET_KIND_MODEL;
+
+    char abs[ABS_PATH_CAP];
+    if (!dialog::open_file(model ? "Import a model" : "Import an animation", ASSET_FILTER_LABEL,
+                           ASSET_EXTENSION, NULL, abs, sizeof(abs)))
+        return;
+
+    char rel[ENTITY_PATH_CAP];
+    if (!path::relative_to(asset::root(m), abs, rel, sizeof(rel))) {
+        const char *dir = model ? PROJECT_MODEL_DIR : PROJECT_ANIMATION_DIR;
+        if (snprintf(rel, sizeof(rel), "%s/%s", dir, path::basename(abs)) >= (i32)sizeof(rel)) {
+            snprintf(ed->asset_status, sizeof(ed->asset_status),
+                     "the file's name is longer than the %d bytes a path may be", ENTITY_PATH_CAP);
+            return;
+        }
+
+        memory::ArenaTemp t = memory::temp_begin(ed->scratch);
+        const char *dst = FPATH(ed->scratch, asset::root(m), rel);
+        b32 ok = true;
+        if (!file::exists(dst))
+            ok = file::make_directory(FPATH(ed->scratch, asset::root(m), dir)) &&
+                 file::copy(abs, dst) == result::OK;
+        memory::temp_end(t);
+
+        if (!ok) {
+            snprintf(ed->asset_status, sizeof(ed->asset_status),
+                     "%s could not be copied in; the log says why", abs);
+            return;
+        }
+    }
+
+    // the sidecar with the defaults spelled out, so the settings have a file to live in
+    if (!asset::has_import_sidecar(m, rel)) {
+        if (model)
+            asset::write_import_options(m, rel, asset::import_options(m, rel));
+        else
+            asset::write_clip_options(m, rel, asset::clip_options(m, rel));
+    }
+
+    select_asset(ed, rel, kind);
+    forget_shown(ed);
+    snprintf(ed->asset_status, sizeof(ed->asset_status), "imported %s", rel);
+    rescan(ed, m);
+    if (model) {
+        define_model(ed, w, m, rel);
+        rescan(ed, m);
+    }
+}
+
+static void asset_list(Editor *ed, const char *title, const AssetPath *paths, u32 count,
+                       AssetKind kind) {
+    if (!ui::tree_node(title, true))
+        return;
+    if (count == 0)
+        ui::label_dim("(none)");
+    for (u32 i = 0; i < count; i++) {
+        ui::push_id(i);
+        if (ui::button(path::basename(paths[i].v)))
+            select_asset(ed, paths[i].v, kind);
+        ui::pop_id();
+    }
+    ui::tree_pop();
+}
+
+static void asset_settings(Editor *ed, asset::Manager *m) {
+    ui::separator();
+    ui::label(ed->asset_selected);
+
+    AssetShown *s = shown_for(ed, m, ed->asset_kind, ed->asset_selected);
+    if (!s->exists) {
+        ui::label_dim("the file is missing");
+        return;
+    }
+    if (ed->asset_kind == ASSET_KIND_MODEL)
+        model_import_rows(ed, m, s);
+    else
+        clip_import_rows(ed, m, s);
+}
+
+static void assets_panel(Editor *ed, entity::World *w, asset::Manager *m, f32 top, f32 height) {
+    ui::begin_panel("Assets", canvas::Rect{0.0f, top, ed->cfg.hierarchy_width, height});
+
+    if (ui::button("Import model..."))
+        import_asset(ed, w, m, ASSET_KIND_MODEL);
+    if (ui::button("Import animation..."))
+        import_asset(ed, w, m, ASSET_KIND_CLIP);
+    ui::columns(2, SPLIT_ROW);
+    if (ui::button("Refresh"))
+        rescan(ed, m);
+    ui::columns(1);
+
+    asset_list(ed, "models", ed->models, ed->model_count, ASSET_KIND_MODEL);
+    asset_list(ed, "animations", ed->animations, ed->animation_count, ASSET_KIND_CLIP);
+
+    if (ed->asset_selected[0])
+        asset_settings(ed, m);
+    if (ed->asset_status[0])
+        ui::label_dim(ed->asset_status);
 
     ui::end_panel();
 }
@@ -1130,8 +1643,13 @@ void frame(Editor *ed, entity::World *w, asset::Manager *m, input::State *in, wi
 
     f32 aspect = (f32)fb_width / (f32)fb_height;
 
+    if (!ed->scanned)
+        rescan(ed, m);
+
     fly(ed, in, win, dt);
-    hierarchy_panel(ed, w, m, fb_height);
+    f32 hierarchy_height = MAX((f32)fb_height - ed->cfg.assets_height, 0.0f);
+    hierarchy_panel(ed, w, m, hierarchy_height);
+    assets_panel(ed, w, m, hierarchy_height, ed->cfg.assets_height);
     inspector_panel(ed, w, m, fb_width, fb_height);
 
     // after the panels, so a click on one is not also a click in the world;
@@ -1171,6 +1689,13 @@ void frame(Editor *ed, entity::World *w, asset::Manager *m, input::State *in, wi
     resolve_pending(ed, w, m);
     if (!continuing(ed))
         undo::close(ed->journal);
+
+    // the title typed into the project section, once typing has stopped
+    if (ed->project_pending && !ui::wants_keyboard()) {
+        save_project(ed);
+        window::set_title(win, ed->project->title);
+        ed->project_pending = false;
+    }
 
     entity::draw_colliders(w, ed->cfg.collider_color);
     draw_markers(ed, w, m, aspect);

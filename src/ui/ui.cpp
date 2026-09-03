@@ -29,7 +29,7 @@
 
 // the focused number field edits here; no number needs more
 #define EDIT_CAP 64
-#define FLOAT_FORMAT "%.3f"
+#define FLOAT_FORMAT "%.5f"
 
 #define TREE_OPEN_MARK "[-] "
 #define TREE_CLOSED_MARK "[+] "
@@ -154,6 +154,7 @@ struct Panel {
     Id id;
     canvas::Rect rect;
     canvas::Rect content; // inside the padding and beside the scrollbar
+    f32 padding;          // the style's, unless the panel asked for its own
     f32 scroll;
     f32 cursor_y; // top of the next row
     f32 max_y;    // bottom of the lowest row so far
@@ -370,7 +371,9 @@ static linalg::Vec4 face_color(Id id) {
     return g.style.widget;
 }
 
-void begin_panel(const char *title, canvas::Rect r) {
+void begin_panel(const char *title, canvas::Rect r) { begin_panel(title, r, g.style.padding); }
+
+void begin_panel(const char *title, canvas::Rect r, f32 padding) {
     ASSERT(title);
     ASSERT_MSG(g.in_frame, "ui: begin_panel outside a frame");
     ASSERT_MSG(!g.in_panel, "ui: panels do not nest");
@@ -404,11 +407,12 @@ void begin_panel(const char *title, canvas::Rect r) {
     Panel *p = &g.panel;
     p->id = id;
     p->rect = r;
+    p->padding = padding;
     p->content = canvas::Rect{
-        r.x + s->padding,
-        r.y + s->title_height + s->padding,
-        r.w - 2.0f * s->padding - s->scrollbar_width,
-        r.h - s->title_height - 2.0f * s->padding,
+        r.x + padding,
+        r.y + s->title_height + padding,
+        r.w - 2.0f * padding - s->scrollbar_width,
+        r.h - s->title_height - 2.0f * padding,
     };
     p->scroll = st->scroll;
     p->cursor_y = p->content.y - st->scroll;
@@ -441,7 +445,7 @@ void end_panel() {
 
     if (content_h > visible_h) {
         canvas::Rect track{
-            p->rect.x + p->rect.w - s->padding - s->scrollbar_width,
+            p->rect.x + p->rect.w - p->padding - s->scrollbar_width,
             p->content.y,
             s->scrollbar_width,
             p->content.h,
@@ -505,6 +509,14 @@ void label(const char *text) {
     canvas::Rect r = next_rect();
     text_left(r, text, g.style.text, 0.0f);
 }
+
+void label_dim(const char *text) {
+    ASSERT(text);
+    canvas::Rect r = next_rect();
+    text_left(r, text, g.style.text_dim, 0.0f);
+}
+
+void spacer() { next_rect(); }
 
 b32 button(const char *label_) {
     ASSERT(label_);

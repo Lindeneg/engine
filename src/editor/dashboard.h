@@ -15,6 +15,7 @@ namespace dashboard {
 struct Config {
     f32 width;      // of the panel, centred in the window
     f32 height;
+    f32 padding;    // inside the panel, in place of the widget style's
     u32 recent_cap; // projects listed
 };
 

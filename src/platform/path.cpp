@@ -110,4 +110,13 @@ b32 relative_to(const char *root, const char *abs, char *out, u32 cap) {
     return true;
 }
 
+const char *basename(const char *path) {
+    ASSERT(path);
+    const char *base = path;
+    for (const char *c = path; *c; c++)
+        if (is_sep(*c))
+            base = c + 1;
+    return base;
+}
+
 } // namespace path

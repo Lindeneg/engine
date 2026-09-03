@@ -16,4 +16,8 @@ char *swap_ext(memory::Arena *a, const char *path, const char *ext);
 // Either slash counts, and on Windows so does either case. False when abs is
 // not under root, or the result does not fit.
 b32 relative_to(const char *root, const char *abs, char *out, u32 cap);
+
+// The final segment, a pointer into path: "D:/games/stuff" -> "stuff". Either
+// slash counts. Empty after a trailing slash.
+const char *basename(const char *path);
 }; // namespace path

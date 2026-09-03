@@ -2,7 +2,12 @@
 
 #include <string.h>
 
+#include "platform/file.h"
+#include "platform/path.h"
 #include "suites.h"
+
+// written into the fixture's entities/ and removed again
+#define TEST_DEFINITION "zz_reload_test"
 
 // one manager for the suite: scope arenas never return to the reserve, and the real soldier needs
 // room
@@ -47,9 +52,9 @@ static config::Node *block(memory::Arena *a, const char *text, const char *key) 
 }
 
 static const char *written(memory::Arena *a, entity::World *w, entity::Handle h, const char *key,
-                           b32 expand) {
+                           b32 as_definition) {
     config::Doc *doc = config::create(a, "test");
-    entity::write_entity(a, doc, NULL, w, h, key, expand);
+    entity::write_entity(a, doc, NULL, w, h, key, as_definition);
     return config::write(a, doc);
 }
 
@@ -317,20 +322,94 @@ static void definition_children_are_owned(memory::Arena *a) {
     CHECK(strstr(as_instance, "child") == NULL);
     CHECK(strstr(as_instance, "renderable") == NULL);
 
-    const char *expanded = written(a, w, h, "entity", true);
-    CHECK(strstr(expanded, "entity player {") != NULL);
-    CHECK(strstr(expanded, "model characters/soldier.glb") != NULL);
-    CHECK(strstr(expanded, "clip animations/pistol_idle.glb") != NULL);
-    CHECK(strstr(expanded, "child weapon {") != NULL);
-    CHECK(strstr(expanded, "definition pistol") != NULL);
-    CHECK(strstr(expanded, "attach_joint mixamorigRightHand") != NULL); // written canonical
-    CHECK(strstr(expanded, "rotation 180 0 90") != NULL);
-    CHECK(strstr(expanded, "weapons/pistol.glb") == NULL); // the child is still a reference
+    // as a definition: still a reference to soldier, with no ids and nothing of soldier's restated
+    const char *as_definition = written(a, w, h, "entity", true);
+    CHECK(strstr(as_definition, "entity player {") != NULL);
+    CHECK(strstr(as_definition, "definition soldier") != NULL);
+    CHECK(strstr(as_definition, "    id ") == NULL);
+    CHECK(strstr(as_definition, "owned_ids") == NULL);
+    CHECK(strstr(as_definition, "model characters/soldier.glb") == NULL);
+    CHECK(strstr(as_definition, "child weapon {") == NULL);
+
+    // detached, it is its own entity and spells everything out
+    entity::detach_definition(w, h);
+    const char *detached = written(a, w, h, "entity", true);
+    CHECK(strstr(detached, "definition soldier") == NULL);
+    CHECK(strstr(detached, "model characters/soldier.glb") != NULL);
+    CHECK(strstr(detached, "clip animations/pistol_idle.glb") != NULL);
+    CHECK(strstr(detached, "child weapon {") != NULL);
+    CHECK(strstr(detached, "definition pistol") != NULL);
+    CHECK(strstr(detached, "attach_joint mixamorigRightHand") != NULL); // written canonical
+    CHECK(strstr(detached, "rotation 180 0 90") != NULL);
+    CHECK(strstr(detached, "weapons/pistol.glb") == NULL); // the child is still a reference
 
     // a child the level adds is not owned, and is written
+    entity::attach_definition(w, h, "soldier");
     entity::Handle extra = entity::spawn(w, "extra");
     entity::set_parent(w, m, extra, h, NULL);
     CHECK(strstr(written(a, w, h, "instance", false), "child extra {") != NULL);
+    CHECK(strstr(written(a, w, h, "instance", false), "renderable") == NULL);
+}
+
+static void the_project_folder_is_listed(memory::Arena *a) {
+    asset::Manager *m = shared_assets(a);
+
+    entity::Name names[8];
+    CHECK(entity::list_levels(m, names, 8) == 1);
+    CHECK(strcmp(names[0].v, "main") == 0);
+
+    // sorted, and the templates folder is not a definition
+    CHECK(entity::list_definitions(m, NULL, names, 8) == 2);
+    CHECK(strcmp(names[0].v, "pistol") == 0 && strcmp(names[1].v, "soldier") == 0);
+
+    CHECK(entity::list_definitions(m, ENTITY_TEMPLATE_SUBDIR, names, 8) == 2);
+    CHECK(strcmp(names[0].v, "templates/camera3d") == 0);
+
+    // the count is the truth even when the room is not there
+    CHECK(entity::list_definitions(m, NULL, names, 1) == 2);
+    CHECK(entity::list_definitions(m, NULL, NULL, 0) == 2);
+}
+
+// a definition saved from the editor becomes a file, the entity an instance of
+// it, and every instance follows the file when it changes
+static void a_saved_definition_is_reloaded_into_its_instances(memory::Arena *a) {
+    entity::World *w = make_world(a);
+    asset::Manager *m = shared_assets(a);
+
+    // a template copied: a plain entity writing its camera in full
+    entity::Handle cam = MUST(entity::spawn_definition(w, m, "templates/camera3d"));
+    entity::detach_definition(w, cam);
+    CHECK(entity::get(w, cam)->definition[0] == 0);
+    CHECK(strstr(written(a, w, cam, "instance", false), "fov 60") != NULL);
+
+    entity::camera(w, cam)->fov_y = 33.0f;
+    u32 cam_id = entity::id_of(w, cam);
+    CHECK(entity::save_definition(w, m, cam, TEST_DEFINITION) == result::OK);
+    entity::attach_definition(w, cam, TEST_DEFINITION);
+    CHECK(strstr(written(a, w, cam, "instance", false), "definition " TEST_DEFINITION) != NULL);
+    CHECK(strstr(written(a, w, cam, "instance", false), "fov") == NULL);
+
+    entity::Handle other = MUST(entity::spawn_definition(w, m, TEST_DEFINITION));
+    u32 other_id = entity::id_of(w, other);
+    CHECK(entity::camera(w, other)->fov_y == 33.0f);
+
+    // saved over its own file it is spelled out, not made to reference itself
+    entity::camera(w, cam)->fov_y = 44.0f;
+    CHECK(entity::save_definition(w, m, cam, TEST_DEFINITION) == result::OK);
+    CHECK(strcmp(entity::get(w, cam)->definition, TEST_DEFINITION) == 0);
+
+    // the file changed; both instances take it, keeping their ids
+    entity::camera(w, other)->fov_y = 1.0f;
+    CHECK(entity::reload_definition(w, m, TEST_DEFINITION) == 2);
+    entity::Handle cam_back = entity::find_by_id(w, cam_id);
+    entity::Handle other_back = entity::find_by_id(w, other_id);
+    CHECK(cam_back.v && other_back.v);
+    CHECK(entity::camera(w, cam_back)->fov_y == 44.0f);
+    CHECK(entity::camera(w, other_back)->fov_y == 44.0f);
+    CHECK(strcmp(entity::get(w, other_back)->definition, TEST_DEFINITION) == 0);
+
+    CHECK(file::remove(FPATH(a, CL_TEST_FIXTURE, "entities", TEST_DEFINITION ".entity")));
+    CHECK(entity::list_definitions(m, NULL, NULL, 0) == 2);
 }
 
 static void missing_model_falls_back_and_is_cached(memory::Arena *a) {
@@ -368,6 +447,8 @@ test::Suite entity_suite() {
         CASE(quaternion_rotation_is_written_as_four_values),
         CASE(reference_applies_overrides),
         CASE(definition_children_are_owned),
+        CASE(the_project_folder_is_listed),
+        CASE(a_saved_definition_is_reloaded_into_its_instances),
         CASE(missing_model_falls_back_and_is_cached),
     };
     return test::Suite{.name = "entity", .cases = cases, .count = ARRAY_COUNT(cases)};

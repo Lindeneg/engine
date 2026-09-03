@@ -1,0 +1,11 @@
+entity soldier {
+    transform {
+        position 0 0 0
+        rotation 0 0 0
+        scale 1
+    }
+    renderable {
+        model models/soldier.glb
+        visible true
+    }
+}
