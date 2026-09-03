@@ -97,9 +97,8 @@ static void overflow_drops_and_warns_once(memory::Arena *a) {
 }
 
 static void config_refuses_a_degenerate_circle(memory::Arena *a) {
-    config::Doc *doc =
-        MUST(config::parse(a, memory::push_str(a, "debug_draw {\n    sphere_segments 1\n}\n"),
-                           "engine.cfg"));
+    config::Doc *doc = MUST(config::parse(
+        a, memory::push_str(a, "debug_draw {\n    sphere_segments 1\n}\n"), "engine.cfg"));
 
     test::mute();
     debugdraw::Config cfg = debugdraw::config_from(doc->first);
@@ -114,12 +113,9 @@ static void config_refuses_a_degenerate_circle(memory::Arena *a) {
 
 test::Suite debugdraw_suite() {
     static const test::Case cases[] = {
-        CASE(boxes_are_twelve_lines),
-        CASE(spheres_axes_and_crosses),
-        CASE(lifetime_outlives_the_frame),
-        CASE(expiry_keeps_the_survivors),
-        CASE(overflow_drops_and_warns_once),
-        CASE(config_refuses_a_degenerate_circle),
+        CASE(boxes_are_twelve_lines),        CASE(spheres_axes_and_crosses),
+        CASE(lifetime_outlives_the_frame),   CASE(expiry_keeps_the_survivors),
+        CASE(overflow_drops_and_warns_once), CASE(config_refuses_a_degenerate_circle),
     };
     return test::Suite{.name = "debugdraw", .cases = cases, .count = ARRAY_COUNT(cases)};
 }

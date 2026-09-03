@@ -20,6 +20,7 @@ find_package(glad CONFIG REQUIRED)
 
 set(ENGINE_SOURCES
         src/core/config.cpp
+        src/core/frametime.cpp
         src/core/logger.cpp
         src/core/memory.cpp
         src/core/pool.cpp
@@ -35,11 +36,15 @@ set(ENGINE_SOURCES
         src/platform/platform.cpp
         src/platform/window.cpp
 
+        src/gfx/canvas.cpp
         src/gfx/debugdraw.cpp
         src/gfx/drawkey.cpp
+        src/gfx/font.cpp
         src/gfx/gfx.cpp
         src/gfx/render.cpp
         src/gfx/shader.cpp
+        src/gfx/stb_truetype_impl.cpp
+        src/gfx/texture.cpp
 
         src/asset/anim.cpp
         src/asset/asset.cpp

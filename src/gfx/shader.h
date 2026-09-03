@@ -41,6 +41,7 @@ enum Feature {
 enum Role {
     ROLE_DEFAULT, // default_shader: what a material gets when nothing assigned it one
     ROLE_DEBUG,   // debug_shader: position and colour, for gfx/debugdraw's lines
+    ROLE_CANVAS,  // canvas_shader: textured quads in pixel space, for gfx/canvas
     ROLE_COUNT,
 };
 

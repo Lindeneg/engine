@@ -3,10 +3,13 @@
 #include "asset/asset.h"
 #include "core/common.h"
 #include "core/config.h"
+#include "core/frametime.h"
 #include "core/logger.h"
 #include "core/memory.h"
 #include "game/player.h"
+#include "gfx/canvas.h"
 #include "gfx/debugdraw.h"
+#include "gfx/font.h"
 #include "gfx/render.h"
 #include "gfx/shader.h"
 #include "platform/input.h"
@@ -33,6 +36,49 @@
 #define DEFAULT_SCRATCH_MIB 64
 #define DEFAULT_PLAYER_BODY "player"
 #define DEFAULT_BOUNDS_COLOR linalg::Vec4{1.0f, 0.85f, 0.1f, 1.0f}
+
+#define DEFAULT_OVERLAY_PADDING 8.0f
+#define DEFAULT_OVERLAY_SMOOTHING 0.05f
+#define DEFAULT_OVERLAY_WINDOW 1.0
+#define DEFAULT_OVERLAY_TEXT_COLOR linalg::Vec4{0.92f, 0.92f, 0.92f, 1.0f}
+#define DEFAULT_OVERLAY_BACKGROUND_COLOR linalg::Vec4{0.0f, 0.0f, 0.0f, 0.55f}
+#define OVERLAY_TEXT_CAP 256
+
+// the readout toggle_debug_draw shows; the `overlay` block of engine.cfg
+struct Overlay {
+    f32 padding;
+    f32 smoothing; // per-frame blend toward the new frame time
+    f64 window;    // seconds, for the frame rate and the worst frame
+    linalg::Vec4 text_color;
+    linalg::Vec4 background;
+};
+
+static Overlay overlay_from(config::Node *block) {
+    config::Node *body = block ? block->first_child : NULL;
+    return Overlay{
+        .padding = config::get_f32(body, "padding", DEFAULT_OVERLAY_PADDING),
+        .smoothing = config::get_f32(body, "smoothing", DEFAULT_OVERLAY_SMOOTHING),
+        .window = (f64)config::get_f32(body, "window", (f32)DEFAULT_OVERLAY_WINDOW),
+        .text_color =
+            config::value_vec4(config::find(body, "text_color"), DEFAULT_OVERLAY_TEXT_COLOR),
+        .background = config::value_vec4(config::find(body, "background_color"),
+                                         DEFAULT_OVERLAY_BACKGROUND_COLOR),
+    };
+}
+
+static void draw_overlay(const Overlay *o, font::Font *f, const frametime::Stats *t, u32 steps) {
+    char line[OVERLAY_TEXT_CAP];
+    snprintf(line, sizeof(line),
+             "%.0f fps   frame %.2f ms   worst %.2f ms   fixed steps %u   lines %u   kept %u",
+             (f64)t->fps, (f64)t->smoothed_dt * 1000.0, (f64)t->worst_dt * 1000.0, steps,
+             debugdraw::line_count(), debugdraw::retained_count());
+
+    f32 w = font::width(f, line);
+    canvas::rect(canvas::Rect{o->padding, o->padding, w + 2.0f * o->padding,
+                              f->line_height + 2.0f * o->padding},
+                 o->background);
+    canvas::text(f, 2.0f * o->padding, 2.0f * o->padding + f->ascent, line, o->text_color);
+}
 
 static entity::Handle find_root(entity::World *w, const char *name) {
     for (entity::Handle h = entity::first(w); h.v; h = entity::next(w, h)) {
@@ -84,14 +130,19 @@ int main() {
 
     config::Node *debug_cfg = config::find(cfg, "debug_draw");
     debugdraw::init(&perm, debugdraw::config_from(debug_cfg));
-    linalg::Vec4 bounds_color = config::value_vec4(
-        config::find(debug_cfg ? debug_cfg->first_child : NULL, "bounds_color"),
-        DEFAULT_BOUNDS_COLOR);
+    linalg::Vec4 bounds_color =
+        config::value_vec4(config::find(debug_cfg ? debug_cfg->first_child : NULL, "bounds_color"),
+                           DEFAULT_BOUNDS_COLOR);
 
-    asset::Manager *assets{MUST(asset::init(
-        &perm, &scratch,
-        asset::config_from(config::find(cfg, "assets"), root,
-                           shader::role_handle(shader::ROLE_DEFAULT))))};
+    canvas::init(&perm, canvas::config_from(config::find(cfg, "canvas")));
+    font::Font *ui_font{
+        MUST(font::load(&perm, &scratch, root, font::config_from(config::find(cfg, "font"))))};
+    Overlay overlay = overlay_from(config::find(cfg, "overlay"));
+
+    asset::Manager *assets{
+        MUST(asset::init(&perm, &scratch,
+                         asset::config_from(config::find(cfg, "assets"), root,
+                                            shader::role_handle(shader::ROLE_DEFAULT))))};
 
     render::attach_assets(&perm, assets);
 
@@ -124,6 +175,7 @@ int main() {
     input::set_mouse_look(in, win, true);
 
     f64 last = window::time();
+    frametime::Stats timing = frametime::create(overlay.smoothing, overlay.window, last);
 
     while (!window::should_close(win)) {
         window::poll(win);
@@ -157,8 +209,11 @@ int main() {
         f32 dt = (f32)(now - last);
         last = now;
 
+        frametime::tick(&timing, now, dt);
+
         // before anything draws: the fixed steps below may trace into it
         debugdraw::begin_frame(dt);
+        canvas::begin_frame(fb_w, fb_h);
 
         // aim first, so the fixed steps below move in the direction being looked
         game::aim(&player, in);
@@ -178,6 +233,7 @@ int main() {
         if (debug_draw) {
             entity::draw_bounds(world, assets, bounds_color);
             game::draw_debug(&player, world);
+            draw_overlay(&overlay, ui_font, &timing, steps);
         }
 
         shader::FrameData frame{};
@@ -188,6 +244,7 @@ int main() {
         entity::submit(world, assets);
         render::flush(assets);
         debugdraw::flush();
+        canvas::flush();
 
         window::swap(win);
     }
@@ -199,6 +256,8 @@ int main() {
     memory::log_stats(asset::scope_arena(assets, asset::SCOPE_TRANSIENT), "assets-transient");
 #endif
 
+    font::destroy(ui_font);
+    canvas::shutdown();
     debugdraw::shutdown();
     render::shutdown();
     shader::shutdown();

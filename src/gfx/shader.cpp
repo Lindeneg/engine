@@ -32,6 +32,7 @@ static const char *FEATURE_DEFINES[SHADER_FEATURE_BITS] = {
 static const char *ROLE_KEYS[ROLE_COUNT] = {
     "default_shader",
     "debug_shader",
+    "canvas_shader",
 };
 
 static const char *BUILTIN_NAMES[BUILTIN_COUNT] = {
@@ -472,8 +473,9 @@ result::Error init(memory::Arena *a, memory::Arena *scratch, const char *root) {
         g_reg.roles[r] = MUST(find(roles[r]));
     memory::temp_end(t);
 
-    LOG_INFO("shader: %u shader(s) loaded, default '%s', debug '%s'", g_reg.count,
-             name(g_reg.roles[ROLE_DEFAULT]), name(g_reg.roles[ROLE_DEBUG]));
+    LOG_INFO("shader: %u shader(s) loaded", g_reg.count);
+    for (u32 r = 0; r < ROLE_COUNT; r++)
+        LOG_INFO("shader:   %s = '%s'", ROLE_KEYS[r], name(g_reg.roles[r]));
     return result::OK;
 }
 

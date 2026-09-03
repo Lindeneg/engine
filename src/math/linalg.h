@@ -369,6 +369,22 @@ static inline Mat4 mat4_perspective(f32 fovy, f32 aspect, f32 znear, f32 zfar) {
     return out;
 }
 
+// maps the box to clip space; a canvas passes (0, width, height, 0) to put the
+// origin at the top left
+static inline Mat4 mat4_orthographic(f32 left, f32 right, f32 bottom, f32 top, f32 znear,
+                                     f32 zfar) {
+    ASSERT(right != left && top != bottom && zfar != znear);
+    Mat4 out{};
+    out.m[0] = 2.0f / (right - left);
+    out.m[5] = 2.0f / (top - bottom);
+    out.m[10] = -2.0f / (zfar - znear);
+    out.m[12] = -(right + left) / (right - left);
+    out.m[13] = -(top + bottom) / (top - bottom);
+    out.m[14] = -(zfar + znear) / (zfar - znear);
+    out.m[15] = 1.0f;
+    return out;
+}
+
 // inverse of a camera's world transform, with scale normalized away: a camera
 // under a scaled parent would otherwise resize the whole world
 static inline Mat4 mat4_view_from_world(Mat4 world) {

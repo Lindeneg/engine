@@ -49,8 +49,7 @@ Config config_from(config::Node *block) {
     Config cfg{
         .max_lines = (u32)config::get_i32(body, "max_lines", DEFAULT_MAX_LINES),
         .max_retained = (u32)config::get_i32(body, "max_retained", DEFAULT_MAX_RETAINED),
-        .sphere_segments =
-            (u32)config::get_i32(body, "sphere_segments", DEFAULT_SPHERE_SEGMENTS),
+        .sphere_segments = (u32)config::get_i32(body, "sphere_segments", DEFAULT_SPHERE_SEGMENTS),
     };
     for (u32 i = 0; i < AXIS_COUNT; i++)
         cfg.axis_color[i] =
