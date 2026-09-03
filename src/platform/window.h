@@ -90,6 +90,13 @@ void cursor_position(Window *w, f32 *out_x, f32 *out_y);
 // Wheel ticks accumulated since the last call; reading clears the accumulator.
 f32 take_scroll(Window *w);
 
+// Typed text and key presses only arrive as events, so the window queues them
+// between polls and the input layer takes them once per frame. Text is UTF-8;
+// presses include auto-repeat. What overflows a queue between two polls is
+// dropped, since nobody types that fast.
+u32 take_text(Window *w, char *out, u32 cap); // bytes written, NUL not counted
+u32 take_key_presses(Window *w, Key *out, u32 cap);
+
 // Captured hides the cursor and locks it to the window, which is what mouse
 // look needs. It also asks for raw motion where the platform has it, so the
 // desktop's pointer acceleration does not sit between the mouse and the aim.
@@ -102,3 +109,7 @@ void framebuffer_size(Window *w, i32 *out_w, i32 *out_h);
 f64 time();
 
 } // namespace window
+
+// queue sizes between two polls
+#define WINDOW_TEXT_CAP 64
+#define WINDOW_KEY_EVENT_CAP 32

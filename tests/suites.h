@@ -22,3 +22,5 @@ test::Suite result_suite();
 test::Suite shader_suite();
 test::Suite str_suite();
 test::Suite strmap_suite();
+test::Suite textedit_suite();
+test::Suite ui_suite();

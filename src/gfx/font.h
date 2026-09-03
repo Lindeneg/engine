@@ -68,11 +68,8 @@ const texture::Texture *texture(Font *f);
 // NULL for a control character; the fallback, with one warning, outside the range.
 const Glyph *glyph(const Font *f, u32 codepoint);
 
-// Decodes UTF-8 one codepoint at a time, advancing s; 0 at the end. A malformed
-// sequence yields U+FFFD and skips one byte.
-u32 next_codepoint(const char **s);
-
-// The advance of a string, in pixels.
+// The advance of a string, or of its first `bytes`, in pixels.
 f32 width(const Font *f, const char *text);
+f32 width(const Font *f, const char *text, u32 bytes);
 
 } // namespace font

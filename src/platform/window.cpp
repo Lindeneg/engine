@@ -7,6 +7,8 @@
 #define GLFW_INCLUDE_NONE
 #include <GLFW/glfw3.h>
 
+#include <string.h>
+
 #include "core/logger.h"
 #include "core/str.h"
 
@@ -22,6 +24,12 @@ struct Window {
 
     // wheel ticks since the last take_scroll; GLFW only reports these as events
     f32 scroll;
+
+    // likewise typed text and key presses, until the next take
+    char text[WINDOW_TEXT_CAP];
+    u32 text_len;
+    Key presses[WINDOW_KEY_EVENT_CAP];
+    u32 press_count;
 
     b32 captured;
 };
@@ -101,6 +109,38 @@ static void on_scroll(GLFWwindow *h, double, double dy) {
         w->scroll += (f32)dy;
 }
 
+static void on_char(GLFWwindow *h, unsigned int codepoint) {
+    Window *w = (Window *)glfwGetWindowUserPointer(h);
+    if (!w)
+        return;
+
+    char bytes[STR_UTF8_MAX_BYTES];
+    u32 n = str::utf8_encode(codepoint, bytes);
+    if (w->text_len + n + 1 > WINDOW_TEXT_CAP)
+        return;
+
+    memcpy(w->text + w->text_len, bytes, n);
+    w->text_len += n;
+    w->text[w->text_len] = 0;
+}
+
+static void on_key(GLFWwindow *h, int code, int, int action, int) {
+    if (action != GLFW_PRESS && action != GLFW_REPEAT)
+        return;
+
+    Window *w = (Window *)glfwGetWindowUserPointer(h);
+    if (!w || w->press_count == WINDOW_KEY_EVENT_CAP)
+        return;
+
+    // keys the list does not name are not ours
+    for (u32 i = 0; i < KEY_COUNT; i++) {
+        if (KEY_CODES[i] == code) {
+            w->presses[w->press_count++] = (Key)i;
+            return;
+        }
+    }
+}
+
 WindowResult create(memory::Arena *a, Config cfg) {
     ASSERT(a);
 
@@ -138,6 +178,8 @@ WindowResult create(memory::Arena *a, Config cfg) {
 
     glfwSetWindowUserPointer(h, w);
     glfwSetScrollCallback(h, on_scroll);
+    glfwSetCharCallback(h, on_char);
+    glfwSetKeyCallback(h, on_key);
 
     LOG_INFO("window: %dx%d vsync=%s", cfg.width, cfg.height, cfg.vsync ? "on" : "off");
     LOG_INFO("gl: %s", (const char *)glGetString(GL_VERSION));
@@ -199,6 +241,27 @@ f32 take_scroll(Window *w) {
     f32 s = w->scroll;
     w->scroll = 0.0f;
     return s;
+}
+
+u32 take_text(Window *w, char *out, u32 cap) {
+    ASSERT(w && out && cap);
+
+    u32 n = MIN(w->text_len, cap - 1);
+    memcpy(out, w->text, n);
+    out[n] = 0;
+
+    w->text_len = 0;
+    w->text[0] = 0;
+    return n;
+}
+
+u32 take_key_presses(Window *w, Key *out, u32 cap) {
+    ASSERT(w && out);
+
+    u32 n = MIN(w->press_count, cap);
+    memcpy(out, w->presses, n * sizeof(Key));
+    w->press_count = 0;
+    return n;
 }
 
 void set_cursor_captured(Window *w, b32 captured) {

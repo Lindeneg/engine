@@ -102,6 +102,18 @@ linalg::Vec2 cursor_delta(const State *s);
 // Wheel ticks this frame.
 f32 scroll(const State *s);
 
+// The raw devices, for widgets: a text field takes typed text and editing keys
+// by key rather than by action, since those are conventions and not bindings,
+// and a panel reads the buttons whatever the maps say. Text is this frame's
+// UTF-8, "" when nothing was typed. A key press includes auto-repeat, so a
+// held backspace keeps deleting.
+const char *text(const State *s);
+b32 key_pressed(const State *s, window::Key k);
+b32 key_down(const State *s, window::Key k);
+b32 button_down(const State *s, window::Button b);
+b32 button_pressed(const State *s, window::Button b);
+b32 button_released(const State *s, window::Button b);
+
 // Hides and locks the cursor for mouse look, and asks the platform for raw
 // motion. The delta across the change is swallowed, so turning it on does not
 // fling the view.

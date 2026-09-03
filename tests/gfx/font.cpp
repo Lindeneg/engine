@@ -63,23 +63,10 @@ static void width_sums_advances(memory::Arena *a) {
     CHECK(font::width(f, "W") == one);
     CHECK(font::width(f, "WWW") == 3.0f * one);
     CHECK(font::width(f, "W\nW") == 2.0f * one);
-}
 
-static void utf8_decodes_and_recovers(memory::Arena *) {
-    const char *s = "a\xC3\xA9\xE2\x82\xAC\xF0\x9F\x98\x80";
-    CHECK(font::next_codepoint(&s) == 'a');
-    CHECK(font::next_codepoint(&s) == 0xE9);
-    CHECK(font::next_codepoint(&s) == 0x20AC);
-    CHECK(font::next_codepoint(&s) == 0x1F600);
-    CHECK(font::next_codepoint(&s) == 0);
-
-    // a stray continuation byte, then a truncated sequence, then a plain byte
-    const char *bad = "\x80\xE2\x82"
-                      "b";
-    CHECK(font::next_codepoint(&bad) == 0xFFFD);
-    CHECK(font::next_codepoint(&bad) == 0xFFFD);
-    CHECK(font::next_codepoint(&bad) == 'b');
-    CHECK(font::next_codepoint(&bad) == 0);
+    // a prefix, in bytes, stops on a codepoint boundary
+    CHECK(font::width(f, "WWW", 2) == 2.0f * one);
+    CHECK(font::width(f, "WWW", 0) == 0.0f);
 }
 
 static void outside_the_range_draws_the_fallback(memory::Arena *a) {
@@ -126,7 +113,6 @@ test::Suite font_suite() {
         CASE(metrics_are_sane),
         CASE(glyphs_have_boxes_and_advances),
         CASE(width_sums_advances),
-        CASE(utf8_decodes_and_recovers),
         CASE(outside_the_range_draws_the_fallback),
         CASE(bad_requests_are_refused),
         CASE(config_reads_the_block),

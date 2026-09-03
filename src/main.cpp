@@ -16,6 +16,7 @@
 #include "platform/path.h"
 #include "platform/window.h"
 #include "scene/entity.h"
+#include "ui/ui.h"
 
 // the assets folder in the source tree, baked in by CMake; a shipped build would
 // take a launch argument instead
@@ -38,46 +39,80 @@
 #define DEFAULT_BOUNDS_COLOR linalg::Vec4{1.0f, 0.85f, 0.1f, 1.0f}
 
 #define DEFAULT_OVERLAY_PADDING 8.0f
+#define DEFAULT_OVERLAY_PANEL_W 340.0f
+#define DEFAULT_OVERLAY_PANEL_H 330.0f
 #define DEFAULT_OVERLAY_SMOOTHING 0.05f
 #define DEFAULT_OVERLAY_WINDOW 1.0
-#define DEFAULT_OVERLAY_TEXT_COLOR linalg::Vec4{0.92f, 0.92f, 0.92f, 1.0f}
-#define DEFAULT_OVERLAY_BACKGROUND_COLOR linalg::Vec4{0.0f, 0.0f, 0.0f, 0.55f}
-#define OVERLAY_TEXT_CAP 256
+#define DEFAULT_SENSITIVITY_MIN 0.01f
+#define DEFAULT_SENSITIVITY_MAX 0.5f
+#define OVERLAY_TEXT_CAP 128
 
-// the readout toggle_debug_draw shows; the `overlay` block of engine.cfg
+// the debug panel toggle_debug_draw opens; the `overlay` block of engine.cfg
 struct Overlay {
     f32 padding;
-    f32 smoothing; // per-frame blend toward the new frame time
-    f64 window;    // seconds, for the frame rate and the worst frame
-    linalg::Vec4 text_color;
-    linalg::Vec4 background;
+    linalg::Vec2 panel; // width and height
+    f32 smoothing;      // per-frame blend toward the new frame time
+    f64 window;         // seconds, for the frame rate and the worst frame
+    f32 sensitivity_min;
+    f32 sensitivity_max;
 };
 
 static Overlay overlay_from(config::Node *block) {
     config::Node *body = block ? block->first_child : NULL;
+    config::Node *panel = config::find(body, "panel");
+    config::Node *range = config::find(body, "sensitivity_range");
     return Overlay{
         .padding = config::get_f32(body, "padding", DEFAULT_OVERLAY_PADDING),
+        .panel = linalg::Vec2{config::value_f32(panel, 0, DEFAULT_OVERLAY_PANEL_W),
+                              config::value_f32(panel, 1, DEFAULT_OVERLAY_PANEL_H)},
         .smoothing = config::get_f32(body, "smoothing", DEFAULT_OVERLAY_SMOOTHING),
         .window = (f64)config::get_f32(body, "window", (f32)DEFAULT_OVERLAY_WINDOW),
-        .text_color =
-            config::value_vec4(config::find(body, "text_color"), DEFAULT_OVERLAY_TEXT_COLOR),
-        .background = config::value_vec4(config::find(body, "background_color"),
-                                         DEFAULT_OVERLAY_BACKGROUND_COLOR),
+        .sensitivity_min = config::value_f32(range, 0, DEFAULT_SENSITIVITY_MIN),
+        .sensitivity_max = config::value_f32(range, 1, DEFAULT_SENSITIVITY_MAX),
     };
 }
 
-static void draw_overlay(const Overlay *o, font::Font *f, const frametime::Stats *t, u32 steps) {
-    char line[OVERLAY_TEXT_CAP];
-    snprintf(line, sizeof(line),
-             "%.0f fps   frame %.2f ms   worst %.2f ms   fixed steps %u   lines %u   kept %u",
-             (f64)t->fps, (f64)t->smoothed_dt * 1000.0, (f64)t->worst_dt * 1000.0, steps,
-             debugdraw::line_count(), debugdraw::retained_count());
+// what the toggle shows; the panel edits these
+struct DebugView {
+    b32 bounds;
+    b32 body_sphere;
+};
 
-    f32 w = font::width(f, line);
-    canvas::rect(canvas::Rect{o->padding, o->padding, w + 2.0f * o->padding,
-                              f->line_height + 2.0f * o->padding},
-                 o->background);
-    canvas::text(f, 2.0f * o->padding, 2.0f * o->padding + f->ascent, line, o->text_color);
+static void timing_label(const char *fmt, f64 value) {
+    char line[OVERLAY_TEXT_CAP];
+    snprintf(line, sizeof(line), fmt, value);
+    ui::label(line);
+}
+
+static void debug_panel(const Overlay *o, const frametime::Stats *t, u32 steps, DebugView *view,
+                        game::Player *player) {
+    ui::begin_panel("Debug", canvas::Rect{o->padding, o->padding, o->panel.x, o->panel.y});
+
+    if (ui::tree_node("Timing", true)) {
+        timing_label("%.0f fps", (f64)t->fps);
+        timing_label("frame %.2f ms", (f64)t->smoothed_dt * 1000.0);
+        timing_label("worst %.2f ms", (f64)t->worst_dt * 1000.0);
+        timing_label("fixed steps %.0f", (f64)steps);
+        ui::tree_pop();
+    }
+
+    if (ui::tree_node("Lines", false)) {
+        timing_label("this frame %.0f", (f64)debugdraw::line_count());
+        timing_label("kept %.0f", (f64)debugdraw::retained_count());
+        ui::tree_pop();
+    }
+
+    ui::separator();
+    ui::checkbox("Bounds", &view->bounds);
+    ui::checkbox("Body sphere", &view->body_sphere);
+
+    ui::columns(2);
+    ui::label("Look sensitivity");
+    ui::slider("look_sensitivity", &player->look_sensitivity, o->sensitivity_min,
+               o->sensitivity_max);
+    ui::columns(1);
+
+    ui::end_panel();
 }
 
 static entity::Handle find_root(entity::World *w, const char *name) {
@@ -137,7 +172,11 @@ int main() {
     canvas::init(&perm, canvas::config_from(config::find(cfg, "canvas")));
     font::Font *ui_font{
         MUST(font::load(&perm, &scratch, root, font::config_from(config::find(cfg, "font"))))};
+    ui::init(&perm, ui::config_from(config::find(cfg, "ui")), MUST(ui::load_style(&scratch, root)),
+             ui_font);
+
     Overlay overlay = overlay_from(config::find(cfg, "overlay"));
+    DebugView view{.bounds = true, .body_sphere = true};
 
     asset::Manager *assets{
         MUST(asset::init(&perm, &scratch,
@@ -215,6 +254,9 @@ int main() {
         debugdraw::begin_frame(dt);
         canvas::begin_frame(fb_w, fb_h);
 
+        ui::Input ui_in = ui::input_from(in);
+        ui::begin_frame(&ui_in);
+
         // aim first, so the fixed steps below move in the direction being looked
         game::aim(&player, in);
 
@@ -231,10 +273,13 @@ int main() {
 
         // after end_frame, so the boxes sit on this frame's world transforms
         if (debug_draw) {
-            entity::draw_bounds(world, assets, bounds_color);
-            game::draw_debug(&player, world);
-            draw_overlay(&overlay, ui_font, &timing, steps);
+            if (view.bounds)
+                entity::draw_bounds(world, assets, bounds_color);
+            if (view.body_sphere)
+                game::draw_debug(&player, world);
+            debug_panel(&overlay, &timing, steps, &view, &player);
         }
+        ui::end_frame();
 
         shader::FrameData frame{};
         if (!entity::build_frame(world, (f32)fb_w / (f32)fb_h, &frame))
@@ -256,6 +301,7 @@ int main() {
     memory::log_stats(asset::scope_arena(assets, asset::SCOPE_TRANSIENT), "assets-transient");
 #endif
 
+    ui::shutdown();
     font::destroy(ui_font);
     canvas::shutdown();
     debugdraw::shutdown();

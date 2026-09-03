@@ -6,6 +6,7 @@
 #include <string.h>
 
 #include "core/logger.h"
+#include "core/str.h"
 #include "gfx/shader.h"
 
 #define DEFAULT_MAX_QUADS 16384
@@ -235,7 +236,7 @@ f32 text(font::Font *f, f32 x, f32 y, const char *s, linalg::Vec4 color) {
     pack(color, rgba);
 
     f32 pen = x;
-    for (u32 cp = font::next_codepoint(&s); cp; cp = font::next_codepoint(&s)) {
+    for (u32 cp = str::utf8_next(&s); cp; cp = str::utf8_next(&s)) {
         const font::Glyph *gl = font::glyph(f, cp);
         if (!gl)
             continue;

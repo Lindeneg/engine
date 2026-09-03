@@ -56,6 +56,13 @@ struct State {
     linalg::Vec2 delta;
     f32 scroll;
 
+    // the raw devices, sampled each update
+    char text[WINDOW_TEXT_CAP];
+    b8 key_pressed[window::KEY_COUNT];
+    b8 key_down[window::KEY_COUNT];
+    b8 button_down[window::BUTTON_COUNT];
+    b8 button_prev[window::BUTTON_COUNT];
+
     b32 mouse_look;
     b32 warp; // swallow the next delta: the cursor moved without the mouse moving
 };
@@ -266,6 +273,22 @@ void update(State *s, window::Window *w) {
     s->warp = false;
 
     s->scroll = window::take_scroll(w);
+
+    window::take_text(w, s->text, sizeof(s->text));
+
+    memset(s->key_pressed, 0, sizeof(s->key_pressed));
+    window::Key presses[WINDOW_KEY_EVENT_CAP];
+    u32 n = window::take_key_presses(w, presses, ARRAY_COUNT(presses));
+    for (u32 i = 0; i < n; i++)
+        s->key_pressed[presses[i]] = 1;
+
+    for (u32 k = 0; k < window::KEY_COUNT; k++)
+        s->key_down[k] = window::key_down(w, (window::Key)k) ? 1 : 0;
+
+    for (u32 b = 0; b < window::BUTTON_COUNT; b++) {
+        s->button_prev[b] = s->button_down[b];
+        s->button_down[b] = window::button_down(w, (window::Button)b) ? 1 : 0;
+    }
 }
 
 Action find(State *s, const char *name) {
@@ -408,6 +431,36 @@ linalg::Vec2 cursor_delta(const State *s) {
 f32 scroll(const State *s) {
     ASSERT(s);
     return s->scroll;
+}
+
+const char *text(const State *s) {
+    ASSERT(s);
+    return s->text;
+}
+
+b32 key_pressed(const State *s, window::Key k) {
+    ASSERT(s && k < window::KEY_COUNT);
+    return s->key_pressed[k];
+}
+
+b32 key_down(const State *s, window::Key k) {
+    ASSERT(s && k < window::KEY_COUNT);
+    return s->key_down[k];
+}
+
+b32 button_down(const State *s, window::Button b) {
+    ASSERT(s && b < window::BUTTON_COUNT);
+    return s->button_down[b];
+}
+
+b32 button_pressed(const State *s, window::Button b) {
+    ASSERT(s && b < window::BUTTON_COUNT);
+    return s->button_down[b] && !s->button_prev[b];
+}
+
+b32 button_released(const State *s, window::Button b) {
+    ASSERT(s && b < window::BUTTON_COUNT);
+    return !s->button_down[b] && s->button_prev[b];
 }
 
 void set_mouse_look(State *s, window::Window *w, b32 on) {

@@ -46,6 +46,9 @@ set(ENGINE_SOURCES
         src/gfx/stb_truetype_impl.cpp
         src/gfx/texture.cpp
 
+        src/ui/textedit.cpp
+        src/ui/ui.cpp
+
         src/asset/anim.cpp
         src/asset/asset.cpp
         src/asset/cgltf_impl.cpp

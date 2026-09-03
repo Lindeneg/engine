@@ -4,6 +4,7 @@
 #include <string.h>
 
 #include "core/logger.h"
+#include "core/str.h"
 #include "platform/file.h"
 #include "platform/path.h"
 
@@ -26,15 +27,7 @@
 #define MIN_ATLAS 16
 
 #define FALLBACK_CODEPOINT '?'
-#define REPLACEMENT_CODEPOINT 0xFFFDu
 #define CONTROL_LIMIT 0x20u
-
-// UTF-8 lead bytes
-#define UTF8_TWO 0xC0u
-#define UTF8_THREE 0xE0u
-#define UTF8_FOUR 0xF0u
-#define UTF8_CONTINUATION 0x80u
-#define UTF8_CONTINUATION_MASK 0xC0u
 
 namespace font {
 
@@ -183,49 +176,25 @@ const Glyph *glyph(const Font *f, u32 codepoint) {
     return &f->glyphs[f->fallback];
 }
 
-u32 next_codepoint(const char **s) {
-    ASSERT(s && *s);
-
-    u8 c = (u8) * *s;
-    if (!c)
-        return 0;
-    (*s)++;
-
-    u32 extra = 0;
-    u32 cp = c;
-    if (c >= UTF8_FOUR) {
-        extra = 3;
-        cp = c & 0x07u;
-    } else if (c >= UTF8_THREE) {
-        extra = 2;
-        cp = c & 0x0Fu;
-    } else if (c >= UTF8_TWO) {
-        extra = 1;
-        cp = c & 0x1Fu;
-    } else if (c >= UTF8_CONTINUATION) {
-        return REPLACEMENT_CODEPOINT; // a stray continuation byte
-    }
-
-    for (u32 i = 0; i < extra; i++) {
-        u8 cc = (u8) * *s;
-        if ((cc & UTF8_CONTINUATION_MASK) != UTF8_CONTINUATION)
-            return REPLACEMENT_CODEPOINT; // truncated; the offending byte is read next
-        (*s)++;
-        cp = (cp << 6) | (cc & 0x3Fu);
-    }
-    return cp;
-}
-
-f32 width(const Font *f, const char *text) {
+f32 width(const Font *f, const char *text, u32 bytes) {
     ASSERT(f && text);
 
+    const char *end = text + bytes;
     f32 w = 0.0f;
-    for (u32 cp = next_codepoint(&text); cp; cp = next_codepoint(&text)) {
+    while (text < end) {
+        u32 cp = str::utf8_next(&text);
+        if (!cp)
+            break;
         const Glyph *g = glyph(f, cp);
         if (g)
             w += g->advance;
     }
     return w;
+}
+
+f32 width(const Font *f, const char *text) {
+    ASSERT(f && text);
+    return width(f, text, (u32)strlen(text));
 }
 
 } // namespace font
