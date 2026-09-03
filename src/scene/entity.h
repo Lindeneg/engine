@@ -92,14 +92,35 @@ struct Renderable {
     b32 visible;
 };
 
+// a row of a FIELD_TABLE: "name value" in the file
+struct Named {
+    char name[ENTITY_NAME_CAP];
+    char value[ENTITY_PATH_CAP];
+};
+
+// clips one animator can name; a fixed row count, since a component is one pool slot
+#define ANIMATOR_MAX_CLIPS 16
+
+// The clips an entity can play, by the names a script asks for. Which clip
+// loops is the clip's own import setting; here is only which clips there are,
+// which plays first, and how fast.
 struct Animator {
     Handle owner;
-    asset::ClipHandle clip;
-    char clip_path[ENTITY_PATH_CAP];
-    asset::SkeletonHandle skeleton;
-    f32 time;
+
+    // the table and, straight after it, its count: one range for the file and the journal
+    Named clips[ANIMATOR_MAX_CLIPS];
+    u32 clip_count;
+    char start[ENTITY_NAME_CAP]; // plays at spawn; empty takes the first row
     f32 speed;
+    b32 autoplay;
+
+    // runtime, set by after_read and play
+    asset::ClipHandle handles[ANIMATOR_MAX_CLIPS]; // one per row, bound to skeleton
+    asset::SkeletonHandle skeleton;
+    i32 current; // the row playing, -1 for none
+    f32 time;
     b32 playing;
+    b32 finished; // a clip that does not loop reached its end
     u32 joint_count;
 };
 
@@ -166,21 +187,39 @@ struct Entity {
 };
 
 // reflection for the parser, the writer and the editor; unlisted fields never touch a file
-enum FieldType { FIELD_F32, FIELD_I32, FIELD_B32, FIELD_VEC3, FIELD_STRING, FIELD_ENUM };
+enum FieldType {
+    FIELD_F32,
+    FIELD_I32,
+    FIELD_B32,
+    FIELD_VEC3,
+    FIELD_STRING,
+    FIELD_ENUM,
+    FIELD_TABLE, // a block of "name value" rows: Named[cap] at offset, then their u32 count
+};
 
-// what a string field names under the asset root, so an editor knows which
-// sidecar belongs beside it
+// what a string field or a table's values name under the asset root, so an
+// editor knows which sidecar belongs beside it
 enum AssetKind { ASSET_NONE, ASSET_MODEL, ASSET_CLIP };
 
 struct FieldDesc {
     const char *key;
     FieldType type;
     u32 offset;
-    u32 cap;                  // FIELD_STRING: bytes at offset
+    u32 cap;                  // FIELD_STRING: bytes at offset; FIELD_TABLE: rows
     const char *const *names; // FIELD_ENUM: index -> name
     u32 name_count;
-    AssetKind asset; // FIELD_STRING: the asset the path names, if any
+    AssetKind asset;          // FIELD_STRING, FIELD_TABLE: the asset the path names, if any
+    const char *choices_from; // FIELD_STRING: the table in this component whose names it takes
 };
+
+// a FIELD_TABLE's rows, its count, and the bytes both take together
+inline Named *table_rows(void *comp, const FieldDesc *f) {
+    return (Named *)((u8 *)comp + f->offset);
+}
+inline u32 *table_count(void *comp, const FieldDesc *f) {
+    return (u32 *)((u8 *)comp + f->offset + sizeof(Named) * f->cap);
+}
+inline u32 table_size(const FieldDesc *f) { return (u32)(sizeof(Named) * f->cap + sizeof(u32)); }
 
 struct World;
 
@@ -295,6 +334,15 @@ b32 build_frame(World *w, linalg::Mat4 camera_world, const Camera *lens, f32 asp
 
 // The skinning palette for an entity's animator, or NULL when it has none.
 const linalg::Mat4 *palette(World *w, Handle h, u32 *out_count);
+
+// The animator's clips by name: the service a script drives. play switches to
+// the row of that name from its start; false, with a warning once, for a name
+// the table lacks or an entity without an animator. current_clip is the
+// playing row's name, NULL for none. A clip that does not loop stops at its
+// end and is finished until the next play.
+b32 play(World *w, Handle h, const char *name);
+const char *current_clip(World *w, Handle h);
+b32 clip_finished(World *w, Handle h);
 
 // A frame in three parts, because the fixed clock is the engine's but what runs
 // on it is not. begin_frame banks dt and answers how many fixed steps are owed;

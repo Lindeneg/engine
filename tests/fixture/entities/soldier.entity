@@ -22,10 +22,15 @@ entity "soldier" {
         model characters/soldier.glb
     }
 
+    # The clips this soldier can play, by the names a script asks for. Whether a
+    # clip loops is the clip's own setting, in its import sidecar.
     animator {
-        clip    animations/pistol_idle.glb
-        speed   1.0
-        playing true
+        clips {
+            idle animations/pistol_idle.glb
+        }
+        start    idle
+        speed    1.0
+        autoplay true
     }
 
     # The gun is its own definition, referenced rather than spelled out here.

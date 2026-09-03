@@ -478,12 +478,14 @@ ImportOptions import_options(Manager *m, const char *rel_path) {
 ClipOptions clip_options(Manager *m, const char *rel_path) {
     ASSERT(m && rel_path);
 
-    ClipOptions opts{};
+    ClipOptions opts{.rotation_only = false, .loop = true};
 
     memory::ArenaTemp t = memory::temp_begin(m->scratch);
     config::Node *n = import_block(m, rel_path, "clip");
-    if (n)
+    if (n) {
         opts.rotation_only = config::get_b32(n->first_child, "rotation_only", opts.rotation_only);
+        opts.loop = config::get_b32(n->first_child, "loop", opts.loop);
+    }
     memory::temp_end(t);
 
     return opts;
@@ -560,6 +562,8 @@ result::Error write_clip_options(Manager *m, const char *rel_path, ClipOptions o
                                         "which rig this clip was made for is not in the file");
     sidecar_key(m->scratch, doc, block, "rotation_only", opts.rotation_only ? "true" : "false",
                 "true when authored for another rig: drops its bone lengths, costs root motion");
+    sidecar_key(m->scratch, doc, block, "loop", opts.loop ? "true" : "false",
+                "false plays once and holds the last frame");
 
     result::Error e = save_sidecar(m, rel_path, doc, abs);
     memory::temp_end(t);
@@ -592,6 +596,7 @@ u32 apply_clip_options(Manager *m, const char *rel_path, ClipOptions opts) {
         if (!clip->key || strncmp(clip->key, rel_path, len) != 0 || clip->key[len] != '@')
             continue;
         clip->rotation_only = opts.rotation_only;
+        clip->loop = opts.loop;
         applied++;
     }
     return applied;

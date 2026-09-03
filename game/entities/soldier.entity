@@ -1,4 +1,4 @@
-entity soldier {
+entity soldier1 {
     transform {
         position 0 0 0
         rotation 0 0 0
@@ -7,5 +7,13 @@ entity soldier {
     renderable {
         model models/soldier.glb
         visible true
+    }
+    animator {
+        clips {
+            new1 animations/pistol_idle.glb
+            new2 animations/pistol_walk.glb
+        }
+        speed 1
+        autoplay true
     }
 }

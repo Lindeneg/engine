@@ -15,6 +15,13 @@ instance sun {
         rotation -55 49 0
         scale 1
     }
+    light {
+        kind directional
+        color 1 1 1
+        intensity 0.72
+        ambient 0.28
+        active true
+    }
 }
 instance floor {
     id 3
@@ -30,14 +37,12 @@ instance floor {
         offset 0 0 0
     }
 }
-instance entity {
-    id 17
+instance soldier1 {
+    id 19
+    definition soldier
     transform {
         position 0 0 0
         rotation 0 0 0
         scale 1
-    }
-    renderable {
-        visible true
     }
 }

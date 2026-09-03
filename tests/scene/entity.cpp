@@ -92,7 +92,7 @@ static void defaults_come_from_the_table(memory::Arena *a) {
 
     CHECK(entity::add_renderable(w, h)->visible);
     entity::Animator *an = entity::add_animator(w, h);
-    CHECK(an->speed == 1.0f && an->playing);
+    CHECK(an->speed == 1.0f && an->autoplay && an->clip_count == 0 && an->current == -1);
 
     // adding again returns the existing component, values intact
     c->fov_y = 30.0f;
@@ -305,7 +305,8 @@ static void definition_children_are_owned(memory::Arena *a) {
     CHECK(e != NULL);
     CHECK(strcmp(e->definition, "soldier") == 0);
     CHECK(entity::renderable(w, h)->model.v != 0); // the real model loaded
-    CHECK(entity::animator(w, h)->clip.v != 0);
+    CHECK(entity::animator(w, h)->handles[0].v != 0);
+    CHECK(entity::animator(w, h)->current == 0 && entity::animator(w, h)->playing);
 
     entity::Entity *weapon = entity::get(w, e->first_child);
     CHECK(weapon != NULL);
@@ -336,7 +337,7 @@ static void definition_children_are_owned(memory::Arena *a) {
     const char *detached = written(a, w, h, "entity", true);
     CHECK(strstr(detached, "definition soldier") == NULL);
     CHECK(strstr(detached, "model characters/soldier.glb") != NULL);
-    CHECK(strstr(detached, "clip animations/pistol_idle.glb") != NULL);
+    CHECK(strstr(detached, "idle animations/pistol_idle.glb") != NULL);
     CHECK(strstr(detached, "child weapon {") != NULL);
     CHECK(strstr(detached, "definition pistol") != NULL);
     CHECK(strstr(detached, "attach_joint mixamorigRightHand") != NULL); // written canonical
@@ -412,6 +413,56 @@ static void a_saved_definition_is_reloaded_into_its_instances(memory::Arena *a) 
     CHECK(entity::list_definitions(m, NULL, NULL, 0) == 2);
 }
 
+static const char *ANIMATED = "entity \"animated\" {\n"
+                              "    renderable {\n"
+                              "        model characters/soldier.glb\n"
+                              "    }\n"
+                              "    animator {\n"
+                              "        clips {\n"
+                              "            idle animations/pistol_idle.glb\n"
+                              "            fire animations/pistol_idle.glb\n"
+                              "        }\n"
+                              "        start fire\n"
+                              "        autoplay false\n"
+                              "    }\n"
+                              "}\n";
+
+static void the_clip_table_plays_by_name(memory::Arena *a) {
+    entity::World *w = make_world(a);
+    asset::Manager *m = shared_assets(a);
+
+    entity::Handle h = entity::spawn_from_config(w, m, block(a, ANIMATED, "entity"), entity::NONE);
+    entity::Animator *an = entity::animator(w, h);
+    CHECK(an != NULL);
+    CHECK(an->clip_count == 2 && strcmp(an->clips[1].name, "fire") == 0);
+    CHECK(an->current == 1 && !an->playing); // starts on fire, held until told
+    CHECK(an->handles[0].v != 0 && an->handles[1].v == an->handles[0].v); // one file, one clip
+    CHECK(strcmp(entity::current_clip(w, h), "fire") == 0);
+
+    test::mute();
+    CHECK(!entity::play(w, h, "reload"));
+    CHECK(test::unmute() == 1);
+    CHECK(entity::play(w, h, "idle"));
+    CHECK(an->current == 0 && an->playing && an->time == 0.0f && !an->finished);
+
+    // a clip that does not loop stops at its end and says so
+    asset::Clip *clip = asset::get(m, an->handles[0]);
+    b32 loop_before = clip->loop;
+    clip->loop = false;
+    entity::end_frame(w, m, a, clip->duration * 2.0f);
+    CHECK(!an->playing && an->finished && an->time == clip->duration);
+    CHECK(entity::clip_finished(w, h));
+    clip->loop = loop_before;
+
+    // written back as the table it was read from
+    const char *text = written(a, w, h, "entity", true);
+    CHECK(strstr(text, "clips {") != NULL);
+    CHECK(strstr(text, "idle animations/pistol_idle.glb") != NULL);
+    CHECK(strstr(text, "fire animations/pistol_idle.glb") != NULL);
+    CHECK(strstr(text, "start fire") != NULL);
+    CHECK(strstr(text, "autoplay false") != NULL);
+}
+
 static void missing_model_falls_back_and_is_cached(memory::Arena *a) {
     entity::World *w = make_world(a);
     asset::Manager *m = shared_assets(a);
@@ -449,6 +500,7 @@ test::Suite entity_suite() {
         CASE(definition_children_are_owned),
         CASE(the_project_folder_is_listed),
         CASE(a_saved_definition_is_reloaded_into_its_instances),
+        CASE(the_clip_table_plays_by_name),
         CASE(missing_model_falls_back_and_is_cached),
     };
     return test::Suite{.name = "entity", .cases = cases, .count = ARRAY_COUNT(cases)};

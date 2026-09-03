@@ -21,8 +21,9 @@
 // undoable, which the record call says by returning false. Reparenting carries
 // both parents, the joint, and the local transform on either side.
 
-// the largest thing a field entry carries: a whole component, or an entity's name
-#define UNDO_VALUE_CAP 256
+// the largest thing a field entry carries: a whole component, an entity's name,
+// or a table of rows with its count
+#define UNDO_VALUE_CAP 4096
 
 // the component index that means the entity's own fields
 #define UNDO_ENTITY (-1)

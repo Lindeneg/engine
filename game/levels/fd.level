@@ -1,0 +1,9 @@
+instance soldier {
+    id 12
+    definition soldier
+    transform {
+        position 0 0 -2.77973
+        rotation 0 0 0
+        scale 1
+    }
+}

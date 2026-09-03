@@ -96,9 +96,14 @@ void sample(memory::Arena *scratch, const asset::Skeleton *skel, const asset::Cl
         locals[j] = Trs{skel->joints[j].bind_t, skel->joints[j].bind_r, skel->joints[j].bind_s};
 
     if (clip && clip->duration > 0.0f) {
-        f32 t = fmodf(time, clip->duration);
-        if (t < 0.0f)
-            t += clip->duration;
+        f32 t;
+        if (clip->loop) {
+            t = fmodf(time, clip->duration);
+            if (t < 0.0f)
+                t += clip->duration;
+        } else {
+            t = MAX(0.0f, MIN(time, clip->duration));
+        }
 
         for (u32 c = 0; c < clip->channel_count; c++) {
             const asset::Channel *ch = &clip->channels[c];

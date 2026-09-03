@@ -109,6 +109,15 @@ static const linalg::Vec3 UP = {0.0f, 1.0f, 0.0f};
 // label, field, browse button: the field gets most of the row
 static const f32 ASSET_ROW_WEIGHTS[3] = {0.3f, 0.55f, 0.15f};
 
+// a table row: name, value, then browse, preview and remove buttons; a table
+// of plain values has no preview
+static const f32 TABLE_ROW_WEIGHTS[5] = {0.26f, 0.38f, 0.12f, 0.12f, 0.12f};
+static const f32 TABLE_ROW_PLAIN_WEIGHTS[4] = {0.26f, 0.5f, 0.12f, 0.12f};
+
+#define TABLE_NEW_ROW_NAME "new"
+#define PREVIEW_LABEL ">"
+#define REMOVE_ROW_LABEL "x"
+
 // a label and the rest of the row; a level's name and its start mark
 static const f32 SPLIT_ROW[2] = {0.3f, 0.7f};
 static const f32 LEVEL_ROW[2] = {0.7f, 0.3f};
@@ -254,10 +263,12 @@ struct Editor {
     char asset_status[STATUS_CAP];
 
     // the asset field whose list of imports is unfolded under it, if any: the
-    // entity, the component and the field's key, which is a static string
+    // entity, the component, the field's key, which is a static string, and
+    // the row for a table
     u32 picker_id;
     i32 picker_component;
     const char *picker_field;
+    u32 picker_row;
 
     // the level as text from the moment play began; its own arena, reset per snapshot
     memory::Arena *scratch;
@@ -619,9 +630,16 @@ static u32 field_size(const entity::FieldDesc *f) {
         return sizeof(linalg::Vec3);
     case entity::FIELD_STRING:
         return f->cap;
+    case entity::FIELD_TABLE:
+        return entity::table_size(f);
     default:
         return sizeof(u32); // F32, I32, B32 and ENUM are four bytes each
     }
+}
+
+// a typed value resolves once the keyboard lets go, not per keystroke
+static b32 typed_field(const entity::FieldDesc *f) {
+    return f->type == entity::FIELD_STRING || f->type == entity::FIELD_TABLE;
 }
 
 // The OS picker, with the result written back as a path under the asset root.
@@ -638,8 +656,18 @@ static void browse_asset(asset::Manager *m, char *path, u32 cap) {
                  asset::root(m));
 }
 
-static b32 picker_open(const Editor *ed, u32 id, entity::Component c, const entity::FieldDesc *f) {
-    return ed->picker_id == id && ed->picker_component == (i32)c && ed->picker_field == f->key;
+static b32 picker_open(const Editor *ed, u32 id, entity::Component c, const entity::FieldDesc *f,
+                       u32 row) {
+    return ed->picker_id == id && ed->picker_component == (i32)c && ed->picker_field == f->key &&
+           ed->picker_row == row;
+}
+
+static void open_picker(Editor *ed, u32 id, entity::Component c, const entity::FieldDesc *f,
+                        u32 row) {
+    ed->picker_id = id;
+    ed->picker_component = (i32)c;
+    ed->picker_field = f->key;
+    ed->picker_row = row;
 }
 
 static void close_picker(Editor *ed) { ed->picker_field = NULL; }
@@ -648,7 +676,7 @@ static void close_picker(Editor *ed) { ed->picker_field = NULL; }
 // picker for a file the project does not hold yet; a choice writes the path
 // and the caller's change detection does the rest
 static void asset_picker_rows(Editor *ed, asset::Manager *m, const entity::FieldDesc *f,
-                              char *path) {
+                              char *path, u32 cap) {
     b32 model = f->asset == entity::ASSET_MODEL;
     const AssetPath *paths = model ? ed->models : ed->animations;
     u32 count = model ? ed->model_count : ed->animation_count;
@@ -663,24 +691,129 @@ static void asset_picker_rows(Editor *ed, asset::Manager *m, const entity::Field
         ui::spacer();
         ui::push_id(i);
         if (ui::button(paths[i].v)) {
-            snprintf(path, f->cap, "%s", paths[i].v);
+            snprintf(path, cap, "%s", paths[i].v);
             close_picker(ed);
         }
         ui::pop_id();
     }
     ui::spacer();
     if (ui::button("Other file...")) {
-        browse_asset(m, path, f->cap);
+        browse_asset(m, path, cap);
         close_picker(ed);
     }
     ui::columns(1);
     ui::pop_id();
 }
 
+// the "..." beside an asset path: unfolds the imports under the row, or folds them
+static b32 picker_button(Editor *ed, u32 id, entity::Component c, const entity::FieldDesc *f,
+                         u32 row) {
+    b32 open = picker_open(ed, id, c, f, row);
+    if (!ui::button(BROWSE_LABEL))
+        return open;
+    if (open)
+        close_picker(ed);
+    else
+        open_picker(ed, id, c, f, row);
+    return !open;
+}
+
+// A table's rows, one line each: name, value with the import picker when the
+// values are assets, a preview that plays a clip, and remove; then an add
+// row. Rows are edited in place; the caller's change detection journals the
+// table whole.
+static void table_rows_ui(Editor *ed, entity::World *w, asset::Manager *m, entity::Handle h,
+                          u32 id, entity::Component c, const entity::FieldDesc *f, void *comp) {
+    entity::Named *rows = entity::table_rows(comp, f);
+    u32 *count = entity::table_count(comp, f);
+    b32 clips = f->asset == entity::ASSET_CLIP;
+
+    ui::columns(1);
+    ui::label(f->key);
+    ui::push_id(f->key);
+
+    i32 remove_at = -1;
+    for (u32 i = 0; i < *count; i++) {
+        entity::Named *row = &rows[i];
+        ui::push_id(i);
+        if (clips)
+            ui::columns(5, TABLE_ROW_WEIGHTS);
+        else
+            ui::columns(4, TABLE_ROW_PLAIN_WEIGHTS);
+
+        ui::text_field("name", row->name, sizeof(row->name));
+        ui::text_field("value", row->value, sizeof(row->value));
+
+        b32 open = false;
+        if (f->asset != entity::ASSET_NONE)
+            open = picker_button(ed, id, c, f, i);
+        else
+            ui::spacer();
+        if (clips && ui::button(PREVIEW_LABEL))
+            entity::play(w, h, row->name);
+        if (ui::button(REMOVE_ROW_LABEL))
+            remove_at = (i32)i;
+
+        if (open)
+            asset_picker_rows(ed, m, f, row->value, sizeof(row->value));
+        ui::pop_id();
+    }
+
+    if (remove_at >= 0) {
+        u32 after = *count - (u32)remove_at - 1;
+        memmove(&rows[remove_at], &rows[remove_at + 1], after * sizeof(entity::Named));
+        (*count)--;
+        memset(&rows[*count], 0, sizeof(entity::Named));
+        close_picker(ed);
+    }
+
+    ui::columns(2, SPLIT_ROW);
+    ui::spacer();
+    if (*count < f->cap && ui::button("add")) {
+        entity::Named *row = &rows[(*count)++];
+        memset(row, 0, sizeof(*row));
+        snprintf(row->name, sizeof(row->name), "%s%u", TABLE_NEW_ROW_NAME, *count);
+    }
+    ui::columns(1);
+    ui::pop_id();
+}
+
+// a string that takes its value from a table's names: a button stepping through them
+static void choices_row(const entity::ComponentDesc *d, const entity::FieldDesc *f, void *comp) {
+    char *at = (char *)comp + f->offset;
+
+    const entity::FieldDesc *table = NULL;
+    for (u32 i = 0; i < d->field_count; i++)
+        if (d->fields[i].type == entity::FIELD_TABLE &&
+            strcmp(d->fields[i].key, f->choices_from) == 0)
+            table = &d->fields[i];
+    ASSERT_MSG(table, "editor: %s chooses from %s, which is not a table of %s", f->key,
+               f->choices_from, d->key);
+
+    entity::Named *rows = entity::table_rows(comp, table);
+    u32 count = *entity::table_count(comp, table);
+
+    ui::columns(2);
+    ui::label(f->key);
+    ui::push_id(f->key);
+    if (count == 0) {
+        ui::label_dim("(no rows)");
+    } else if (ui::button(at[0] ? at : "(first)")) {
+        i32 current = -1;
+        for (u32 i = 0; i < count; i++)
+            if (strcmp(rows[i].name, at) == 0)
+                current = (i32)i;
+        snprintf(at, f->cap, "%s", rows[(u32)(current + 1) % count].name);
+    }
+    ui::pop_id();
+}
+
 // one row per field, by type; the key is the row's label and the widget's id
-static void field_row(Editor *ed, asset::Manager *m, u32 id, entity::Component c,
+static void field_row(Editor *ed, entity::World *w, asset::Manager *m, entity::Handle h,
+                      entity::Component c, const entity::ComponentDesc *d,
                       const entity::FieldDesc *f, void *comp) {
     u8 *at = (u8 *)comp + f->offset;
+    u32 id = entity::id_of(w, h);
     switch (f->type) {
     case entity::FIELD_F32:
         ui::columns(2);
@@ -708,6 +841,10 @@ static void field_row(Editor *ed, asset::Manager *m, u32 id, entity::Component c
         break;
     }
     case entity::FIELD_STRING: {
+        if (f->choices_from) {
+            choices_row(d, f, comp);
+            break;
+        }
         if (f->asset == entity::ASSET_NONE) {
             ui::columns(2);
             ui::label(f->key);
@@ -718,19 +855,8 @@ static void field_row(Editor *ed, asset::Manager *m, u32 id, entity::Component c
         ui::label(f->key);
         ui::text_field(f->key, (char *)at, f->cap);
         ui::push_id(f->key);
-        b32 open = picker_open(ed, id, c, f);
-        if (ui::button(BROWSE_LABEL)) {
-            open = !open;
-            if (open) {
-                ed->picker_id = id;
-                ed->picker_component = (i32)c;
-                ed->picker_field = f->key;
-            } else {
-                close_picker(ed);
-            }
-        }
-        if (open)
-            asset_picker_rows(ed, m, f, (char *)at);
+        if (picker_button(ed, id, c, f, 0))
+            asset_picker_rows(ed, m, f, (char *)at, f->cap);
         ui::pop_id();
         break;
     }
@@ -738,6 +864,9 @@ static void field_row(Editor *ed, asset::Manager *m, u32 id, entity::Component c
         ui::columns(2);
         ui::label(f->key);
         ui::enum_field(f->key, f->names, f->name_count, (i32 *)at);
+        break;
+    case entity::FIELD_TABLE:
+        table_rows_ui(ed, w, m, h, id, c, f, comp);
         break;
     }
 }
@@ -799,6 +928,7 @@ static void clip_import_rows(Editor *ed, asset::Manager *m, AssetShown *s) {
     asset::ClipOptions before = s->clip;
     ui::columns(1);
     ui::checkbox("rotation_only", &s->clip.rotation_only);
+    ui::checkbox("loop", &s->clip.loop);
 
     if (memcmp(&before, &s->clip, sizeof(before)) == 0)
         return;
@@ -1081,7 +1211,7 @@ static void component_section(Editor *ed, entity::World *w, asset::Manager *m, e
 
             u8 before[UNDO_VALUE_CAP];
             memcpy(before, at, size);
-            field_row(ed, m, e->id, c, f, comp);
+            field_row(ed, w, m, h, c, d, f, comp);
             if (memcmp(before, at, size) == 0)
                 continue;
 
@@ -1089,8 +1219,8 @@ static void component_section(Editor *ed, entity::World *w, asset::Manager *m, e
             undo::record_field(ed->journal, e->id, (i32)c, f->offset, size, before, at,
                                continuing(ed));
 
-            // a path resolves when typing stops; anything else right away
-            if (f->type == entity::FIELD_STRING) {
+            // a path or a table resolves when typing stops; anything else right away
+            if (typed_field(f)) {
                 ed->pending_entity = h;
                 ed->pending_component = (i32)c;
             } else {
@@ -1599,20 +1729,29 @@ static void focus_selection(Editor *ed, entity::World *w, asset::Manager *m) {
 // is guessed: a clip that needs rotation_only still gets false, and the
 // loader's warning says which to flip. Only for a file that exists, or a typo
 // would litter the tree.
+static void ensure_sidecar(asset::Manager *m, entity::AssetKind kind, const char *path) {
+    if (!path[0] || !asset::exists(m, path) || asset::has_import_sidecar(m, path))
+        return;
+    if (kind == entity::ASSET_MODEL)
+        asset::write_import_options(m, path, asset::import_options(m, path));
+    else
+        asset::write_clip_options(m, path, asset::clip_options(m, path));
+}
+
 static void ensure_sidecars(asset::Manager *m, const entity::ComponentDesc *d, void *comp) {
     for (u32 i = 0; i < d->field_count; i++) {
         const entity::FieldDesc *f = &d->fields[i];
-        if (f->type != entity::FIELD_STRING || f->asset == entity::ASSET_NONE)
+        if (f->asset == entity::ASSET_NONE)
             continue;
 
-        const char *path = (const char *)comp + f->offset;
-        if (!path[0] || !asset::exists(m, path) || asset::has_import_sidecar(m, path))
-            continue;
-
-        if (f->asset == entity::ASSET_MODEL)
-            asset::write_import_options(m, path, asset::import_options(m, path));
-        else
-            asset::write_clip_options(m, path, asset::clip_options(m, path));
+        if (f->type == entity::FIELD_STRING) {
+            ensure_sidecar(m, f->asset, (const char *)comp + f->offset);
+        } else if (f->type == entity::FIELD_TABLE) {
+            const entity::Named *rows = entity::table_rows(comp, f);
+            u32 count = *entity::table_count(comp, f);
+            for (u32 r = 0; r < count; r++)
+                ensure_sidecar(m, f->asset, rows[r].value);
+        }
     }
 }
 

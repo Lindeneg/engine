@@ -66,16 +66,24 @@ static const FieldDesc RENDERABLE_FIELDS[] = {
     {.key = "visible", .type = FIELD_B32, .offset = FIELD(Renderable, visible)},
 };
 
-static const Animator ANIMATOR_DEFAULTS = {.speed = 1.0f, .playing = true};
+static const Animator ANIMATOR_DEFAULTS = {.speed = 1.0f, .autoplay = true, .current = -1};
 static const FieldDesc ANIMATOR_FIELDS[] = {
-    {.key = "clip",
-     .type = FIELD_STRING,
-     .offset = FIELD(Animator, clip_path),
-     .cap = ENTITY_PATH_CAP,
+    {.key = "clips",
+     .type = FIELD_TABLE,
+     .offset = FIELD(Animator, clips),
+     .cap = ANIMATOR_MAX_CLIPS,
      .asset = ASSET_CLIP},
+    {.key = "start",
+     .type = FIELD_STRING,
+     .offset = FIELD(Animator, start),
+     .cap = ENTITY_NAME_CAP,
+     .choices_from = "clips"},
     {.key = "speed", .type = FIELD_F32, .offset = FIELD(Animator, speed)},
-    {.key = "playing", .type = FIELD_B32, .offset = FIELD(Animator, playing)},
+    {.key = "autoplay", .type = FIELD_B32, .offset = FIELD(Animator, autoplay)},
 };
+static_assert(offsetof(Animator, clip_count) ==
+                  offsetof(Animator, clips) + sizeof(Named) * ANIMATOR_MAX_CLIPS,
+              "a table's count follows its rows");
 
 static const Camera CAMERA_DEFAULTS = {
     .fov_y = 60.0f, .z_near = 0.05f, .z_far = 500.0f, .active = true};
@@ -689,11 +697,60 @@ static void advance_animator(World *w, asset::Manager *m, memory::Arena *scratch
     if (a->joint_count == 0)
         return;
 
-    if (a->playing)
+    asset::Clip *clip = a->current >= 0 ? asset::get(m, a->handles[a->current]) : NULL;
+    if (a->playing && clip) {
         a->time += dt * a->speed;
 
-    asset::Clip *clip = a->clip.v ? asset::get(m, a->clip) : NULL;
+        // a clip that does not loop holds its last frame and says so
+        if (!clip->loop && clip->duration > 0.0f && a->time >= clip->duration) {
+            a->time = clip->duration;
+            a->playing = false;
+            a->finished = true;
+        }
+    }
+
     anim::sample(scratch, skel, clip, a->time, skin_at(w, slot), global_at(w, slot));
+}
+
+static i32 clip_index(const Animator *a, const char *name) {
+    for (u32 i = 0; i < a->clip_count; i++)
+        if (strcmp(a->clips[i].name, name) == 0)
+            return (i32)i;
+    return -1;
+}
+
+b32 play(World *w, Handle h, const char *name) {
+    ASSERT(w && name);
+
+    Animator *a = animator(w, h);
+    if (!a) {
+        LOG_WARN_ONCE("entity: play(\"%s\") on an entity without an animator", name);
+        return false;
+    }
+
+    i32 i = clip_index(a, name);
+    if (i < 0) {
+        LOG_WARN_ONCE("entity: \"%s\" has no clip named \"%s\"", get(w, h)->name, name);
+        return false;
+    }
+
+    a->current = i;
+    a->time = 0.0f;
+    a->playing = true;
+    a->finished = false;
+    return true;
+}
+
+const char *current_clip(World *w, Handle h) {
+    ASSERT(w);
+    Animator *a = animator(w, h);
+    return a && a->current >= 0 ? a->clips[a->current].name : NULL;
+}
+
+b32 clip_finished(World *w, Handle h) {
+    ASSERT(w);
+    Animator *a = animator(w, h);
+    return a ? a->finished : false;
 }
 
 // recursive from a root, so a child reads a parent already resolved this frame
@@ -862,9 +919,29 @@ static void after_read_ANIMATOR(World *w, asset::Manager *m, Handle h, void *c) 
     }
 
     a->skeleton = asset::get(m, r->model)->skeleton;
-    if (a->clip_path[0])
-        a->clip = OR_ELSE(asset::load_clip(m, asset::SCOPE_PERSISTENT, a->clip_path, a->skeleton),
-                          asset::CLIP_FALLBACK);
+
+    for (u32 i = 0; i < a->clip_count; i++) {
+        const char *path = a->clips[i].value;
+        a->handles[i] = asset::CLIP_FALLBACK;
+        if (path[0])
+            a->handles[i] = OR_ELSE(asset::load_clip(m, asset::SCOPE_PERSISTENT, path, a->skeleton),
+                                    asset::CLIP_FALLBACK);
+    }
+
+    // the start row, or the first; a fresh read plays from the top
+    a->current = a->clip_count ? 0 : -1;
+    if (a->start[0] && a->clip_count) {
+        i32 found = clip_index(a, a->start);
+        if (found < 0)
+            LOG_WARN("entity: \"%s\" starts with clip \"%s\", which its table lacks; the first "
+                     "plays",
+                     get(w, h)->name, a->start);
+        else
+            a->current = found;
+    }
+    a->time = 0.0f;
+    a->playing = a->autoplay;
+    a->finished = false;
 }
 
 static void after_read_CAMERA(World *, asset::Manager *, Handle, void *c) {
@@ -938,6 +1015,25 @@ static void read_fields(const ComponentDesc *d, config::Node *body, void *c) {
                 *(i32 *)at = idx;
             break;
         }
+        case FIELD_TABLE: {
+            // the block replaces the table whole; comment and blank lines are not rows
+            Named *rows = table_rows(c, f);
+            u32 *count = table_count(c, f);
+            *count = 0;
+            for (config::Node *r = n->first_child; r; r = r->next_sibling) {
+                if (!r->key)
+                    continue;
+                if (*count == f->cap) {
+                    LOG_WARN("entity: %u: %s holds more than %u rows; the rest are dropped",
+                             r->line, f->key, f->cap);
+                    break;
+                }
+                Named *row = &rows[(*count)++];
+                snprintf(row->name, sizeof(row->name), "%s", r->key);
+                snprintf(row->value, sizeof(row->value), "%s", config::value(r, 0, ""));
+            }
+            break;
+        }
         }
     }
 }
@@ -981,6 +1077,22 @@ static void write_fields(memory::Arena *a, config::Doc *doc, config::Node *block
             u32 idx = (u32) * (const i32 *)at;
             vals[0] = idx < f->name_count ? f->names[idx] : f->names[0];
             break;
+        }
+        case FIELD_TABLE: {
+            // its own block of rows; a row without a name is not a row
+            const Named *rows = table_rows((void *)c, f);
+            u32 count = *table_count((void *)c, f);
+            if (count == 0)
+                continue;
+            config::Node *table = config::append(a, doc, block, f->key, NULL, 0);
+            table->is_block = true;
+            for (u32 r = 0; r < count; r++) {
+                if (!rows[r].name[0])
+                    continue;
+                const char *value[] = {rows[r].value};
+                config::append(a, doc, table, rows[r].name, value, rows[r].value[0] ? 1 : 0);
+            }
+            continue;
         }
         }
 

@@ -809,6 +809,7 @@ asset::ClipResult load_clip(asset::Manager *m, asset::Scope s, const char *abs_p
     snprintf(clip->name, ASSET_NAME_CAP, "%s", src->name ? src->name : "<unnamed>");
     clip->channels = push_array(out, asset::Channel, src->channels_count);
     clip->rotation_only = opts.rotation_only;
+    clip->loop = opts.loop;
 
     f32 max_clip_t = 0.0f; // largest translation the clip asks for
     f32 max_bind_t = 0.0f; // largest the target skeleton actually uses

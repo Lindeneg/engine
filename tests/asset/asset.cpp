@@ -173,11 +173,17 @@ static void sidecars_round_trip(memory::Arena *a) {
     CHECK(!asset::exists(m, "definitely/not/here.glb"));
     CHECK(!asset::has_import_sidecar(m, SIDECAR_TEST_FILE));
 
+    // no sidecar: a clip loops and keeps its translations
+    CHECK(asset::clip_options(m, SIDECAR_TEST_FILE).loop);
+    CHECK(!asset::clip_options(m, SIDECAR_TEST_FILE).rotation_only);
+
     // a clip sidecar, read back through the same reader the loader uses
-    CHECK(asset::write_clip_options(m, SIDECAR_TEST_FILE, asset::ClipOptions{.rotation_only = true}) ==
+    CHECK(asset::write_clip_options(m, SIDECAR_TEST_FILE,
+                                    asset::ClipOptions{.rotation_only = true, .loop = false}) ==
           result::OK);
     CHECK(asset::has_import_sidecar(m, SIDECAR_TEST_FILE));
     CHECK(asset::clip_options(m, SIDECAR_TEST_FILE).rotation_only);
+    CHECK(!asset::clip_options(m, SIDECAR_TEST_FILE).loop);
 
     // a model sidecar over it, and the clip block is gone with the old file
     CHECK(asset::write_import_options(m, SIDECAR_TEST_FILE,

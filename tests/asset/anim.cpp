@@ -62,6 +62,7 @@ static asset::Clip clip_of(memory::Arena *a, asset::Channel ch, f32 duration) {
     c.channels[0] = ch;
     c.channel_count = 1;
     c.duration = duration;
+    c.loop = true;
     return c;
 }
 
@@ -123,6 +124,12 @@ static void time_wraps_on_duration(memory::Arena *a) {
     // sample, since nlerp is not constant velocity.
     CHECK(vec3_near(x_axis_of(a, &s, &c, -0.25f), x_axis_of(a, &s, &c, 0.75f)));
     CHECK(!vec3_near(x_axis_of(a, &s, &c, 0.75f), x_axis_of(a, &s, &c, 0.25f)));
+
+    // without looping, time holds at either end instead
+    c.loop = false;
+    CHECK(vec3_near(x_axis_of(a, &s, &c, 1.5f), x_axis_of(a, &s, &c, 1.0f)));
+    CHECK(vec3_near(x_axis_of(a, &s, &c, 1.0f), linalg::Vec3{0.0f, 1.0f, 0.0f}));
+    CHECK(vec3_near(x_axis_of(a, &s, &c, -0.25f), x_axis_of(a, &s, &c, 0.0f)));
 }
 
 // q and -q are the same rotation; blending toward the far representation

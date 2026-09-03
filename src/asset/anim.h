@@ -7,8 +7,9 @@
 
 namespace anim {
 
-// skel->joint_count matrices; time wraps on the clip's duration. clip == NULL
-// gives the bind pose, which must come out identity. out_skin receives
+// skel->joint_count matrices; time wraps on the clip's duration when it loops
+// and holds at either end when it does not. clip == NULL gives the bind pose,
+// which must come out identity. out_skin receives
 // global * inverse_bind, what the shader wants; out_global, optional, the
 // joints' model-space transforms, what an attachment wants.
 void sample(memory::Arena *scratch, const asset::Skeleton *skel, const asset::Clip *clip, f32 time,

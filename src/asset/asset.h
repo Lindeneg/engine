@@ -149,14 +149,19 @@ struct Clip {
     u32 channel_count;
     u32 bound_count;   // channels that matched a joint; 0 means the bind failed
     b32 rotation_only; // from ClipOptions, never inferred
+    b32 loop;          // likewise; off, time holds at the end
 };
 
 // Per-clip import settings, the author's call: which rig a clip was made for is
-// not in the file. The loader warns when a setting looks wrong; it never decides.
+// not in the file, and neither is whether it cycles. The loader warns when a
+// setting looks wrong; it never decides. clip_options() supplies the defaults.
 struct ClipOptions {
     // rotations only: translation/scale channels carry the source rig's bone
     // lengths and tear a different skeleton apart. Costs root motion.
     b32 rotation_only;
+
+    // an idle cycles; a fire does not, and holds its last frame
+    b32 loop;
 };
 
 // Per-asset import settings; hand-converted files disagree on units and up-axis.
