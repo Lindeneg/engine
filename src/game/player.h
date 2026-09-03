@@ -54,6 +54,8 @@ struct Player {
     // them -- neither is a mode the code knows about.
     linalg::Vec3 eye_offset;
 
+    linalg::Vec4 debug_color; // the swept sphere, when the debug toggle is on
+
     linalg::Vec3 velocity;
     f32 yaw;
     f32 pitch;
@@ -82,5 +84,8 @@ void step(Player *p, entity::World *w, asset::Manager *m, input::State *in, f32 
 
 // Places the level's active camera, after the fixed steps have moved the body.
 void place_camera(const Player *p, entity::World *w);
+
+// The sphere the body is swept as, where the last fixed step left it.
+void draw_debug(const Player *p, entity::World *w);
 
 } // namespace game

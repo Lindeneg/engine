@@ -6,6 +6,7 @@
 #include "core/logger.h"
 #include "core/memory.h"
 #include "game/player.h"
+#include "gfx/debugdraw.h"
 #include "gfx/render.h"
 #include "gfx/shader.h"
 #include "platform/input.h"
@@ -31,6 +32,7 @@
 #define DEFAULT_PERM_MIB 64
 #define DEFAULT_SCRATCH_MIB 64
 #define DEFAULT_PLAYER_BODY "player"
+#define DEFAULT_BOUNDS_COLOR linalg::Vec4{1.0f, 0.85f, 0.1f, 1.0f}
 
 static entity::Handle find_root(entity::World *w, const char *name) {
     for (entity::Handle h = entity::first(w); h.v; h = entity::next(w, h)) {
@@ -80,9 +82,16 @@ int main() {
     render::Config render_cfg = render::config_from(config::find(cfg, "render"));
     render::init(&perm, render_cfg, fb_w, fb_h);
 
+    config::Node *debug_cfg = config::find(cfg, "debug_draw");
+    debugdraw::init(&perm, debugdraw::config_from(debug_cfg));
+    linalg::Vec4 bounds_color = config::value_vec4(
+        config::find(debug_cfg ? debug_cfg->first_child : NULL, "bounds_color"),
+        DEFAULT_BOUNDS_COLOR);
+
     asset::Manager *assets{MUST(asset::init(
         &perm, &scratch,
-        asset::config_from(config::find(cfg, "assets"), root, shader::default_handle())))};
+        asset::config_from(config::find(cfg, "assets"), root,
+                           shader::role_handle(shader::ROLE_DEFAULT))))};
 
     render::attach_assets(&perm, assets);
 
@@ -108,6 +117,8 @@ int main() {
     input::Map gameplay = input::find_map(in, "gameplay");
     input::Action quit = input::find(in, "quit");
     input::Action toggle_look = input::find(in, "toggle_mouse_look");
+    input::Action toggle_debug = input::find(in, "toggle_debug_draw");
+    b32 debug_draw = false;
 
     // playable without a click to start; the toggle hands the cursor back
     input::set_mouse_look(in, win, true);
@@ -130,6 +141,9 @@ int main() {
             input::set_map_enabled(in, gameplay, look);
         }
 
+        if (input::pressed(in, toggle_debug))
+            debug_draw = !debug_draw;
+
         i32 w = 0;
         i32 h = 0;
         window::framebuffer_size(win, &w, &h);
@@ -142,6 +156,9 @@ int main() {
         f64 now = window::time();
         f32 dt = (f32)(now - last);
         last = now;
+
+        // before anything draws: the fixed steps below may trace into it
+        debugdraw::begin_frame(dt);
 
         // aim first, so the fixed steps below move in the direction being looked
         game::aim(&player, in);
@@ -157,6 +174,12 @@ int main() {
 
         entity::end_frame(world, assets, &scratch, dt);
 
+        // after end_frame, so the boxes sit on this frame's world transforms
+        if (debug_draw) {
+            entity::draw_bounds(world, assets, bounds_color);
+            game::draw_debug(&player, world);
+        }
+
         shader::FrameData frame{};
         if (!entity::build_frame(world, (f32)fb_w / (f32)fb_h, &frame))
             LOG_WARN_ONCE("main: the level has no active camera, nothing will be visible");
@@ -164,6 +187,7 @@ int main() {
         render::begin_frame(&frame, render_cfg.clear_color);
         entity::submit(world, assets);
         render::flush(assets);
+        debugdraw::flush();
 
         window::swap(win);
     }
@@ -175,6 +199,7 @@ int main() {
     memory::log_stats(asset::scope_arena(assets, asset::SCOPE_TRANSIENT), "assets-transient");
 #endif
 
+    debugdraw::shutdown();
     render::shutdown();
     shader::shutdown();
     window::destroy(win);

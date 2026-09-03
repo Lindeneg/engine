@@ -9,11 +9,12 @@ static config::Doc *manifest(memory::Arena *a, const char *text) {
 }
 
 static result::Error parse(memory::Arena *a, const char *text, shader::Decl *out, u32 cap,
-                           u32 *count, const char **dflt) {
-    return shader::parse_manifest(manifest(a, text), out, cap, count, dflt);
+                           u32 *count, const char **roles) {
+    return shader::parse_manifest(manifest(a, text), out, cap, count, roles);
 }
 
 static const char *GOOD = "default_shader mesh\n"
+                          "debug_shader flat\n"
                           "shader mesh {\n"
                           "    vert mesh.vert\n"
                           "    frag mesh.frag\n"
@@ -24,14 +25,18 @@ static const char *GOOD = "default_shader mesh\n"
                           "    frag flat.frag\n"
                           "}\n";
 
+// both roles filled, so a case can break one thing at a time
+#define ROLES "default_shader x\ndebug_shader x\n"
+
 static void good_manifest_parses(memory::Arena *a) {
     shader::Decl decls[4];
     u32 count = 0;
-    const char *dflt = NULL;
+    const char *roles[shader::ROLE_COUNT] = {};
 
-    CHECK(parse(a, GOOD, decls, 4, &count, &dflt) == result::OK);
+    CHECK(parse(a, GOOD, decls, 4, &count, roles) == result::OK);
     CHECK(count == 2);
-    CHECK(strcmp(dflt, "mesh") == 0);
+    CHECK(strcmp(roles[shader::ROLE_DEFAULT], "mesh") == 0);
+    CHECK(strcmp(roles[shader::ROLE_DEBUG], "flat") == 0);
     CHECK(strcmp(decls[0].name, "mesh") == 0);
     CHECK(strcmp(decls[0].vert, "mesh.vert") == 0);
     CHECK(strcmp(decls[0].frag, "mesh.frag") == 0);
@@ -43,33 +48,39 @@ static void good_manifest_parses(memory::Arena *a) {
 static result::Error parse_bad(memory::Arena *a, const char *text, u32 cap) {
     shader::Decl decls[4];
     u32 count = 0;
-    const char *dflt = NULL;
+    const char *roles[shader::ROLE_COUNT] = {};
 
     test::mute();
-    result::Error e = parse(a, text, decls, cap, &count, &dflt);
+    result::Error e = parse(a, text, decls, cap, &count, roles);
     CHECK(test::unmute() == 1);
     return e;
 }
 
 static void broken_manifests_are_refused(memory::Arena *a) {
-    CHECK(parse_bad(a,
-                    "default_shader x\nshader x {\n    vert a\n    frag b\n    features GLOW\n}\n",
-                    4) == result::ERR_PARSE);
-    CHECK(parse_bad(a, "default_shader x\nshader x {\n    vert a\n}\n", 4) == result::ERR_PARSE);
-    CHECK(parse_bad(a, "default_shader x\nshader {\n    vert a\n    frag b\n}\n", 4) ==
+    CHECK(parse_bad(a, ROLES "shader x {\n    vert a\n    frag b\n    features GLOW\n}\n", 4) ==
           result::ERR_PARSE);
-    CHECK(parse_bad(a, "shader x {\n    vert a\n    frag b\n}\n", 4) == result::ERR_PARSE);
-    CHECK(parse_bad(a, "default_shader nope\nshader x {\n    vert a\n    frag b\n}\n", 4) ==
-          result::ERR_NOT_FOUND);
-    CHECK(parse_bad(a, "default_shader x\n", 4) == result::ERR_PARSE);
+    CHECK(parse_bad(a, ROLES "shader x {\n    vert a\n}\n", 4) == result::ERR_PARSE);
+    CHECK(parse_bad(a, ROLES "shader {\n    vert a\n    frag b\n}\n", 4) == result::ERR_PARSE);
+    CHECK(parse_bad(a, ROLES, 4) == result::ERR_PARSE);
     CHECK(parse_bad(a, GOOD, 1) == result::ERR_EXHAUSTED);
+
+    // every role must be named, and name a declared shader
+    CHECK(parse_bad(a, "debug_shader x\nshader x {\n    vert a\n    frag b\n}\n", 4) ==
+          result::ERR_PARSE);
+    CHECK(parse_bad(a, "default_shader x\nshader x {\n    vert a\n    frag b\n}\n", 4) ==
+          result::ERR_PARSE);
+    CHECK(parse_bad(a, "default_shader nope\ndebug_shader x\nshader x {\n    vert a\n    frag b\n}\n",
+                    4) == result::ERR_NOT_FOUND);
+    CHECK(parse_bad(a, "default_shader x\ndebug_shader nope\nshader x {\n    vert a\n    frag b\n}\n",
+                    4) == result::ERR_NOT_FOUND);
 
     // a name at the cap is refused up front, not truncated
     char long_name[SHADER_NAME_CAP + 1];
     memset(long_name, 'x', SHADER_NAME_CAP);
     long_name[SHADER_NAME_CAP] = 0;
-    const char *text = memory::push_fmt(
-        a, "default_shader %s\nshader %s {\n    vert a\n    frag b\n}\n", long_name, long_name);
+    const char *text =
+        memory::push_fmt(a, "default_shader %s\ndebug_shader %s\nshader %s {\n    vert a\n    frag b\n}\n",
+                         long_name, long_name, long_name);
     CHECK(parse_bad(a, text, 4) == result::ERR_PARSE);
 }
 
@@ -80,11 +91,17 @@ static void feature_names_round_trip(memory::Arena *) {
     CHECK(shader::feature_name(SHADER_FEATURE_BITS) == NULL);
 }
 
+static void role_keys_are_the_manifest_keys(memory::Arena *) {
+    CHECK(strcmp(shader::role_key(shader::ROLE_DEFAULT), "default_shader") == 0);
+    CHECK(strcmp(shader::role_key(shader::ROLE_DEBUG), "debug_shader") == 0);
+}
+
 test::Suite shader_suite() {
     static const test::Case cases[] = {
         CASE(good_manifest_parses),
         CASE(broken_manifests_are_refused),
         CASE(feature_names_round_trip),
+        CASE(role_keys_are_the_manifest_keys),
     };
     return test::Suite{.name = "shader", .cases = cases, .count = ARRAY_COUNT(cases)};
 }

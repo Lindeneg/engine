@@ -5,7 +5,6 @@
 
 namespace anim {
 
-// keys closer than this are one key
 #define MIN_KEY_SPAN 1e-8f
 
 struct Trs {

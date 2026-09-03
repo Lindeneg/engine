@@ -35,6 +35,7 @@ set(ENGINE_SOURCES
         src/platform/platform.cpp
         src/platform/window.cpp
 
+        src/gfx/debugdraw.cpp
         src/gfx/drawkey.cpp
         src/gfx/gfx.cpp
         src/gfx/render.cpp

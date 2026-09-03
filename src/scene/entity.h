@@ -257,6 +257,10 @@ f32 fixed_dt(World *w);
 // Queues every visible renderable.
 void submit(World *w, asset::Manager *m);
 
+// Every visible renderable's bounds as a wire box, through gfx/debugdraw. For
+// the debug toggle now and the editor's selection later.
+void draw_bounds(World *w, asset::Manager *m, linalg::Vec4 color);
+
 // NONE at the end.
 Handle first(World *w);
 Handle next(World *w, Handle h);

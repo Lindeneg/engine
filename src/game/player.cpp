@@ -3,6 +3,7 @@
 #include <math.h>
 
 #include "core/logger.h"
+#include "gfx/debugdraw.h"
 #include "scene/motion.h"
 
 #define DEFAULT_MOVE_SPEED 4.0f
@@ -19,6 +20,8 @@ namespace game {
 
 // eyes of someone about 1.8 m tall, looking forward
 static const linalg::Vec3 DEFAULT_EYE_OFFSET = {0.0f, 1.65f, 0.0f};
+
+static const linalg::Vec4 DEFAULT_DEBUG_COLOR = {0.2f, 1.0f, 0.4f, 1.0f};
 
 Player create(config::Node *block, input::State *in, entity::Handle body) {
     ASSERT(in);
@@ -42,6 +45,7 @@ Player create(config::Node *block, input::State *in, entity::Handle body) {
     p.ground_height = config::get_f32(b, "ground_height", DEFAULT_GROUND_HEIGHT);
 
     p.eye_offset = config::value_vec3(config::find(b, "eye_offset"), DEFAULT_EYE_OFFSET);
+    p.debug_color = config::value_vec4(config::find(b, "debug_color"), DEFAULT_DEBUG_COLOR);
 
     if (p.pitch_min > p.pitch_max) {
         LOG_WARN("player: pitch_min %.1f is above pitch_max %.1f; swapping them", (f64)p.pitch_min,
@@ -190,6 +194,16 @@ void place_camera(const Player *p, entity::World *w) {
 
     ce->local.position = e->local.position + linalg::quat_rotate(yaw, p->eye_offset);
     entity::set_euler(&ce->local, linalg::Vec3{p->pitch, p->yaw, 0.0f});
+}
+
+void draw_debug(const Player *p, entity::World *w) {
+    ASSERT(p && w);
+
+    entity::Entity *e = entity::get(w, p->body);
+    if (!e)
+        return;
+
+    debugdraw::sphere(e->local.position, p->radius, p->debug_color);
 }
 
 } // namespace game

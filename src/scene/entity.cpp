@@ -8,6 +8,7 @@
 #include "core/logger.h"
 #include "core/pool.h"
 #include "core/str.h"
+#include "gfx/debugdraw.h"
 #include "gfx/render.h"
 #include "gfx/shader.h"
 #include "platform/path.h"
@@ -632,6 +633,26 @@ void submit(World *w, asset::Manager *m) {
         u32 joint_count = 0;
         const linalg::Mat4 *pal = palette(w, r->owner, &joint_count);
         render::submit_model(m, r->model, e->world, pal, joint_count);
+    }
+}
+
+void draw_bounds(World *w, asset::Manager *m, linalg::Vec4 color) {
+    ASSERT(w && m);
+
+    pool::Pool *p = &w->components[COMPONENT_RENDERABLE];
+    for (u32 i = pool::first(p); i; i = pool::next(p, i)) {
+        Renderable *r = (Renderable *)pool::at(p, i);
+        if (!r->visible)
+            continue;
+
+        Entity *e = get(w, r->owner);
+        if (!e || !e->active)
+            continue;
+
+        // the same space submit draws in: bounds carry the import, world the placement
+        linalg::Vec3 lo, hi;
+        asset::model_bounds(m, r->model, &lo, &hi);
+        debugdraw::box(e->world, lo, hi, color);
     }
 }
 

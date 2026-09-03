@@ -28,6 +28,12 @@ static const char *FEATURE_DEFINES[SHADER_FEATURE_BITS] = {
     "ALPHA_MASK",
 };
 
+// manifest key per role; order matches Role
+static const char *ROLE_KEYS[ROLE_COUNT] = {
+    "default_shader",
+    "debug_shader",
+};
+
 static const char *BUILTIN_NAMES[BUILTIN_COUNT] = {
     "u_model",
     "u_normal_mat",
@@ -45,7 +51,7 @@ struct Registry {
     memory::Arena *arena;
     Shader items[SHADER_MAX_COUNT];
     u32 count;
-    Handle dflt; // default_shader from the manifest
+    Handle roles[ROLE_COUNT];
 };
 
 static Registry g_reg;
@@ -331,8 +337,8 @@ static void variant_label(char *dst, u64 cap, const char *name_, u32 features) {
 }
 
 result::Error parse_manifest(config::Doc *doc, Decl *out, u32 cap, u32 *out_count,
-                             const char **out_default) {
-    ASSERT(doc && out && out_count && out_default);
+                             const char **out_roles) {
+    ASSERT(doc && out && out_count && out_roles);
 
     u32 n = 0;
     for (config::Node *decl = config::find(doc->first, "shader"); decl;
@@ -380,22 +386,25 @@ result::Error parse_manifest(config::Doc *doc, Decl *out, u32 cap, u32 *out_coun
         return result::ERR_PARSE;
     }
 
-    const char *dflt = config::get(doc->first, "default_shader", NULL);
-    if (!dflt) {
-        LOG_ERR("shader: %s has no default_shader", doc->name);
-        return result::ERR_PARSE;
-    }
+    for (u32 r = 0; r < ROLE_COUNT; r++) {
+        const char *named = config::get(doc->first, ROLE_KEYS[r], NULL);
+        if (!named) {
+            LOG_ERR("shader: %s has no %s", doc->name, ROLE_KEYS[r]);
+            return result::ERR_PARSE;
+        }
 
-    b32 declared = false;
-    for (u32 i = 0; i < n && !declared; i++)
-        declared = strcmp(out[i].name, dflt) == 0;
-    if (!declared) {
-        LOG_ERR("shader: default_shader '%s' is not declared in %s", dflt, doc->name);
-        return result::ERR_NOT_FOUND;
+        b32 declared = false;
+        for (u32 i = 0; i < n && !declared; i++)
+            declared = strcmp(out[i].name, named) == 0;
+        if (!declared) {
+            LOG_ERR("shader: %s '%s' is not declared in %s", ROLE_KEYS[r], named, doc->name);
+            return result::ERR_NOT_FOUND;
+        }
+
+        out_roles[r] = named;
     }
 
     *out_count = n;
-    *out_default = dflt;
     return result::OK;
 }
 
@@ -448,8 +457,8 @@ result::Error init(memory::Arena *a, memory::Arena *scratch, const char *root) {
 
     Decl decls[SHADER_MAX_COUNT];
     u32 count = 0;
-    const char *dflt = NULL;
-    result::Error e = parse_manifest(doc.val, decls, SHADER_MAX_COUNT, &count, &dflt);
+    const char *roles[ROLE_COUNT] = {};
+    result::Error e = parse_manifest(doc.val, decls, SHADER_MAX_COUNT, &count, roles);
     for (u32 i = 0; i < count && e == result::OK; i++)
         e = build_one(a, scratch, root, &decls[i]);
 
@@ -458,11 +467,13 @@ result::Error init(memory::Arena *a, memory::Arena *scratch, const char *root) {
         return e;
     }
 
-    // parse_manifest checked the name is declared, so this cannot fail
-    g_reg.dflt = MUST(find(dflt));
+    // parse_manifest checked every role names a declared shader, so this cannot fail
+    for (u32 r = 0; r < ROLE_COUNT; r++)
+        g_reg.roles[r] = MUST(find(roles[r]));
     memory::temp_end(t);
 
-    LOG_INFO("shader: %u shader(s) loaded, default '%s'", g_reg.count, name(g_reg.dflt));
+    LOG_INFO("shader: %u shader(s) loaded, default '%s', debug '%s'", g_reg.count,
+             name(g_reg.roles[ROLE_DEFAULT]), name(g_reg.roles[ROLE_DEBUG]));
     return result::OK;
 }
 
@@ -474,7 +485,7 @@ void shutdown() {
         memset(&g_reg.items[i], 0, sizeof(g_reg.items[i]));
     }
     g_reg.count = 0;
-    g_reg.dflt = Handle{0};
+    memset(g_reg.roles, 0, sizeof(g_reg.roles));
 }
 
 HandleResult find(const char *name_) {
@@ -487,9 +498,10 @@ HandleResult find(const char *name_) {
     return HandleResult{.err = result::ERR_NOT_FOUND};
 }
 
-Handle default_handle() {
-    ASSERT_MSG(g_reg.count > 0, "shader::default_handle before init");
-    return g_reg.dflt;
+Handle role_handle(Role r) {
+    ASSERT_MSG(g_reg.count > 0, "shader::role_handle before init");
+    ASSERT(r < ROLE_COUNT);
+    return g_reg.roles[r];
 }
 
 Program *program(Handle h, u32 features) {
@@ -527,6 +539,11 @@ u32 feature_from_name(const char *name_) {
 
 const char *feature_name(u32 bit_index) {
     return bit_index < SHADER_FEATURE_BITS ? FEATURE_DEFINES[bit_index] : NULL;
+}
+
+const char *role_key(Role r) {
+    ASSERT(r < ROLE_COUNT);
+    return ROLE_KEYS[r];
 }
 
 } // namespace shader

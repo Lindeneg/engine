@@ -8,10 +8,11 @@
 #include "math/linalg.h"
 
 // GPU programs, kept out of asset:: since it never calls GL. Which shaders exist
-// is data: shaders.cfg names the sources, the features each claims, and the
-// default. The engine defines only what a feature *means*, since each is backed
-// by C++ (SKINNED binds the palette, ALPHA_MASK the cutoff). There is no
-// fallback program: a shader that will not build is a broken deployment.
+// is data: shaders.cfg names the sources, the features each claims, and which
+// shader fills each role the engine asks for by itself. The engine defines only
+// what a feature *means*, since each is backed by C++ (SKINNED binds the
+// palette, ALPHA_MASK the cutoff), and what a role is for. There is no fallback
+// program: a shader that will not build is a broken deployment.
 
 #define SHADER_NAME_CAP 32
 #define SHADER_MAX_COUNT 32
@@ -34,6 +35,14 @@ enum Feature {
 
 #define SHADER_FEATURE_BITS 2
 #define SHADER_VARIANT_COUNT (1u << SHADER_FEATURE_BITS)
+
+// programs the engine reaches for without a material in between; the manifest
+// names one shader per role, and a role it leaves out is a hard startup failure
+enum Role {
+    ROLE_DEFAULT, // default_shader: what a material gets when nothing assigned it one
+    ROLE_DEBUG,   // debug_shader: position and colour, for gfx/debugdraw's lines
+    ROLE_COUNT,
+};
 
 // uniforms the engine sets every draw, resolved once at link; everything else goes through
 // uniform_loc
@@ -73,9 +82,10 @@ struct Decl {
     u32 supported;
 };
 
-// Every shader block plus default_shader, which must name one of them.
+// Every shader block plus the name filling each role, which must be one of them.
+// out_roles holds ROLE_COUNT entries.
 result::Error parse_manifest(config::Doc *doc, Decl *out, u32 cap, u32 *out_count,
-                             const char **out_default);
+                             const char **out_roles);
 
 // Reads shaders.cfg and builds every declared variant; any failure is fatal to
 // the caller. Needs a current GL context.
@@ -85,8 +95,8 @@ void shutdown();
 // An undeclared name is a content error, reported rather than substituted.
 HandleResult find(const char *name);
 
-// The default_shader of shaders.cfg.
-Handle default_handle();
+// The shader shaders.cfg named for a role.
+Handle role_handle(Role r);
 
 // Never NULL; features the shader does not claim are masked off. An
 // unresolvable program is a bug and asserts.
@@ -105,5 +115,6 @@ u32 count();
 const char *name(Handle h);
 u32 feature_from_name(const char *name); // FEATURE_NONE when unknown
 const char *feature_name(u32 bit_index); // NULL past SHADER_FEATURE_BITS
+const char *role_key(Role r);            // the manifest key, "default_shader"
 
 } // namespace shader
