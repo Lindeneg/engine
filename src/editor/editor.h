@@ -53,9 +53,18 @@ struct CameraConfig {
     Viewpoint start;
 };
 
+struct GizmoConfig {
+    f32 size;         // an axis line, in pixels at any distance
+    f32 tolerance;    // pixels a click may miss a handle by
+    f32 plane_size;   // a plane square's side, as a fraction of size
+    f32 plane_offset; // the square's near corner from the origin, likewise
+    f32 snap;         // metres per step while snapping
+};
+
 struct Config {
     const char *play_map; // switched off while editing
     CameraConfig camera;
+    GizmoConfig gizmo;
     f32 hierarchy_width;
     f32 inspector_width;
     linalg::Vec4 selection_color;

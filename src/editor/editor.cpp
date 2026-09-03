@@ -5,6 +5,7 @@
 #include <string.h>
 
 #include "core/logger.h"
+#include "editor/gizmo.h"
 #include "editor/undo.h"
 #include "gfx/canvas.h"
 #include "gfx/debugdraw.h"
@@ -30,6 +31,18 @@
 #define DEFAULT_MARKER_SIZE 0.3f
 #define DEFAULT_FRUSTUM_DEPTH 10.0f
 #define DEFAULT_UNDO_DEPTH 256
+
+#define DEFAULT_GIZMO_SIZE 90.0f
+#define DEFAULT_GIZMO_TOLERANCE 8.0f
+#define DEFAULT_GIZMO_PLANE_SIZE 0.25f
+#define DEFAULT_GIZMO_PLANE_OFFSET 0.25f
+#define DEFAULT_GIZMO_SNAP 0.25f
+
+// the arrowhead's bars, as a fraction of the axis length
+#define ARROWHEAD 0.08f
+
+// a gizmo at the eye or behind it has no size on screen; hold it at this depth
+#define MIN_GIZMO_DEPTH 0.01f
 
 // straight up or down flips the basis; stop short of it
 #define PITCH_LIMIT 89.0f
@@ -94,6 +107,14 @@ Config config_from(memory::Arena *a, config::Node *first) {
     c.camera.start.yaw = config::get_f32(cam, "yaw", DEFAULT_YAW);
     c.camera.start.pitch = config::get_f32(cam, "pitch", DEFAULT_PITCH);
 
+    config::Node *gizmo_block = config::find(first, "gizmo");
+    config::Node *gz = gizmo_block ? gizmo_block->first_child : NULL;
+    c.gizmo.size = config::get_f32(gz, "size", DEFAULT_GIZMO_SIZE);
+    c.gizmo.tolerance = config::get_f32(gz, "tolerance", DEFAULT_GIZMO_TOLERANCE);
+    c.gizmo.plane_size = config::get_f32(gz, "plane_size", DEFAULT_GIZMO_PLANE_SIZE);
+    c.gizmo.plane_offset = config::get_f32(gz, "plane_offset", DEFAULT_GIZMO_PLANE_OFFSET);
+    c.gizmo.snap = config::get_f32(gz, "snap", DEFAULT_GIZMO_SNAP);
+
     c.hierarchy_width = config::get_f32(panels, "hierarchy_width", DEFAULT_HIERARCHY_WIDTH);
     c.inspector_width = config::get_f32(panels, "inspector_width", DEFAULT_INSPECTOR_WIDTH);
 
@@ -157,6 +178,16 @@ struct Editor {
     // the assets whose settings are on show, read once per path rather than per frame
     AssetShown shown[ASSET_SHOWN_COUNT];
 
+    // the translate gizmo: its handles this frame, which one the pointer is
+    // over, and the drag in progress
+    gizmo::Frame gizmo_frame;
+    b32 gizmo_shown;
+    gizmo::Handle hot_handle;
+    gizmo::Drag drag;
+    linalg::Vec3 drag_world_start;   // where the entity was in the world when grabbed
+    entity::Transform drag_before;   // for the journal
+    b32 gizmo_local;                 // axes from the entity rather than the world
+
     input::Map play_map;
     input::Map editor_map;
     input::Action look;
@@ -167,6 +198,8 @@ struct Editor {
     input::Action undo_action;
     input::Action redo_action;
     input::Action save;
+    input::Action toggle_space;
+    input::Action snap;
 };
 
 Editor *init(memory::Arena *a, Config cfg, input::State *in, const char *level) {
@@ -177,6 +210,8 @@ Editor *init(memory::Arena *a, Config cfg, input::State *in, const char *level) 
     ed->view = cfg.camera.start;
     ed->journal = undo::create(a, cfg.undo_depth);
     ed->pending_component = PENDING_NONE;
+    ed->hot_handle = gizmo::HANDLE_NONE;
+    ed->drag.handle = gizmo::HANDLE_NONE;
     snprintf(ed->level, sizeof(ed->level), "%s", level);
 
     ed->play_map = input::find_map(in, cfg.play_map);
@@ -195,6 +230,8 @@ Editor *init(memory::Arena *a, Config cfg, input::State *in, const char *level) 
     ed->undo_action = input::find(in, "undo");
     ed->redo_action = input::find(in, "redo");
     ed->save = input::find(in, "save_level");
+    ed->toggle_space = input::find(in, "toggle_gizmo_space");
+    ed->snap = input::find(in, "gizmo_snap");
 
     // maps start enabled; the editor's waits for edit mode
     input::set_map_enabled(in, ed->editor_map, false);
@@ -420,8 +457,10 @@ static void hierarchy_panel(Editor *ed, entity::World *w, asset::Manager *m, i32
     ui::end_panel();
 }
 
-// a drag or a run of typing is one edit
-static b32 continuing() { return ui::dragging() || ui::wants_keyboard(); }
+// a drag, in a panel or on the gizmo, or a run of typing is one edit
+static b32 continuing(const Editor *ed) {
+    return ui::dragging() || ui::wants_keyboard() || ed->drag.handle != gizmo::HANDLE_NONE;
+}
 
 static u32 field_size(const entity::FieldDesc *f) {
     switch (f->type) {
@@ -605,7 +644,8 @@ static void component_section(Editor *ed, entity::World *w, asset::Manager *m, e
                 continue;
 
             mark_overridden(e, c);
-            undo::record_field(ed->journal, h, (i32)c, f->offset, size, before, at, continuing());
+            undo::record_field(ed->journal, h, (i32)c, f->offset, size, before, at,
+                               continuing(ed));
 
             // a path resolves when typing stops; anything else right away
             if (f->type == entity::FIELD_STRING) {
@@ -794,6 +834,121 @@ static void draw_markers(Editor *ed, entity::World *w, asset::Manager *m, f32 as
     }
 }
 
+// The handles at the selection, sized so an axis is the same length on screen
+// at any distance: the world length of one pixel at the gizmo's depth, times
+// the size in pixels.
+static b32 build_gizmo_frame(const Editor *ed, entity::World *w, i32 fb_height,
+                             gizmo::Frame *out) {
+    entity::Entity *e = entity::get(w, ed->selected);
+    if (!e)
+        return false;
+
+    const GizmoConfig *g = &ed->cfg.gizmo;
+    linalg::Vec3 origin = linalg::mat4_translation(e->world);
+
+    linalg::Vec3 forward = linalg::quat_rotate(orientation(ed->view), FORWARD);
+    f32 depth = MAX(linalg::vec3_dot(origin - ed->view.position, forward), MIN_GIZMO_DEPTH);
+    f32 world_per_pixel = depth * 2.0f * tanf(DEG2RAD(ed->cfg.camera.fov) * 0.5f) / (f32)fb_height;
+
+    out->origin = origin;
+    out->length = g->size * world_per_pixel;
+    out->plane_size = out->length * g->plane_size;
+    out->plane_offset = out->length * g->plane_offset;
+
+    const linalg::Vec3 world_axes[3] = {RIGHT, UP, -1.0f * FORWARD};
+    for (u32 i = 0; i < 3; i++)
+        out->axis[i] = ed->gizmo_local ? linalg::vec3_normalize_or(linalg::mat4_axis(e->world, i),
+                                                                    world_axes[i])
+                                       : world_axes[i];
+    return true;
+}
+
+static linalg::Vec4 axis_color(u32 i) { return debugdraw::config()->axis_color[i]; }
+
+// hover and drag; true while the pointer is on a handle or holding one, so a
+// click there is not a pick
+static b32 update_gizmo(Editor *ed, entity::World *w, input::State *in, intersect::Ray ray,
+                        i32 fb_height, b32 pointer_free) {
+    ed->gizmo_shown = build_gizmo_frame(ed, w, fb_height, &ed->gizmo_frame);
+    if (!ed->gizmo_shown) {
+        ed->hot_handle = gizmo::HANDLE_NONE;
+        ed->drag.handle = gizmo::HANDLE_NONE;
+        return false;
+    }
+
+    const gizmo::Frame f = ed->gizmo_frame;
+    f32 tolerance = f.length / ed->cfg.gizmo.size * ed->cfg.gizmo.tolerance; // pixels to metres
+    entity::Entity *e = entity::get(w, ed->selected);
+
+    if (ed->drag.handle != gizmo::HANDLE_NONE) {
+        if (!input::down(in, ed->select)) {
+            ed->drag.handle = gizmo::HANDLE_NONE; // released: the journal closes at frame end
+            return true;
+        }
+
+        f32 snap = input::down(in, ed->snap) ? ed->cfg.gizmo.snap : 0.0f;
+        linalg::Vec3 moved = gizmo::delta(&ed->drag, ray, snap);
+        entity::set_world_position(w, ed->selected, ed->drag_world_start + moved);
+        undo::record_field(ed->journal, ed->selected, UNDO_ENTITY,
+                           (u32)offsetof(entity::Entity, local), sizeof(entity::Transform),
+                           &ed->drag_before, &e->local, true);
+        return true;
+    }
+
+    ed->hot_handle = pointer_free ? gizmo::hit(&f, ray, tolerance) : gizmo::HANDLE_NONE;
+    if (ed->hot_handle == gizmo::HANDLE_NONE)
+        return false;
+
+    if (input::pressed(in, ed->select)) {
+        ed->drag = gizmo::begin(&f, ed->hot_handle, ray);
+        ed->drag_world_start = f.origin;
+        ed->drag_before = e->local;
+        if (!ed->drag.valid)
+            ed->drag.handle = gizmo::HANDLE_NONE; // edge-on: nothing to measure along
+    }
+    return true;
+}
+
+static void draw_gizmo(const Editor *ed) {
+    if (!ed->gizmo_shown)
+        return;
+
+    const gizmo::Frame f = ed->gizmo_frame;
+    gizmo::Handle live = ed->drag.handle != gizmo::HANDLE_NONE ? ed->drag.handle : ed->hot_handle;
+    debugdraw::Style x_ray{0.0f, true};
+
+    for (u32 i = 0; i < 3; i++) {
+        linalg::Vec3 tip = f.origin + f.axis[i] * f.length;
+        linalg::Vec4 color = (gizmo::Handle)i == live ? ed->cfg.selection_color : axis_color(i);
+        debugdraw::line(f.origin, tip, color, x_ray);
+
+        // an arrowhead: two bars across the tip, in the other two axes
+        f32 bar = f.length * ARROWHEAD;
+        linalg::Vec3 back = tip - f.axis[i] * bar;
+        linalg::Vec3 u = f.axis[(i + 1) % 3] * bar;
+        linalg::Vec3 v = f.axis[(i + 2) % 3] * bar;
+        debugdraw::line(tip, back + u, color, x_ray);
+        debugdraw::line(tip, back - u, color, x_ray);
+        debugdraw::line(tip, back + v, color, x_ray);
+        debugdraw::line(tip, back - v, color, x_ray);
+    }
+
+    for (u32 n = 0; n < 3; n++) {
+        gizmo::Handle h = (gizmo::Handle)(gizmo::HANDLE_YZ + n);
+        linalg::Vec3 u = f.axis[(n + 1) % 3];
+        linalg::Vec3 v = f.axis[(n + 2) % 3];
+        linalg::Vec3 c0 = f.origin + (u + v) * f.plane_offset;
+        linalg::Vec3 c1 = c0 + u * f.plane_size;
+        linalg::Vec3 c2 = c0 + (u + v) * f.plane_size;
+        linalg::Vec3 c3 = c0 + v * f.plane_size;
+        linalg::Vec4 color = h == live ? ed->cfg.selection_color : axis_color(n);
+        debugdraw::line(c0, c1, color, x_ray);
+        debugdraw::line(c1, c2, color, x_ray);
+        debugdraw::line(c2, c3, color, x_ray);
+        debugdraw::line(c3, c0, color, x_ray);
+    }
+}
+
 // parks the camera looking at the selection from a distance that shows all of it
 static void focus_selection(Editor *ed, entity::World *w, asset::Manager *m) {
     entity::Entity *e = entity::get(w, ed->selected);
@@ -869,17 +1024,23 @@ void frame(Editor *ed, entity::World *w, asset::Manager *m, input::State *in, wi
     hierarchy_panel(ed, w, m, fb_height);
     inspector_panel(ed, w, m, fb_width, fb_height);
 
-    // after the panels, so a click on one is not also a click in the world
-    if (input::pressed(in, ed->select) && !ed->looking && !ui::wants_mouse()) {
-        intersect::Ray ray =
-            pick_ray(ed->view, ed->cfg.camera.fov, aspect, input::cursor(in), fb_width, fb_height);
+    // after the panels, so a click on one is not also a click in the world;
+    // the gizmo gets the pointer first, then whatever is under it
+    intersect::Ray ray =
+        pick_ray(ed->view, ed->cfg.camera.fov, aspect, input::cursor(in), fb_width, fb_height);
+    b32 pointer_free = !ed->looking && !ui::wants_mouse();
+    b32 on_gizmo = update_gizmo(ed, w, in, ray, fb_height, pointer_free);
+
+    if (input::pressed(in, ed->select) && pointer_free && !on_gizmo)
         ed->selected = pick(w, m, ray, ed->cfg.marker_size, ed->cfg.camera.z_far);
-    }
 
     // keys go to a focused field before they mean anything here
     if (!ui::wants_keyboard()) {
         if (input::pressed(in, ed->focus))
             focus_selection(ed, w, m);
+
+        if (input::pressed(in, ed->toggle_space))
+            ed->gizmo_local = !ed->gizmo_local;
 
         if (input::pressed(in, ed->delete_entity) && ed->selected.v) {
             entity::destroy(w, ed->selected);
@@ -897,10 +1058,11 @@ void frame(Editor *ed, entity::World *w, asset::Manager *m, input::State *in, wi
     }
 
     resolve_pending(ed, w, m);
-    if (!continuing())
+    if (!continuing(ed))
         undo::close(ed->journal);
 
     draw_markers(ed, w, m, aspect);
+    draw_gizmo(ed);
 }
 
 } // namespace editor

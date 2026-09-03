@@ -325,4 +325,9 @@ void flush() {
 u32 line_count() { return g.line_count; }
 u32 retained_count() { return g.retained_count; }
 
+const Config *config() {
+    ASSERT_MSG(g.lines, "debugdraw: config before init");
+    return &g.cfg;
+}
+
 } // namespace debugdraw

@@ -14,6 +14,7 @@ test::Suite file_suite();
 test::Suite font_suite();
 test::Suite frametime_suite();
 test::Suite gfx_suite();
+test::Suite gizmo_suite();
 test::Suite input_suite();
 test::Suite intersect_suite();
 test::Suite linalg_suite();

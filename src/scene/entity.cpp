@@ -354,6 +354,24 @@ void set_parent(World *w, asset::Manager *m, Handle child, Handle parent, const 
                  ce->name, ce->attach_joint, pe->name);
 }
 
+void set_world_position(World *w, Handle h, linalg::Vec3 world) {
+    ASSERT(w);
+
+    Entity *e = get(w, h);
+    if (!e)
+        return;
+
+    Entity *p = get(w, e->parent);
+    if (!p) {
+        e->local.position = world;
+        return;
+    }
+
+    // a joint attachment sits under the joint, not the parent's origin, and
+    // that matrix is rebuilt per frame; the parent's own frame is the honest answer
+    e->local.position = linalg::mat4_mul_point(linalg::mat4_inverse_affine(p->world), world);
+}
+
 void *add_component(World *w, Handle h, Component type) {
     ASSERT(w && type < COMPONENT_COUNT);
 

@@ -1,8 +1,8 @@
 instance camera {
     definition templates/camera3d
     transform {
-        position -0.342492 2.05 2.5
-        rotation 0 0 0
+        position -0.222111 2.05 1.99182
+        rotation -8.76 2.76 0
         scale 1
     }
 }
@@ -24,8 +24,8 @@ instance sun {
 instance player {
     definition soldier
     transform {
-        position -0.342492 0.35 0
-        rotation 0 0 0
+        position -0.342492 0.35 -0.50528
+        rotation 0 2.76 0
         scale 1
     }
     renderable {
@@ -44,21 +44,5 @@ instance dropped_pistol {
         position 0.6 0.05 0.2
         rotation 0 0 0
         scale 1
-    }
-}
-instance entity {
-    transform {
-        position 0 0 0
-        rotation 0 0 0
-        scale 1
-    }
-    renderable {
-        model characters/soldier.glb
-        visible true
-    }
-    animator {
-        clip animations/pistol_walk.glb
-        speed 1
-        playing true
     }
 }

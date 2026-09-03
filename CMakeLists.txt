@@ -59,6 +59,7 @@ set(ENGINE_SOURCES
         src/scene/motion.cpp
 
         src/editor/editor.cpp
+        src/editor/gizmo.cpp
         src/editor/undo.cpp
 )
 

@@ -82,4 +82,7 @@ void flush();
 u32 line_count();
 u32 retained_count();
 
+// What init was given, so a gizmo can share the axis colours.
+const Config *config();
+
 } // namespace debugdraw

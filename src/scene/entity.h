@@ -208,6 +208,11 @@ void destroy(World *w, Handle h);
 // NONE detaches; joint may be NULL or empty for plain parenting.
 void set_parent(World *w, asset::Manager *m, Handle child, Handle parent, const char *joint);
 
+// Places the entity at a world position by setting its local one, through the
+// parent's world matrix as of the last end_frame. For a gizmo, which drags in
+// the world and must write into the parent's frame.
+void set_world_position(World *w, Handle h, linalg::Vec3 world);
+
 // With the engine defaults, or the existing component unchanged. The generic
 // pair is for code that works from the descriptor table, an inspector or an
 // undo journal; NULL when the entity is dead or the pool is full.

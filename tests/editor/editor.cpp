@@ -123,6 +123,28 @@ static void pick_respects_a_rotated_box(memory::Arena *a) {
               .v == 0);
 }
 
+static void world_position_writes_into_the_parents_frame(memory::Arena *a) {
+    asset::Manager *m = make_assets(a);
+    entity::World *w = make_world(a);
+
+    // a parent at x = 10, scaled by two: a child put at world x = 14 is local x = 2
+    entity::Handle parent = place(w, "parent", linalg::Vec3{10.0f, 0.0f, 0.0f}, false);
+    entity::get(w, parent)->local.scale = linalg::Vec3{2.0f, 2.0f, 2.0f};
+    entity::Handle child = place(w, "child", linalg::Vec3{0.0f, 0.0f, 0.0f}, false);
+    entity::set_parent(w, m, child, parent, NULL);
+    entity::end_frame(w, m, a, 0.0f);
+
+    entity::set_world_position(w, child, linalg::Vec3{14.0f, 0.0f, 0.0f});
+    CHECK(NEAR(entity::get(w, child)->local.position.x, 2.0f));
+
+    entity::end_frame(w, m, a, 0.0f);
+    CHECK(NEAR(linalg::mat4_translation(entity::get(w, child)->world).x, 14.0f));
+
+    // a root takes the world position as its own
+    entity::set_world_position(w, parent, linalg::Vec3{1.0f, 2.0f, 3.0f});
+    CHECK(entity::get(w, parent)->local.position.z == 3.0f);
+}
+
 static void config_reads_the_file_shape(memory::Arena *a) {
     config::Doc *doc = MUST(config::parse(
         a, memory::push_str(a, "play_map game\ncamera {\n    speed 9\n    near 1\n    far 0.5\n}\n"),
@@ -145,6 +167,7 @@ test::Suite editor_suite() {
         CASE(pick_ray_leaves_through_the_pixel),
         CASE(pick_takes_the_nearest),
         CASE(pick_respects_a_rotated_box),
+        CASE(world_position_writes_into_the_parents_frame),
         CASE(config_reads_the_file_shape),
     };
     return test::Suite{.name = "editor", .cases = cases, .count = ARRAY_COUNT(cases)};
