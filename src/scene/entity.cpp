@@ -1337,6 +1337,16 @@ result::Error save_definition(World *w, asset::Manager *m, Handle h, const char 
     return e;
 }
 
+static u32 spawn_instances(World *w, asset::Manager *m, config::Doc *doc) {
+    u32 spawned = 0;
+    for (config::Node *n = config::find(doc->first, "instance"); n;
+         n = config::find_next(n, "instance")) {
+        if (build_entity(w, m, n, NONE, 0).v)
+            spawned++;
+    }
+    return spawned;
+}
+
 result::Error load_level(World *w, asset::Manager *m, const char *name) {
     ASSERT(w && m && name);
 
@@ -1349,16 +1359,41 @@ result::Error load_level(World *w, asset::Manager *m, const char *name) {
         return doc.err;
     }
 
-    u32 spawned = 0;
-    for (config::Node *n = config::find(doc.val->first, "instance"); n;
-         n = config::find_next(n, "instance")) {
-        if (build_entity(w, m, n, NONE, 0).v)
-            spawned++;
-    }
+    u32 spawned = spawn_instances(w, m, doc.val);
 
     memory::temp_end(t);
     LOG_INFO("entity: %s%s spawned %u instance(s)", name, LEVEL_EXT, spawned);
     return result::OK;
+}
+
+u32 load_level_text(World *w, asset::Manager *m, char *text, const char *name) {
+    ASSERT(w && m && text && name);
+
+    memory::Arena *scratch = asset::scratch_arena(m);
+    memory::ArenaTemp t = memory::temp_begin(scratch);
+
+    config::DocResult doc = config::parse(scratch, text, name);
+    u32 spawned = doc.err == result::OK ? spawn_instances(w, m, doc.val) : 0;
+    if (doc.err != result::OK)
+        LOG_ERR("entity: the level text '%s' would not parse", name);
+
+    memory::temp_end(t);
+    return spawned;
+}
+
+static config::Doc *level_doc(memory::Arena *a, World *w, const char *name) {
+    config::Doc *doc = config::create(a, name);
+    for (Handle h = first(w); h.v; h = next(w, h))
+        if (get(w, h)->parent.v == 0)
+            write_entity(a, doc, NULL, w, h, "instance", false);
+    return doc;
+}
+
+char *write_level(memory::Arena *a, World *w) {
+    ASSERT(a && w);
+    // the document stays in the arena beside its text as scaffolding; the
+    // caller owns the arena and resets it, as the editor's snapshot does
+    return config::write(a, level_doc(a, w, "<level>"));
 }
 
 result::Error save_level(World *w, asset::Manager *m, const char *name) {
@@ -1373,14 +1408,29 @@ result::Error save_level(World *w, asset::Manager *m, const char *name) {
         return result::ERR_INVALID;
     }
 
-    config::Doc *doc = config::create(scratch, abs);
-    for (Handle h = first(w); h.v; h = next(w, h))
-        if (get(w, h)->parent.v == 0)
-            write_entity(scratch, doc, NULL, w, h, "instance", false);
-    result::Error e = config::save(scratch, doc, abs);
+    result::Error e = config::save(scratch, level_doc(scratch, w, abs), abs);
 
     memory::temp_end(t);
     return e;
+}
+
+void clear(World *w) {
+    ASSERT(w);
+
+    // destroy takes a subtree with it, so walking the list while destroying
+    // would step onto children already gone; instead, take the first live
+    // entity's root until nothing is left
+    for (Handle h = first(w); h.v; h = first(w)) {
+        Entity *e = get(w, h);
+        while (e->parent.v) {
+            h = e->parent;
+            e = get(w, h);
+        }
+        destroy(w, h);
+    }
+
+    w->accumulator = 0.0f;
+    w->alpha = 0.0f;
 }
 
 } // namespace entity

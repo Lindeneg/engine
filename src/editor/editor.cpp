@@ -32,6 +32,9 @@
 #define DEFAULT_FRUSTUM_DEPTH 10.0f
 #define DEFAULT_UNDO_DEPTH 256
 #define DEFAULT_UNDO_BLOB 4096
+#define DEFAULT_SNAPSHOT_BYTES 262144
+
+#define DIRTY_MARK " *"
 
 #define DEFAULT_GIZMO_SIZE 90.0f
 #define DEFAULT_GIZMO_TOLERANCE 8.0f
@@ -130,6 +133,7 @@ Config config_from(memory::Arena *a, config::Node *first) {
     config::Node *un = undo_block ? undo_block->first_child : NULL;
     c.undo_depth = (u32)config::get_i32(un, "depth", DEFAULT_UNDO_DEPTH);
     c.undo_blob = (u32)config::get_i32(un, "blob", DEFAULT_UNDO_BLOB);
+    c.snapshot_bytes = (u32)config::get_i32(first, "snapshot", DEFAULT_SNAPSHOT_BYTES);
 
     if (c.camera.z_near <= 0.0f || c.camera.z_far <= c.camera.z_near) {
         LOG_WARN("editor: camera near/far of %.3f/%.3f is not a valid range, using %.3f/%.1f",
@@ -145,6 +149,10 @@ Config config_from(memory::Arena *a, config::Node *first) {
     if (c.undo_blob == 0) {
         LOG_WARN("editor: an undo blob of 0 bytes holds nothing, using %d", DEFAULT_UNDO_BLOB);
         c.undo_blob = DEFAULT_UNDO_BLOB;
+    }
+    if (c.snapshot_bytes == 0) {
+        LOG_WARN("editor: a snapshot of 0 bytes holds no level, using %d", DEFAULT_SNAPSHOT_BYTES);
+        c.snapshot_bytes = DEFAULT_SNAPSHOT_BYTES;
     }
     return c;
 }
@@ -185,6 +193,11 @@ struct Editor {
     undo::Journal *journal;
     char level[ENTITY_NAME_CAP];
 
+    // the level as text from the moment play began; its own arena, reset per snapshot
+    memory::Arena *scratch;
+    memory::Arena snapshot_arena;
+    char *snapshot_text; // NULL when nothing is playing
+
     // a path typed into a component resolves once the keyboard lets go, not per keystroke
     entity::Handle pending_entity;
     i32 pending_component;
@@ -224,6 +237,8 @@ Editor *init(memory::Arena *a, memory::Arena *scratch, Config cfg, input::State 
     ed->cfg = cfg;
     ed->view = cfg.camera.start;
     ed->journal = undo::create(a, scratch, cfg.undo_depth, cfg.undo_blob);
+    ed->scratch = scratch;
+    ed->snapshot_arena = memory::create(cfg.snapshot_bytes);
     ed->pending_component = PENDING_NONE;
     ed->hot_handle = gizmo::HANDLE_NONE;
     ed->drag.handle = gizmo::HANDLE_NONE;
@@ -253,13 +268,48 @@ Editor *init(memory::Arena *a, memory::Arena *scratch, Config cfg, input::State 
     return ed;
 }
 
-void set_active(Editor *ed, input::State *in, window::Window *win, b32 on) {
-    ASSERT(ed && in && win);
+void snapshot(Editor *ed, entity::World *w) {
+    ASSERT(ed && w);
+    memory::reset(&ed->snapshot_arena);
+    ed->snapshot_text = entity::write_level(&ed->snapshot_arena, w);
+}
+
+b32 restore(Editor *ed, entity::World *w, asset::Manager *m) {
+    ASSERT(ed && w && m);
+    if (!ed->snapshot_text)
+        return false;
+
+    // the parser tokenizes in place, so it works on a copy and the snapshot stays whole
+    memory::ArenaTemp t = memory::temp_begin(ed->scratch);
+    char *text = memory::push_str(ed->scratch, ed->snapshot_text);
+    entity::clear(w);
+    u32 spawned = entity::load_level_text(w, m, text, "<snapshot>");
+    memory::temp_end(t);
+
+    ed->snapshot_text = NULL;
+    LOG_INFO("editor: the level is back as it was, %u instance(s)", spawned);
+    return true;
+}
+
+b32 dirty(const Editor *ed) {
+    ASSERT(ed);
+    return !undo::is_clean(ed->journal);
+}
+
+void set_active(Editor *ed, entity::World *w, asset::Manager *m, input::State *in,
+                window::Window *win, b32 on) {
+    ASSERT(ed && w && m && in && win);
 
     if ((ed->active != 0) == (on != 0))
         return;
     ed->active = on ? 1 : 0;
     ed->looking = false;
+
+    // play runs on a copy: what the game does to the world is undone by coming back
+    if (on)
+        restore(ed, w, m);
+    else
+        snapshot(ed, w);
 
     input::set_map_enabled(in, ed->play_map, !on);
     input::set_map_enabled(in, ed->editor_map, on);
@@ -447,10 +497,12 @@ static void drop_reparent(Editor *ed, entity::World *w, asset::Manager *m, entit
 
 static void save_level(Editor *ed, entity::World *w, asset::Manager *m) {
     result::Error e = entity::save_level(w, m, ed->level);
-    if (e == result::OK)
-        LOG_INFO("editor: saved level '%s'", ed->level);
-    else
+    if (e != result::OK) {
         LOG_ERR("editor: saving level '%s' failed: %s", ed->level, result::str(e));
+        return;
+    }
+    undo::mark_clean(ed->journal);
+    LOG_INFO("editor: saved level '%s'", ed->level);
 }
 
 static void draw_tree(Editor *ed, entity::World *w, entity::Handle h) {
@@ -476,6 +528,11 @@ static void draw_tree(Editor *ed, entity::World *w, entity::Handle h) {
 
 static void hierarchy_panel(Editor *ed, entity::World *w, asset::Manager *m, i32 fb_height) {
     ui::begin_panel("Hierarchy", canvas::Rect{0.0f, 0.0f, ed->cfg.hierarchy_width, (f32)fb_height});
+
+    // the level, and whether what is on screen is what is on disk
+    char title[INSPECTOR_LINE_CAP];
+    snprintf(title, sizeof(title), "level: %s%s", ed->level, dirty(ed) ? DIRTY_MARK : "");
+    ui::label(title);
 
     ui::columns(2);
     if (ui::button("New entity")) {

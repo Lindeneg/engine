@@ -1,4 +1,5 @@
 instance camera {
+    id 1
     definition templates/camera3d
     transform {
         position 0.0157416 2.05032 0.825369
@@ -13,6 +14,7 @@ instance camera {
     }
 }
 instance sun {
+    id 2
     definition templates/directional_light
     transform {
         position 0 0 0
@@ -21,9 +23,11 @@ instance sun {
     }
 }
 instance player {
+    id 3
     definition soldier
+    owned_ids 4
     transform {
-        position 1.16934 0.350319 -1.39256
+        position 1.16934 3.95181 -1.39256
         rotation 0 332.52 0
         scale 1
     }
@@ -38,6 +42,7 @@ instance player {
     }
 }
 instance dropped_pistol {
+    id 5
     definition pistol
     transform {
         position 0.6 0.05 0.2
@@ -46,6 +51,7 @@ instance dropped_pistol {
     }
 }
 instance floor {
+    id 6
     transform {
         position 0 -0.5 0
         rotation 0 0 0
@@ -59,6 +65,7 @@ instance floor {
     }
 }
 instance wall_north {
+    id 7
     transform {
         position 0 1.5 -6
         rotation 0 0 0
@@ -72,6 +79,7 @@ instance wall_north {
     }
 }
 instance wall_angled {
+    id 8
     transform {
         position 5 1.5 -2
         rotation 0 35 0

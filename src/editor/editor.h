@@ -24,8 +24,8 @@
 // what is not undoable yet.
 //
 // Entering edit mode loosens the cursor and swaps the game's map for the
-// editor's. Leaving it resumes play from wherever the world was left; a reset
-// to the saved level on stop is a later feature.
+// editor's, and puts the world back as it was when play began. The edited
+// level is the only authority; play is a copy of it.
 //
 //     if (input::pressed(in, toggle))
 //         editor::set_active(ed, in, win, !editor::active(ed));
@@ -73,6 +73,7 @@ struct Config {
     f32 frustum_depth; // how far a selected camera's frustum is drawn
     u32 undo_depth;    // edits remembered
     u32 undo_blob;     // bytes an entry holds for a created or deleted subtree
+    u32 snapshot_bytes; // room for the level as text while it plays
 };
 
 // The document's top level; NULL or missing keys take the defaults. Strings are copied into a.
@@ -91,8 +92,19 @@ struct Editor;
 Editor *init(memory::Arena *a, memory::Arena *scratch, Config cfg, input::State *in,
              const char *level);
 
-void set_active(Editor *ed, input::State *in, window::Window *win, b32 on);
+// Edit mode is the authority and play runs on a copy: leaving edit mode takes
+// a snapshot of the world, and coming back clears the world and rebuilds it
+// from that snapshot. Nothing the game did survives, and nothing it spawned.
+void set_active(Editor *ed, entity::World *w, asset::Manager *m, input::State *in,
+                window::Window *win, b32 on);
 b32 active(const Editor *ed);
+
+// The two halves of that, on their own for a test or a caller with its own reasons.
+void snapshot(Editor *ed, entity::World *w);
+b32 restore(Editor *ed, entity::World *w, asset::Manager *m); // false with no snapshot to restore
+
+// Changed since the last save, undos counted.
+b32 dirty(const Editor *ed);
 
 // One frame of edit mode: flies the camera, draws the panels and the markers,
 // picks on click. Inside ui's frame, after entity::end_frame.

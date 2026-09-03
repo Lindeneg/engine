@@ -344,4 +344,16 @@ result::Error save_definition(World *w, asset::Manager *m, Handle h, const char 
 result::Error load_level(World *w, asset::Manager *m, const char *name);
 result::Error save_level(World *w, asset::Manager *m, const char *name);
 
+// The same level as text and back, for an editor holding a copy of the world
+// in memory while the game runs on the real one. write_level is what
+// save_level writes; load_level_text spawns what load_level would, and
+// tokenizes the text in place, so it takes a writable copy. Returns the
+// instances spawned.
+char *write_level(memory::Arena *a, World *w);
+u32 load_level_text(World *w, asset::Manager *m, char *text, const char *name);
+
+// Destroys every entity and drops the banked simulation time. The id counter
+// keeps counting: an id used by anything, ever, is not handed out again.
+void clear(World *w);
+
 } // namespace entity

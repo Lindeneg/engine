@@ -66,6 +66,12 @@ void record_clip_options(Journal *j, const char *rel_path, asset::ClipOptions be
 void close(Journal *j);
 void clear(Journal *j);
 
+// The point the level was last saved at. Clean means the journal stands
+// exactly there again, undos included; an entry dropped for depth, or a clear,
+// loses the point until the next save.
+void mark_clean(Journal *j);
+b32 is_clean(const Journal *j);
+
 b32 can_undo(const Journal *j);
 b32 can_redo(const Journal *j);
 

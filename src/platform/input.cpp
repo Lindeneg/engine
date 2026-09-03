@@ -232,6 +232,7 @@ static void read_map(State *s, memory::Arena *a, config::Node *mn) {
 
 StateResult init(memory::Arena *a, memory::Arena *scratch, const char *root) {
     ASSERT(a && scratch && root);
+    ASSERT_MSG(a != scratch, "input: the state cannot live in the arena it is parsed from");
 
     memory::ArenaTemp t = memory::temp_begin(scratch);
 

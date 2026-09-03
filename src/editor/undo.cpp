@@ -40,6 +40,9 @@ struct Entry {
     u8 after[UNDO_VALUE_CAP];
 };
 
+// no save point: the level has changed in ways the journal cannot walk back to
+#define CLEAN_UNKNOWN 0xFFFFFFFFu
+
 struct Journal {
     memory::Arena *scratch;
     Entry *entries;
@@ -48,6 +51,7 @@ struct Journal {
     u32 cap;
     u32 count;  // held
     u32 cursor; // applied; the rest are redo
+    u32 clean;  // the cursor at the last save, or CLEAN_UNKNOWN
 };
 
 #define X(ID, Type, key)                                                                           \
@@ -69,6 +73,7 @@ Journal *create(memory::Arena *a, memory::Arena *scratch, u32 depth, u32 blob_by
     j->blobs = push_array(a, char, (u64)depth * blob_bytes);
     j->blob_bytes = blob_bytes;
     j->cap = depth;
+    j->clean = 0; // nothing has happened yet, which is what a fresh load is
     return j;
 }
 
@@ -76,11 +81,18 @@ static char *blob(Journal *j, u32 index) { return j->blobs + (u64)index * j->blo
 
 // drops the redo tail and, at capacity, the oldest entry with its blob
 static Entry *push(Journal *j) {
+    // the save point is the state after the first `clean` entries; a new entry
+    // written over a redo tail that reached it means that state is unreachable
+    if (j->clean != CLEAN_UNKNOWN && j->clean > j->cursor)
+        j->clean = CLEAN_UNKNOWN;
+
     j->count = j->cursor;
     if (j->count == j->cap) {
         memmove(j->entries, j->entries + 1, (j->cap - 1) * sizeof(Entry));
         memmove(j->blobs, blob(j, 1), (u64)(j->cap - 1) * j->blob_bytes);
         j->count--;
+        // every index moved; the save point is somewhere it can no longer be reached
+        j->clean = CLEAN_UNKNOWN;
     }
 
     Entry *e = &j->entries[j->count++];
@@ -251,6 +263,17 @@ void clear(Journal *j) {
     ASSERT(j);
     j->count = 0;
     j->cursor = 0;
+    j->clean = CLEAN_UNKNOWN;
+}
+
+void mark_clean(Journal *j) {
+    ASSERT(j);
+    j->clean = j->cursor;
+}
+
+b32 is_clean(const Journal *j) {
+    ASSERT(j);
+    return j->clean != CLEAN_UNKNOWN && j->clean == j->cursor;
 }
 
 b32 can_undo(const Journal *j) {

@@ -135,6 +135,47 @@ static void new_edits_drop_the_redo_tail_and_depth_the_oldest(memory::Arena *a) 
     CHECK(!undo::can_undo(j) && undo::count(j) == 0);
 }
 
+static void the_save_point_is_clean_until_the_journal_moves(memory::Arena *a) {
+    asset::Manager *m = make_assets(a, ".");
+    entity::World *w = make_world(a);
+    undo::Journal *j = undo::create(a, a, 2, BLOB);
+
+    entity::Handle h = entity::spawn(w, "cam");
+    entity::add_camera(w, h);
+    CHECK(undo::is_clean(j)); // a fresh load
+
+    set_fov(j, w, h, 61.0f, false);
+    CHECK(!undo::is_clean(j));
+    undo::mark_clean(j);
+    CHECK(undo::is_clean(j));
+
+    // an edit dirties, undoing it back to the save point cleans, redoing dirties again
+    set_fov(j, w, h, 62.0f, false);
+    CHECK(!undo::is_clean(j));
+    CHECK(undo::undo(j, w, m));
+    CHECK(undo::is_clean(j));
+    CHECK(undo::redo(j, w, m));
+    CHECK(!undo::is_clean(j));
+
+    // undoing past the save point and editing anew drops it with the redo tail
+    CHECK(undo::undo(j, w, m) && undo::undo(j, w, m));
+    set_fov(j, w, h, 70.0f, false);
+    CHECK(!undo::is_clean(j));
+    for (u32 i = 0; i < 3; i++)
+        CHECK(!undo::undo(j, w, m) || !undo::is_clean(j));
+
+    // and depth dropping the oldest entry loses the point too: the journal is
+    // empty and two deep here, so the third edit pushes the first one off
+    undo::mark_clean(j);
+    set_fov(j, w, h, 71.0f, false);
+    set_fov(j, w, h, 72.0f, false);
+    CHECK(undo::undo(j, w, m) && undo::undo(j, w, m) && undo::is_clean(j)); // still reachable
+    CHECK(undo::redo(j, w, m) && undo::redo(j, w, m));
+    set_fov(j, w, h, 73.0f, false);
+    CHECK(undo::undo(j, w, m) && undo::undo(j, w, m) && !undo::undo(j, w, m));
+    CHECK(!undo::is_clean(j));
+}
+
 static void components_come_and_go(memory::Arena *a) {
     asset::Manager *m = make_assets(a, ".");
     entity::World *w = make_world(a);
@@ -321,6 +362,7 @@ test::Suite undo_suite() {
         CASE(field_edits_round_trip),
         CASE(continuing_edits_merge_until_closed),
         CASE(new_edits_drop_the_redo_tail_and_depth_the_oldest),
+        CASE(the_save_point_is_clean_until_the_journal_moves),
         CASE(components_come_and_go),
         CASE(a_deleted_subtree_comes_back_with_its_ids),
         CASE(a_created_entity_is_undone_and_redone),

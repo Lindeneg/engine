@@ -154,6 +154,53 @@ static void world_position_writes_into_the_parents_frame(memory::Arena *a) {
     CHECK(entity::get(w, parent)->local.position.z == 3.0f);
 }
 
+// play runs on a copy: whatever it does to the world, and whatever it adds,
+// is gone when edit mode comes back, and the selection still names its entity
+static void play_leaves_the_edited_level_untouched(memory::Arena *a) {
+    asset::Manager *m = make_assets(a);
+    entity::World *w = make_world(a);
+
+    // the input state outlives init's temp scope, so it cannot share init's scratch
+    memory::Arena input_arena = memory::create(KiB(64));
+    input::State *in = MUST(input::init(&input_arena, a, CL_ASSET_ROOT));
+    editor::Config cfg = editor::config_from(a, NULL);
+    editor::Editor *ed = editor::init(a, a, cfg, in, "test");
+
+    entity::Handle box = place(w, "box", linalg::Vec3{0.0f, 5.0f, 0.0f}, true);
+    entity::Handle marker = place(w, "marker", linalg::Vec3{1.0f, 1.0f, 1.0f}, false);
+    u32 box_id = entity::id_of(w, box);
+    editor::select(ed, w, box);
+    CHECK(!editor::dirty(ed)); // freshly loaded is clean
+
+    // a child under the box, so the clear on the way back has a subtree to take down
+    entity::Handle child = place(w, "child", linalg::Vec3{0.0f, -1.0f, 0.0f}, false);
+    u32 child_id = entity::id_of(w, child);
+    entity::set_parent(w, m, child, box, NULL);
+
+    editor::snapshot(ed, w);
+
+    // "play": the box falls, the marker is renamed, a bullet appears
+    entity::get(w, box)->local.position.y = 0.35f;
+    snprintf(entity::get(w, marker)->name, ENTITY_NAME_CAP, "moved");
+    entity::Handle bullet = place(w, "bullet", linalg::Vec3{}, false);
+    u32 bullet_id = entity::id_of(w, bullet);
+
+    CHECK(editor::restore(ed, w, m));
+    CHECK(!editor::restore(ed, w, m)); // a snapshot restores once
+
+    entity::Handle back = entity::find_by_id(w, box_id);
+    CHECK(back.v != 0);
+    CHECK(entity::get(w, back)->local.position.y == 5.0f);
+    CHECK(entity::get(w, entity::find_by_id(w, child_id))->parent.v == back.v);
+    CHECK(strcmp(entity::get(w, entity::find_by_id(w, entity::id_of(w, back) + 1))->name,
+                 "marker") == 0);
+    CHECK(entity::find_by_id(w, bullet_id).v == 0);
+    CHECK(editor::selected(ed, w).v == back.v);
+
+    // an id spent during play is not handed out again after
+    CHECK(entity::id_of(w, entity::spawn(w, "after")) > bullet_id);
+}
+
 static void config_reads_the_file_shape(memory::Arena *a) {
     config::Doc *doc = MUST(config::parse(
         a, memory::push_str(a, "play_map game\ncamera {\n    speed 9\n    near 1\n    far 0.5\n}\n"),
@@ -177,6 +224,7 @@ test::Suite editor_suite() {
         CASE(pick_takes_the_nearest),
         CASE(pick_respects_a_rotated_box),
         CASE(world_position_writes_into_the_parents_frame),
+        CASE(play_leaves_the_edited_level_untouched),
         CASE(config_reads_the_file_shape),
     };
     return test::Suite{.name = "editor", .cases = cases, .count = ARRAY_COUNT(cases)};

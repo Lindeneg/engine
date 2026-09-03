@@ -128,6 +128,18 @@ static entity::Handle find_root(entity::World *w, const char *name) {
     return entity::NONE;
 }
 
+// The player is game code driving an entity the level placed. The engine knows
+// nothing about it beyond the handle it is given, and the handle is looked up
+// each time play starts, since play runs on a fresh copy of the level.
+static game::Player make_player(config::Node *player_cfg, input::State *in, entity::World *w,
+                                const char *body_name) {
+    entity::Handle body = find_root(w, body_name);
+    if (!body.v)
+        LOG_WARN("main: the level has no root entity named \"%s\", so nothing is driven",
+                 body_name);
+    return game::create(player_cfg, in, body);
+}
+
 int main() {
     logger::init(NULL);
     memory::init(RESERVE_BYTES);
@@ -202,18 +214,12 @@ int main() {
     // everything in the world comes from the level file
     MUST(entity::load_level(world, assets, config::get(cfg, "level", DEFAULT_LEVEL)));
 
-    // The player is game code driving an entity the level placed. The engine
-    // knows nothing about it beyond the handle it is given.
     config::Node *player_cfg = config::find(cfg, "player");
     const char *body_name =
         config::get(player_cfg ? player_cfg->first_child : NULL, "body", DEFAULT_PLAYER_BODY);
 
-    entity::Handle body = find_root(world, body_name);
-    if (!body.v)
-        LOG_WARN("main: the level has no root entity named \"%s\", so nothing is driven",
-                 body_name);
-
-    game::Player player = game::create(player_cfg, in, body);
+    // built when play starts, from the copy of the level play runs on
+    game::Player player{};
 
     input::Map gameplay = input::find_map(in, "gameplay");
     input::Action quit = input::find(in, "quit");
@@ -222,8 +228,9 @@ int main() {
     input::Action toggle_editor = input::find(in, "toggle_editor");
     b32 debug_draw = false;
 
-    // playable without a click to start; the toggle hands the cursor back
-    input::set_mouse_look(in, win, true);
+    // The session opens in edit mode: the level file is the authority, and play
+    // is a copy of it taken when F1 says so.
+    editor::set_active(ed, world, assets, in, win, true);
 
     f64 last = window::time();
     frametime::Stats timing = frametime::create(overlay.smoothing, overlay.window, last);
@@ -235,8 +242,14 @@ int main() {
         if (input::pressed(in, quit))
             break;
 
-        if (input::pressed(in, toggle_editor))
-            editor::set_active(ed, in, win, !editor::active(ed));
+        if (input::pressed(in, toggle_editor)) {
+            b32 edit = !editor::active(ed);
+            editor::set_active(ed, world, assets, in, win, edit);
+
+            // play starts from a fresh copy of the level, so the player starts fresh too
+            if (!edit)
+                player = make_player(player_cfg, in, world, body_name);
+        }
 
         // while editing the editor owns the cursor and the maps
         if (input::pressed(in, toggle_look) && !editor::active(ed)) {
