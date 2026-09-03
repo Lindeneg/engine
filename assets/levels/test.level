@@ -1,50 +1,64 @@
-# A level: which definitions exist and where they are put. One line per thing in
-# the world, not one file per thing -- a warehouse with 500 crates is 500
-# instance blocks here, all sharing one crate.entity.
-#
-# An instance is the same kind of block as a child: it references a definition
-# and overrides what it needs.
-
-# The camera and the light are entities like everything else. Both are copied
-# from templates/ rather than referenced, because each one wants its own
-# settings and there is no shared behaviour to keep in sync.
-#
-# The player in src/game places this camera every frame, from the body's
-# position and the eye_offset in engine.cfg. The camera itself does not care who
-# moves it, which is why it is an ordinary entity and not a special case.
-instance "camera" {
+instance camera {
     definition templates/camera3d
-
     transform {
-        position 0 1 3
+        position -0.342492 2.05 2.5
         rotation 0 0 0
-        scale    1
+        scale 1
     }
 }
-
-instance "sun" {
+instance sun {
     definition templates/directional_light
-}
-
-instance "player" {
-    definition soldier
-
     transform {
         position 0 0 0
-        rotation 0 0 0
-        scale    1
+        rotation -55 49 0
+        scale 1
+    }
+    light {
+        kind directional
+        color 1 1 1
+        intensity 0.72
+        ambient 0.28
+        active true
     }
 }
-
-# The same pistol.entity the soldier holds, standing on its own. Nothing about
-# it had to be duplicated to put a second one in the world -- which is the point
-# of it being a definition rather than a block inside soldier.entity.
-instance "dropped_pistol" {
+instance player {
+    definition soldier
+    transform {
+        position -0.342492 0.35 0
+        rotation 0 0 0
+        scale 1
+    }
+    renderable {
+        model characters/soldier.glb
+        visible true
+    }
+    animator {
+        clip animations/pistol_idle.glb
+        speed 1
+        playing true
+    }
+}
+instance dropped_pistol {
     definition pistol
-
     transform {
         position 0.6 0.05 0.2
         rotation 0 0 0
-        scale    1
+        scale 1
+    }
+}
+instance entity {
+    transform {
+        position 0 0 0
+        rotation 0 0 0
+        scale 1
+    }
+    renderable {
+        model characters/soldier.glb
+        visible true
+    }
+    animator {
+        clip animations/pistol_walk.glb
+        speed 1
+        playing true
     }
 }

@@ -15,15 +15,16 @@ i32 name_index(const char *const *names, u32 count, const char *s) {
 void canonical_name(char *dst, u64 cap, const char *src) {
     ASSERT(dst && cap);
 
-    u64 i = 0;
-    if (src) {
-        for (; src[i] && i + 1 < cap; i++) {
-            char c = src[i];
-            b32 alnum = (c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z');
-            dst[i] = alnum ? c : '_';
-        }
+    // separators are dropped rather than replaced: one exporter writes the
+    // colon, one an underscore, one nothing at all, and a joint is the same joint
+    u64 n = 0;
+    for (u64 i = 0; src && src[i] && n + 1 < cap; i++) {
+        char c = src[i];
+        b32 alnum = (c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z');
+        if (alnum)
+            dst[n++] = c;
     }
-    dst[i] = 0;
+    dst[n] = 0;
 }
 
 // lead byte thresholds and the continuation pattern

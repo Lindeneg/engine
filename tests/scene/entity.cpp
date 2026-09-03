@@ -270,7 +270,7 @@ static void definition_children_are_owned(memory::Arena *a) {
     CHECK(strstr(expanded, "clip animations/pistol_idle.glb") != NULL);
     CHECK(strstr(expanded, "child weapon {") != NULL);
     CHECK(strstr(expanded, "definition pistol") != NULL);
-    CHECK(strstr(expanded, "attach_joint mixamorig_RightHand") != NULL);
+    CHECK(strstr(expanded, "attach_joint mixamorigRightHand") != NULL); // written canonical
     CHECK(strstr(expanded, "rotation 180 0 90") != NULL);
     CHECK(strstr(expanded, "weapons/pistol.glb") == NULL); // the child is still a reference
 

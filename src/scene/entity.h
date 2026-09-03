@@ -144,6 +144,10 @@ struct Entity {
 // reflection for the parser, the writer and the editor; unlisted fields never touch a file
 enum FieldType { FIELD_F32, FIELD_I32, FIELD_B32, FIELD_VEC3, FIELD_STRING, FIELD_ENUM };
 
+// what a string field names under the asset root, so an editor knows which
+// sidecar belongs beside it
+enum AssetKind { ASSET_NONE, ASSET_MODEL, ASSET_CLIP };
+
 struct FieldDesc {
     const char *key;
     FieldType type;
@@ -151,6 +155,7 @@ struct FieldDesc {
     u32 cap;                  // FIELD_STRING: bytes at offset
     const char *const *names; // FIELD_ENUM: index -> name
     u32 name_count;
+    AssetKind asset; // FIELD_STRING: the asset the path names, if any
 };
 
 struct World;
@@ -203,7 +208,12 @@ void destroy(World *w, Handle h);
 // NONE detaches; joint may be NULL or empty for plain parenting.
 void set_parent(World *w, asset::Manager *m, Handle child, Handle parent, const char *joint);
 
-// With the engine defaults, or the existing component unchanged.
+// With the engine defaults, or the existing component unchanged. The generic
+// pair is for code that works from the descriptor table, an inspector or an
+// undo journal; NULL when the entity is dead or the pool is full.
+void *add_component(World *w, Handle h, Component c);
+void remove_component(World *w, Handle h, Component c);
+
 Renderable *add_renderable(World *w, Handle h);
 Animator *add_animator(World *w, Handle h);
 Camera *add_camera(World *w, Handle h);
@@ -213,6 +223,9 @@ Renderable *renderable(World *w, Handle h); // NULL when absent
 Animator *animator(World *w, Handle h);
 Camera *camera(World *w, Handle h);
 Light *light(World *w, Handle h);
+
+// The same by index, for code working from the descriptor table.
+void *component(World *w, Handle h, Component c);
 
 // Walking one component's live slots, for the systems and tools that live
 // outside this file. 0 ends the walk, as with a pool index.
@@ -224,8 +237,11 @@ void *component_at(World *w, Component c, u32 slot);
 Handle active_camera(World *w);
 
 // Per-frame constants from the active camera and the first active light; false
-// when there is no camera.
+// when there is no camera. The second form takes the eye from the caller, for
+// an editor looking at the level from somewhere no entity stands.
 b32 build_frame(World *w, f32 aspect, shader::FrameData *out);
+b32 build_frame(World *w, linalg::Mat4 camera_world, const Camera *lens, f32 aspect,
+                shader::FrameData *out);
 
 // The skinning palette for an entity's animator, or NULL when it has none.
 const linalg::Mat4 *palette(World *w, Handle h, u32 *out_count);

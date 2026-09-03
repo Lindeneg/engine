@@ -489,6 +489,114 @@ ClipOptions clip_options(Manager *m, const char *rel_path) {
     return opts;
 }
 
+b32 exists(Manager *m, const char *rel_path) {
+    ASSERT(m && rel_path);
+    memory::ArenaTemp t = memory::temp_begin(m->scratch);
+    b32 found = file::exists(abs_path(m, rel_path));
+    memory::temp_end(t);
+    return found;
+}
+
+b32 has_import_sidecar(Manager *m, const char *rel_path) {
+    ASSERT(m && rel_path);
+    memory::ArenaTemp t = memory::temp_begin(m->scratch);
+    b32 found = file::exists(abs_path(m, path::swap_ext(m->scratch, rel_path, IMPORT_SIDECAR_EXT)));
+    memory::temp_end(t);
+    return found;
+}
+
+// a block with one key per setting, each carrying its meaning as a trailing comment
+static config::Node *sidecar_block(memory::Arena *a, config::Doc *doc, const char *key,
+                                   const char *comment) {
+    config::Node *block = config::append(a, doc, NULL, key, NULL, 0);
+    block->is_block = true;
+    block->comment = comment;
+    return block;
+}
+
+static void sidecar_key(memory::Arena *a, config::Doc *doc, config::Node *block, const char *key,
+                        const char *value, const char *comment) {
+    const char *vals[] = {value};
+    config::Node *n = config::append(a, doc, block, key, vals, 1);
+    n->comment = comment;
+}
+
+static result::Error save_sidecar(Manager *m, const char *rel_path, config::Doc *doc,
+                                  const char *abs) {
+    result::Error e = config::save(m->scratch, doc, abs);
+    if (e == result::OK)
+        LOG_INFO("asset: wrote %s", abs);
+    else
+        LOG_ERR("asset: cannot write the import sidecar of %s: %s", rel_path, result::str(e));
+    return e;
+}
+
+result::Error write_import_options(Manager *m, const char *rel_path, ImportOptions opts) {
+    ASSERT(m && rel_path);
+    memory::ArenaTemp t = memory::temp_begin(m->scratch);
+
+    const char *abs = abs_path(m, path::swap_ext(m->scratch, rel_path, IMPORT_SIDECAR_EXT));
+    config::Doc *doc = config::create(m->scratch, abs);
+    config::Node *block =
+        sidecar_block(m->scratch, doc, "import",
+                      "how this file enters world space; the asset's, not the loader's");
+    sidecar_key(m->scratch, doc, block, "scale", memory::push_fmt(m->scratch, "%g", (f64)opts.scale),
+                "multiplier on the authored units");
+    sidecar_key(m->scratch, doc, block, "z_up", opts.z_up ? "true" : "false",
+                "authored Z-up: rotate into the Y-up world");
+
+    result::Error e = save_sidecar(m, rel_path, doc, abs);
+    memory::temp_end(t);
+    return e;
+}
+
+result::Error write_clip_options(Manager *m, const char *rel_path, ClipOptions opts) {
+    ASSERT(m && rel_path);
+    memory::ArenaTemp t = memory::temp_begin(m->scratch);
+
+    const char *abs = abs_path(m, path::swap_ext(m->scratch, rel_path, IMPORT_SIDECAR_EXT));
+    config::Doc *doc = config::create(m->scratch, abs);
+    config::Node *block = sidecar_block(m->scratch, doc, "clip",
+                                        "which rig this clip was made for is not in the file");
+    sidecar_key(m->scratch, doc, block, "rotation_only", opts.rotation_only ? "true" : "false",
+                "true when authored for another rig: drops its bone lengths, costs root motion");
+
+    result::Error e = save_sidecar(m, rel_path, doc, abs);
+    memory::temp_end(t);
+    return e;
+}
+
+u32 apply_import_options(Manager *m, const char *rel_path, ImportOptions opts) {
+    ASSERT(m && rel_path);
+
+    u32 applied = 0;
+    for (u32 s = 0; s < SCOPE_COUNT; s++) {
+        u32 *h = strmap::find(&m->by_path[s], rel_path);
+        if (!h)
+            continue;
+        get(m, ModelHandle{*h})->import = import_matrix(opts);
+        applied++;
+    }
+    return applied;
+}
+
+u32 apply_clip_options(Manager *m, const char *rel_path, ClipOptions opts) {
+    ASSERT(m && rel_path);
+
+    // clips are keyed "<path>@<skeleton>"; every binding of the file takes the setting
+    u64 len = strlen(rel_path);
+    u32 applied = 0;
+    pool::Pool *p = &m->pools[KIND_CLIP];
+    for (u32 i = pool::first(p); i; i = pool::next(p, i)) {
+        Clip *clip = (Clip *)pool::at(p, i);
+        if (!clip->key || strncmp(clip->key, rel_path, len) != 0 || clip->key[len] != '@')
+            continue;
+        clip->rotation_only = opts.rotation_only;
+        applied++;
+    }
+    return applied;
+}
+
 ModelResult load_model(Manager *m, Scope s, const char *rel_path) {
     return load_model_with(m, s, rel_path, import_options(m, rel_path));
 }

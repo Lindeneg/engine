@@ -153,6 +153,7 @@ struct Panel {
     f32 max_y;    // bottom of the lowest row so far
     u32 columns;
     u32 column;
+    f32 weights[UI_MAX_COLUMNS]; // each column's share of the row, summing to 1
     f32 indent;
 };
 
@@ -180,9 +181,11 @@ static struct {
     Panel panel;
     b32 in_panel;
 
-    // the focused field's cursor, and a number field's text while it is edited
+    // the focused field's cursor, how far its text is scrolled to keep the
+    // cursor in view, and a number field's text while it is edited
     u32 cursor;
     u32 anchor;
+    f32 scroll;
     char edit[EDIT_CAP];
 } g;
 
@@ -286,6 +289,7 @@ void end_frame() {
 
 b32 wants_mouse() { return g.mouse_over_panel || g.active != ID_NONE; }
 b32 wants_keyboard() { return g.focus != ID_NONE; }
+b32 dragging() { return g.active != ID_NONE; }
 
 static b32 contains(canvas::Rect r, linalg::Vec2 p) {
     return p.x >= r.x && p.x < r.x + r.w && p.y >= r.y && p.y < r.y + r.h;
@@ -373,6 +377,7 @@ void begin_panel(const char *title, canvas::Rect r) {
     p->max_y = p->cursor_y;
     p->columns = 1;
     p->column = 0;
+    p->weights[0] = 1.0f;
     p->indent = 0.0f;
     g.in_panel = true;
 
@@ -424,15 +429,13 @@ static canvas::Rect next_rect() {
     Panel *p = &g.panel;
     const Style *s = &g.style;
 
-    f32 avail = p->content.w - p->indent;
-    f32 col_w = (avail - s->spacing * (f32)(p->columns - 1)) / (f32)p->columns;
+    // the spacing comes off the top, and what is left is shared by weight
+    f32 avail = p->content.w - p->indent - s->spacing * (f32)(p->columns - 1);
+    f32 x = p->content.x + p->indent;
+    for (u32 c = 0; c < p->column; c++)
+        x += avail * p->weights[c] + s->spacing;
 
-    canvas::Rect r{
-        p->content.x + p->indent + (f32)p->column * (col_w + s->spacing),
-        p->cursor_y,
-        col_w,
-        s->row_height,
-    };
+    canvas::Rect r{x, p->cursor_y, avail * p->weights[p->column], s->row_height};
 
     p->column++;
     if (p->column == p->columns)
@@ -441,13 +444,23 @@ static canvas::Rect next_rect() {
     return r;
 }
 
-void columns(u32 n) {
+void columns(u32 n, const f32 *weights) {
     ASSERT_MSG(g.in_panel, "ui: columns outside a panel");
+    ASSERT_MSG(n >= 1 && n <= UI_MAX_COLUMNS, "ui: %u columns; the cap is %d", n, UI_MAX_COLUMNS);
     Panel *p = &g.panel;
     if (p->column != 0)
         wrap_row(p);
-    p->columns = MAX(n, 1u);
+    p->columns = n;
+
+    f32 total = 0.0f;
+    for (u32 i = 0; i < n; i++)
+        total += weights ? weights[i] : 1.0f;
+    ASSERT_MSG(total > 0.0f, "ui: column weights sum to nothing");
+    for (u32 i = 0; i < n; i++)
+        p->weights[i] = (weights ? weights[i] : 1.0f) / total;
 }
+
+void columns(u32 n) { columns(n, NULL); }
 
 void label(const char *text) {
     ASSERT(text);
@@ -581,8 +594,25 @@ static void draw_field(canvas::Rect r, const char *text, b32 focused, u32 cursor
     canvas::rect(r, s->field);
     canvas::rect_outline(r, s->border, focused ? s->accent : s->panel_border);
 
-    canvas::push_clip(r);
-    f32 x = r.x + s->padding;
+    // the text is clipped inside the padding and, while editing, scrolled so
+    // the cursor is always in view: a long path is edited at its end, not blind
+    canvas::Rect inner{r.x + s->padding, r.y, r.w - 2.0f * s->padding, r.h};
+    f32 scroll = 0.0f;
+    if (focused) {
+        f32 cursor_x = font::width(g.font, text, cursor);
+        f32 total_w = font::width(g.font, text);
+        if (cursor_x - g.scroll > inner.w)
+            g.scroll = cursor_x - inner.w;
+        if (cursor_x < g.scroll)
+            g.scroll = cursor_x;
+        f32 max_scroll = MAX(total_w - inner.w, 0.0f);
+        if (g.scroll > max_scroll)
+            g.scroll = max_scroll;
+        scroll = g.scroll;
+    }
+
+    canvas::push_clip(inner);
+    f32 x = inner.x - scroll;
     f32 text_h = g.font->ascent + g.font->descent;
     f32 text_y = r.y + (r.h - text_h) * 0.5f;
 
@@ -609,24 +639,25 @@ static void focus(Id id, u32 len, b32 select_all) {
     g.focus = id;
     g.cursor = len;
     g.anchor = select_all ? 0 : len;
+    g.scroll = 0.0f; // draw_field scrolls to the cursor on the first frame
 }
 
-b32 float_field(const char *id_, f32 *value) {
-    ASSERT(id_ && value);
+// A field over a formatted value: shows `shown` when idle, edits a copy of it
+// while focused, and on commit hands the text back for the caller to parse.
+// Focusing selects the whole value, since the next keystroke usually replaces it.
+static b32 value_field(const char *id_, const char *shown, char *out_text, u32 cap) {
     canvas::Rect r = next_rect();
     Id id = make_id(id_);
     const Input *in = &g.in;
 
     b32 hov = hovered(id, r);
     if (hov && in->mouse_pressed && g.focus != id) {
-        snprintf(g.edit, sizeof(g.edit), FLOAT_FORMAT, (f64)*value);
+        snprintf(g.edit, sizeof(g.edit), "%s", shown);
         focus(id, (u32)strlen(g.edit), true);
     }
 
     if (g.focus != id) {
-        char text[EDIT_CAP];
-        snprintf(text, sizeof(text), FLOAT_FORMAT, (f64)*value);
-        draw_field(r, text, false, 0, 0);
+        draw_field(r, shown, false, 0, 0);
         return false;
     }
 
@@ -639,24 +670,69 @@ b32 float_field(const char *id_, f32 *value) {
     g.cursor = b.cursor;
     g.anchor = b.anchor;
 
-    b32 changed = false;
-    b32 commit = in->key_pressed[window::KEY_ENTER] || (in->mouse_pressed && !hov);
-    b32 cancel = in->key_pressed[window::KEY_ESCAPE];
-
-    if (commit) {
-        char *end = NULL;
-        f32 v = strtof(g.edit, &end);
-        if (end != g.edit && v != *value) {
-            *value = v;
-            changed = true;
-        }
+    b32 committed = false;
+    if (in->key_pressed[window::KEY_ENTER] || (in->mouse_pressed && !hov)) {
+        snprintf(out_text, cap, "%s", g.edit);
+        committed = true;
         g.focus = ID_NONE;
-    } else if (cancel) {
+    } else if (in->key_pressed[window::KEY_ESCAPE]) {
         g.focus = ID_NONE;
     }
 
     draw_field(r, g.edit, g.focus == id, g.cursor, g.anchor);
-    return changed;
+    return committed;
+}
+
+b32 float_field(const char *id_, f32 *value) {
+    ASSERT(id_ && value);
+
+    char shown[EDIT_CAP];
+    snprintf(shown, sizeof(shown), FLOAT_FORMAT, (f64)*value);
+
+    char text[EDIT_CAP];
+    if (!value_field(id_, shown, text, sizeof(text)))
+        return false;
+
+    char *end = NULL;
+    f32 v = strtof(text, &end);
+    if (end == text || v == *value)
+        return false;
+    *value = v;
+    return true;
+}
+
+b32 int_field(const char *id_, i32 *value) {
+    ASSERT(id_ && value);
+
+    char shown[EDIT_CAP];
+    snprintf(shown, sizeof(shown), "%d", *value);
+
+    char text[EDIT_CAP];
+    if (!value_field(id_, shown, text, sizeof(text)))
+        return false;
+
+    char *end = NULL;
+    i32 v = (i32)strtol(text, &end, 10);
+    if (end == text || v == *value)
+        return false;
+    *value = v;
+    return true;
+}
+
+b32 enum_field(const char *id_, const char *const *names, u32 count, i32 *index) {
+    ASSERT(id_ && names && count && index);
+
+    // an index outside the table shows the first name rather than reading past it
+    u32 shown = (u32)*index < count ? (u32)*index : 0;
+
+    push_id(id_);
+    b32 clicked = button(names[shown]);
+    pop_id();
+    if (!clicked)
+        return false;
+
+    *index = (i32)((shown + 1) % count);
+    return true;
 }
 
 b32 text_field(const char *id_, char *buf, u32 cap) {
@@ -722,6 +798,55 @@ b32 tree_node(const char *label_, b32 open_by_default) {
     push(id);
     g.panel.indent += s->indent;
     return true;
+}
+
+b32 tree_item(const char *label_, b32 has_children, b32 selected, b32 *out_open) {
+    ASSERT(label_ && out_open);
+    canvas::Rect r = next_rect();
+    Id id = make_id(label_);
+    Id mark_id = hash_bytes("mark", 4, id);
+    const Style *s = &g.style;
+
+    b32 created = false;
+    Retained *st = retained(id, &created);
+    if (!has_children)
+        st->open = false;
+
+    f32 mark_w = font::width(g.font, TREE_OPEN_MARK);
+    canvas::Rect mark{r.x, r.y, s->padding + mark_w, r.h};
+    canvas::Rect body{mark.x + mark.w, r.y, r.w - mark.w, r.h};
+
+    // two targets in one row: the mark, then the rest
+    b32 mark_hov = has_children && hovered(mark_id, mark);
+    if (mark_hov && g.in.mouse_pressed)
+        g.active = mark_id;
+    if (g.active == mark_id && g.in.mouse_released) {
+        if (inside(mark))
+            st->open = !st->open;
+        g.active = ID_NONE;
+    }
+
+    b32 hov = hovered(id, body);
+    if (hov && g.in.mouse_pressed)
+        g.active = id;
+    b32 clicked = false;
+    if (g.active == id && g.in.mouse_released) {
+        clicked = inside(body);
+        g.active = ID_NONE;
+    }
+
+    canvas::rect(r, selected ? s->widget_active : face_color(id));
+    if (has_children)
+        canvas::text(g.font, r.x + s->padding, baseline_in(r),
+                     st->open ? TREE_OPEN_MARK : TREE_CLOSED_MARK, s->text_dim);
+    text_left(body, label_, s->text, 0.0f);
+
+    *out_open = st->open;
+    if (st->open) {
+        push(id);
+        g.panel.indent += s->indent;
+    }
+    return clicked;
 }
 
 void tree_pop() {

@@ -247,6 +247,23 @@ ModelResult load_model_with(Manager *m, Scope s, const char *rel_path, ImportOpt
 ImportOptions import_options(Manager *m, const char *rel_path);
 ClipOptions clip_options(Manager *m, const char *rel_path);
 
+// Whether the file, and the .import.cfg beside it, exist under the root.
+b32 exists(Manager *m, const char *rel_path);
+b32 has_import_sidecar(Manager *m, const char *rel_path);
+
+// Writes the sidecar wholesale, each key with a note of what it means. The
+// editor's half of the contract: it writes, the engine reads.
+result::Error write_import_options(Manager *m, const char *rel_path, ImportOptions opts);
+result::Error write_clip_options(Manager *m, const char *rel_path, ClipOptions opts);
+
+// Applies settings to what is already loaded, in every scope: the model's
+// import matrix, or every clip of that file whatever skeleton it was bound to.
+// Neither is baked at load, so this is the whole change. Returns how many
+// assets took it. Separate from writing, so a change can be seen before it is
+// kept.
+u32 apply_import_options(Manager *m, const char *rel_path, ImportOptions opts);
+u32 apply_clip_options(Manager *m, const char *rel_path, ClipOptions opts);
+
 // The matrix ImportOptions describes; exposed so physics and the renderer agree on it.
 linalg::Mat4 import_matrix(ImportOptions opts);
 

@@ -4,6 +4,7 @@
 
 #include "core/config.h"
 #include "core/logger.h"
+#include "core/str.h"
 #include "core/strmap.h"
 #include "platform/path.h"
 
@@ -12,18 +13,11 @@
 
 namespace input {
 
-enum SourceKind { SOURCE_KEY, SOURCE_BUTTON };
-
-struct Source {
-    SourceKind kind;
-    u32 code; // a window::Key or a window::Button, per kind
-};
-
 struct ActionDef {
     const char *name;
     u32 map; // the map it was declared in
 
-    Source bindings[INPUT_MAX_BINDINGS];
+    Binding bindings[INPUT_MAX_BINDINGS];
     u32 binding_count;
 
     b8 down;
@@ -67,32 +61,88 @@ struct State {
     b32 warp; // swallow the next delta: the cursor moved without the mouse moving
 };
 
-static b32 source_from_name(const char *s, Source *out) {
+// modifier names in a chord, and the bits they set
+#define MODIFIER_COUNT 3
+static const char *MODIFIER_NAMES[MODIFIER_COUNT] = {"control", "shift", "alt"};
+static const u32 MODIFIER_BITS[MODIFIER_COUNT] = {INPUT_MODIFIER_CONTROL, INPUT_MODIFIER_SHIFT,
+                                                   INPUT_MODIFIER_ALT};
+static const window::Key MODIFIER_KEYS[MODIFIER_COUNT][2] = {
+    {window::KEY_LEFT_CONTROL, window::KEY_RIGHT_CONTROL},
+    {window::KEY_LEFT_SHIFT, window::KEY_RIGHT_SHIFT},
+    {window::KEY_LEFT_ALT, window::KEY_RIGHT_ALT},
+};
+
+// the last part of a token: a button or a key
+static b32 source_from_name(const char *s, Binding *out) {
     // buttons first: their names are all prefixed, so there is nothing to
     // disambiguate against the key names
     window::Button b;
     if (window::button_from_name(s, &b)) {
-        *out = Source{SOURCE_BUTTON, (u32)b};
+        out->is_button = true;
+        out->code = (u32)b;
         return true;
     }
 
     window::Key k;
     if (window::key_from_name(s, &k)) {
-        *out = Source{SOURCE_KEY, (u32)k};
+        out->is_button = false;
+        out->code = (u32)k;
         return true;
     }
 
     return false;
 }
 
-static b32 source_down(window::Window *w, Source src) {
-    return src.kind == SOURCE_BUTTON ? window::button_down(w, (window::Button)src.code)
-                                     : window::key_down(w, (window::Key)src.code);
+b32 parse_binding(const char *token, Binding *out) {
+    ASSERT(token && out);
+
+    char buf[INPUT_BINDING_TEXT_CAP];
+    if (snprintf(buf, sizeof(buf), "%s", token) >= (i32)sizeof(buf))
+        return false;
+
+    Binding b{};
+    char *part = buf;
+    for (;;) {
+        char *plus = strchr(part, '+');
+        if (!plus)
+            break;
+        *plus = 0;
+
+        i32 m = str::name_index(MODIFIER_NAMES, MODIFIER_COUNT, part);
+        if (m < 0)
+            return false;
+        b.modifiers |= MODIFIER_BITS[m];
+        part = plus + 1;
+    }
+
+    if (!source_from_name(part, &b))
+        return false;
+    *out = b;
+    return true;
 }
 
-static const char *source_name(Source src) {
-    return src.kind == SOURCE_BUTTON ? window::button_name((window::Button)src.code)
-                                     : window::key_name((window::Key)src.code);
+void binding_text(Binding b, char *out, u32 cap) {
+    ASSERT(out && cap);
+
+    i32 n = 0;
+    for (u32 m = 0; m < MODIFIER_COUNT; m++)
+        if (b.modifiers & MODIFIER_BITS[m])
+            n += snprintf(out + n, cap - (u32)n, "%s+", MODIFIER_NAMES[m]);
+
+    const char *name = b.is_button ? window::button_name((window::Button)b.code)
+                                   : window::key_name((window::Key)b.code);
+    snprintf(out + n, cap - (u32)n, "%s", name);
+}
+
+static b32 binding_down(window::Window *w, Binding b) {
+    for (u32 m = 0; m < MODIFIER_COUNT; m++) {
+        if (!(b.modifiers & MODIFIER_BITS[m]))
+            continue;
+        if (!window::key_down(w, MODIFIER_KEYS[m][0]) && !window::key_down(w, MODIFIER_KEYS[m][1]))
+            return false;
+    }
+    return b.is_button ? window::button_down(w, (window::Button)b.code)
+                       : window::key_down(w, (window::Key)b.code);
 }
 
 static u32 lookup(strmap::Map *by_name, const char *name) {
@@ -158,10 +208,10 @@ static void read_map(State *s, memory::Arena *a, config::Node *mn) {
         strmap::insert(&s->by_action, ad->name, aid);
 
         for (u32 i = 0; i < an->value_count; i++) {
-            Source src;
-            if (!source_from_name(an->values[i], &src)) {
-                LOG_WARN("input: %s: '%s' is not a key or a button, in action '%s'", INPUT_CFG,
-                         an->values[i], ad->name);
+            Binding src;
+            if (!parse_binding(an->values[i], &src)) {
+                LOG_WARN("input: %s: '%s' is not a key, a button or a chord, in action '%s'",
+                         INPUT_CFG, an->values[i], ad->name);
                 continue;
             }
 
@@ -249,7 +299,7 @@ void update(State *s, window::Window *w) {
 
             b8 now = 0;
             for (u32 b = 0; b < ad->binding_count && !now; b++)
-                now = source_down(w, ad->bindings[b]) ? 1 : 0;
+                now = binding_down(w, ad->bindings[b]) ? 1 : 0;
 
             // on the first update after the map came back, whatever is held was
             // held before us: adopt it rather than calling it a press
@@ -409,13 +459,13 @@ u32 binding_count(const State *s, Action a) {
     return a.v && a.v <= s->action_count ? s->actions[a.v].binding_count : 0;
 }
 
-const char *binding_name(const State *s, Action a, u32 i) {
+Binding binding_at(const State *s, Action a, u32 i) {
     ASSERT(s);
 
     if (!a.v || a.v > s->action_count || i >= s->actions[a.v].binding_count)
-        return "";
+        return Binding{};
 
-    return source_name(s->actions[a.v].bindings[i]);
+    return s->actions[a.v].bindings[i];
 }
 
 linalg::Vec2 cursor(const State *s) {

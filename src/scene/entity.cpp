@@ -55,7 +55,8 @@ static const FieldDesc RENDERABLE_FIELDS[] = {
     {.key = "model",
      .type = FIELD_STRING,
      .offset = FIELD(Renderable, model_path),
-     .cap = ENTITY_PATH_CAP},
+     .cap = ENTITY_PATH_CAP,
+     .asset = ASSET_MODEL},
     {.key = "visible", .type = FIELD_B32, .offset = FIELD(Renderable, visible)},
 };
 
@@ -64,7 +65,8 @@ static const FieldDesc ANIMATOR_FIELDS[] = {
     {.key = "clip",
      .type = FIELD_STRING,
      .offset = FIELD(Animator, clip_path),
-     .cap = ENTITY_PATH_CAP},
+     .cap = ENTITY_PATH_CAP,
+     .asset = ASSET_CLIP},
     {.key = "speed", .type = FIELD_F32, .offset = FIELD(Animator, speed)},
     {.key = "playing", .type = FIELD_B32, .offset = FIELD(Animator, playing)},
 };
@@ -352,7 +354,9 @@ void set_parent(World *w, asset::Manager *m, Handle child, Handle parent, const 
                  ce->name, ce->attach_joint, pe->name);
 }
 
-static void *add_component(World *w, Handle h, u32 type) {
+void *add_component(World *w, Handle h, Component type) {
+    ASSERT(w && type < COMPONENT_COUNT);
+
     Entity *e = get(w, h);
     if (!e) {
         LOG_WARN("entity: add_component on a dead handle %u", h.v);
@@ -374,6 +378,18 @@ static void *add_component(World *w, Handle h, u32 type) {
     memcpy(c, DESCS[type].defaults, DESCS[type].size);
     ((ComponentHeader *)c)->owner = h;
     return c;
+}
+
+void remove_component(World *w, Handle h, Component type) {
+    ASSERT(w && type < COMPONENT_COUNT);
+
+    Entity *e = get(w, h);
+    if (!e || !e->components[type])
+        return;
+
+    pool::release(&w->components[type], e->components[type]);
+    e->components[type] = 0;
+    e->overridden &= ~(1u << type);
 }
 
 static void *component_of(World *w, Handle h, u32 type) {
@@ -410,6 +426,11 @@ void *component_at(World *w, Component c, u32 slot) {
     return slot ? pool::at(&w->components[c], slot) : NULL;
 }
 
+void *component(World *w, Handle h, Component c) {
+    ASSERT(w && c < COMPONENT_COUNT);
+    return component_of(w, h, c);
+}
+
 Renderable *renderable(World *w, Handle h) {
     return (Renderable *)component_of(w, h, COMPONENT_RENDERABLE);
 }
@@ -442,10 +463,16 @@ b32 build_frame(World *w, f32 aspect, shader::FrameData *out) {
     if (!e)
         return false;
 
-    Camera *c = camera(w, h);
+    return build_frame(w, e->world, camera(w, h), aspect, out);
+}
+
+b32 build_frame(World *w, linalg::Mat4 camera_world, const Camera *c, f32 aspect,
+                shader::FrameData *out) {
+    ASSERT(w && c && out);
+
     out->view_proj = linalg::mat4_perspective(DEG2RAD(c->fov_y), aspect, c->z_near, c->z_far) *
-                     linalg::mat4_view_from_world(e->world);
-    out->camera_pos = linalg::vec4_from(linalg::mat4_translation(e->world), 0.0f);
+                     linalg::mat4_view_from_world(camera_world);
+    out->camera_pos = linalg::vec4_from(linalg::mat4_translation(camera_world), 0.0f);
 
     // no light is legitimate (a level being built) and reads as black, not as a shader failure
     out->light_dir = linalg::Vec4{0.0f, 1.0f, 0.0f, 0.0f};
@@ -656,16 +683,22 @@ void draw_bounds(World *w, asset::Manager *m, linalg::Vec4 color) {
     }
 }
 
-static void after_read_RENDERABLE(World *, asset::Manager *m, Handle, void *c) {
+static void after_read_RENDERABLE(World *w, asset::Manager *m, Handle h, void *c) {
     Renderable *r = (Renderable *)c;
 
     if (!r->model_path[0]) {
         LOG_WARN("entity: a renderable has no model, drawing the fallback");
         r->model = asset::MODEL_FALLBACK;
-        return;
+    } else {
+        r->model = OR_ELSE(asset::load_model(m, asset::SCOPE_PERSISTENT, r->model_path),
+                           asset::MODEL_FALLBACK);
     }
-    r->model = OR_ELSE(asset::load_model(m, asset::SCOPE_PERSISTENT, r->model_path),
-                       asset::MODEL_FALLBACK);
+
+    // the skeleton is the model's, so an animator already here binds again;
+    // from a file the animator is read after this and does not exist yet
+    Animator *a = animator(w, h);
+    if (a)
+        after_read_ANIMATOR(w, m, h, a);
 }
 
 static void after_read_ANIMATOR(World *w, asset::Manager *m, Handle h, void *c) {
@@ -884,7 +917,7 @@ static u32 read_components(World *w, asset::Manager *m, Handle h, config::Node *
         if (!block)
             continue;
 
-        void *comp = add_component(w, h, c);
+        void *comp = add_component(w, h, (Component)c);
         if (!comp)
             continue;
 

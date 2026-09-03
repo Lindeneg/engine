@@ -6,6 +6,7 @@
 #include "core/frametime.h"
 #include "core/logger.h"
 #include "core/memory.h"
+#include "editor/editor.h"
 #include "game/player.h"
 #include "gfx/canvas.h"
 #include "gfx/debugdraw.h"
@@ -178,6 +179,9 @@ int main() {
     Overlay overlay = overlay_from(config::find(cfg, "overlay"));
     DebugView view{.bounds = true, .body_sphere = true};
 
+    editor::Editor *ed = editor::init(&perm, MUST(editor::load_config(&perm, &scratch, root)), in,
+                                      config::get(cfg, "level", DEFAULT_LEVEL));
+
     asset::Manager *assets{
         MUST(asset::init(&perm, &scratch,
                          asset::config_from(config::find(cfg, "assets"), root,
@@ -208,6 +212,7 @@ int main() {
     input::Action quit = input::find(in, "quit");
     input::Action toggle_look = input::find(in, "toggle_mouse_look");
     input::Action toggle_debug = input::find(in, "toggle_debug_draw");
+    input::Action toggle_editor = input::find(in, "toggle_editor");
     b32 debug_draw = false;
 
     // playable without a click to start; the toggle hands the cursor back
@@ -223,7 +228,11 @@ int main() {
         if (input::pressed(in, quit))
             break;
 
-        if (input::pressed(in, toggle_look)) {
+        if (input::pressed(in, toggle_editor))
+            editor::set_active(ed, in, win, !editor::active(ed));
+
+        // while editing the editor owns the cursor and the maps
+        if (input::pressed(in, toggle_look) && !editor::active(ed)) {
             b32 look = !input::mouse_look(in);
             input::set_mouse_look(in, win, look);
 
@@ -257,19 +266,28 @@ int main() {
         ui::Input ui_in = ui::input_from(in);
         ui::begin_frame(&ui_in);
 
-        // aim first, so the fixed steps below move in the direction being looked
-        game::aim(&player, in);
+        // Editing holds the level still: no fixed steps are banked or run, so
+        // play resumes without a burst of catch-up. The world still draws.
+        b32 editing = editor::active(ed);
+        u32 steps = 0;
+        if (!editing) {
+            // aim first, so the fixed steps below move in the direction being looked
+            game::aim(&player, in);
 
-        u32 steps = entity::begin_frame(world, dt);
-        for (u32 i = 0; i < steps; i++) {
-            game::step(&player, world, assets, in, entity::fixed_dt(world));
-            entity::step_fixed(world, assets);
+            steps = entity::begin_frame(world, dt);
+            for (u32 i = 0; i < steps; i++) {
+                game::step(&player, world, assets, in, entity::fixed_dt(world));
+                entity::step_fixed(world, assets);
+            }
+
+            // after the body has moved, before end_frame rebuilds world transforms
+            game::place_camera(&player, world);
         }
 
-        // after the body has moved, before end_frame rebuilds world transforms
-        game::place_camera(&player, world);
-
         entity::end_frame(world, assets, &scratch, dt);
+
+        if (editing)
+            editor::frame(ed, world, assets, in, win, dt, fb_w, fb_h);
 
         // after end_frame, so the boxes sit on this frame's world transforms
         if (debug_draw) {
@@ -282,7 +300,10 @@ int main() {
         ui::end_frame();
 
         shader::FrameData frame{};
-        if (!entity::build_frame(world, (f32)fb_w / (f32)fb_h, &frame))
+        f32 aspect = (f32)fb_w / (f32)fb_h;
+        b32 has_view = editing ? editor::build_frame(ed, world, aspect, &frame)
+                               : entity::build_frame(world, aspect, &frame);
+        if (!has_view)
             LOG_WARN_ONCE("main: the level has no active camera, nothing will be visible");
 
         render::begin_frame(&frame, render_cfg.clear_color);

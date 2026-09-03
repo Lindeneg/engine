@@ -33,9 +33,10 @@ entity "soldier" {
     # a pistol *is* lives in pistol.entity.
     #
     # It follows the hand, so it attaches to a joint rather than sitting at a
-    # guessed offset. The joint name is canonical -- exporters disagree on the
-    # separator, and gltf::canonical_name maps "mixamorig:RightHand" and
-    # "mixamorig_RightHand" onto this spelling.
+    # guessed offset. Any spelling of the joint works: exporters disagree on
+    # the separator, so str::canonical_name drops it, and "mixamorig:RightHand",
+    # "mixamorig_RightHand" and "mixamorigRightHand" are one joint. A save
+    # writes the bare form.
     child "weapon" {
         definition   pistol
         attach_joint mixamorig_RightHand

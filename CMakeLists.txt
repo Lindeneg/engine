@@ -30,6 +30,7 @@ set(ENGINE_SOURCES
 
         src/math/intersect.cpp
 
+        src/platform/dialog.cpp
         src/platform/file.cpp
         src/platform/input.cpp
         src/platform/path.cpp
@@ -56,6 +57,9 @@ set(ENGINE_SOURCES
 
         src/scene/entity.cpp
         src/scene/motion.cpp
+
+        src/editor/editor.cpp
+        src/editor/undo.cpp
 )
 
 # Not the engine: one game's decisions, built alongside it until there is a
@@ -72,6 +76,11 @@ add_executable(ExploreApp
 )
 target_include_directories(ExploreApp PRIVATE src third_party)
 target_link_libraries(ExploreApp PRIVATE glfw glad::glad)
+
+# the native file picker
+if (WIN32)
+    target_link_libraries(ExploreApp PRIVATE comdlg32)
+endif ()
 
 target_compile_definitions(ExploreApp PRIVATE CL_ASSET_ROOT="${CMAKE_SOURCE_DIR}/assets")
 
@@ -92,6 +101,9 @@ if (CL_BUILD_TESTS)
     )
     target_include_directories(ExploreTests PRIVATE src tests third_party)
     target_link_libraries(ExploreTests PRIVATE glfw glad::glad)
+    if (WIN32)
+        target_link_libraries(ExploreTests PRIVATE comdlg32)
+    endif ()
     target_compile_definitions(ExploreTests PRIVATE CL_ASSET_ROOT="${CMAKE_SOURCE_DIR}/assets")
 
     # so `make test` alone still refreshes clangd's view of tests/

@@ -32,7 +32,31 @@
 // bindings per action; a second and third spelling of "forward" is normal
 #define INPUT_MAX_BINDINGS 4
 
+// chord modifiers, either side of the keyboard
+#define INPUT_MODIFIER_CONTROL (1u << 0)
+#define INPUT_MODIFIER_SHIFT (1u << 1)
+#define INPUT_MODIFIER_ALT (1u << 2)
+
+// "control+shift+mouse_left" is the longest token, with room to spare
+#define INPUT_BINDING_TEXT_CAP 64
+
 namespace input {
+
+// One way to produce an action: a key or a button, with the modifiers that
+// must be held with it. A binding without modifiers fires whatever else is
+// held, so sprinting does not stop walking.
+struct Binding {
+    b32 is_button;
+    u32 code; // a window::Key or a window::Button
+    u32 modifiers;
+};
+
+// "z", "mouse_left", "control+z", "control+shift+s": modifiers first, joined
+// with '+', the key or button last. False for anything else.
+b32 parse_binding(const char *token, Binding *out);
+
+// The token that parses back to it.
+void binding_text(Binding b, char *out, u32 cap);
 
 // Ids into the map and action tables; 0 is nothing, as with entity::Handle.
 // An action that does not exist reads as never held, so a missing binding
@@ -91,7 +115,7 @@ u32 action_count(const State *s, Map m);
 Action action_at(const State *s, Map m, u32 i);
 const char *action_name(const State *s, Action a);
 u32 binding_count(const State *s, Action a);
-const char *binding_name(const State *s, Action a, u32 i);
+Binding binding_at(const State *s, Action a, u32 i);
 
 // Framebuffer pixels, and the movement since the last frame. Both are device
 // state rather than actions, so a disabled map does not hide them. While mouse

@@ -110,6 +110,25 @@ static void normal_matrix_survives_mirrored_scale(memory::Arena *) {
 }
 
 // forward parallel to up (a camera pitched straight up) must produce a rotation, not an assert
+static void affine_inverse_undoes_a_scaled_transform(memory::Arena *) {
+    linalg::Mat4 m = linalg::mat4_from_trs(linalg::Vec3{1.0f, -2.0f, 3.0f},
+                                           linalg::quat_from_euler(linalg::Vec3{30, 45, 60}),
+                                           linalg::Vec3{2.0f, 3.0f, 0.5f});
+    linalg::Mat4 inv = linalg::mat4_inverse_affine(m);
+
+    linalg::Mat4 id = inv * m;
+    for (u32 i = 0; i < 16; i++)
+        CHECK(NEAR(id.m[i], (i % 5 == 0) ? 1.0f : 0.0f));
+
+    linalg::Vec3 p{4.0f, 5.0f, 6.0f};
+    CHECK(vec3_near(linalg::mat4_mul_point(inv, linalg::mat4_mul_point(m, p)), p));
+
+    // a flattened transform has no inverse; identity comes back rather than NaNs
+    linalg::Mat4 flat = linalg::mat4_from_trs(linalg::Vec3{0, 0, 0}, linalg::quat_identity(),
+                                              linalg::Vec3{1.0f, 0.0f, 1.0f});
+    CHECK(linalg::mat4_inverse_affine(flat).m[0] == 1.0f);
+}
+
 static void look_along_up_does_not_degenerate(memory::Arena *) {
     linalg::Vec3 up{0, 1, 0};
     linalg::Vec3 fwd{0, 0, -1}; // what -Z of a rotated frame is
@@ -136,6 +155,7 @@ test::Suite linalg_suite() {
         CASE(normal_matrix_survives_non_uniform_scale),
         CASE(normal_matrix_survives_mirrored_scale),
         CASE(look_along_up_does_not_degenerate),
+        CASE(affine_inverse_undoes_a_scaled_transform),
     };
     return test::Suite{.name = "linalg", .cases = cases, .count = ARRAY_COUNT(cases)};
 }

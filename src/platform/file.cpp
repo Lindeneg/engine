@@ -72,4 +72,16 @@ b32 exists(const char *path) {
     fclose(f);
     return true;
 }
+
+b32 remove(const char *path) {
+    ASSERT(path);
+
+    if (!exists(path))
+        return false;
+    if (::remove(path) != 0) {
+        LOG_ERR("file_remove: cannot delete %s", path);
+        return false;
+    }
+    return true;
+}
 } // namespace file

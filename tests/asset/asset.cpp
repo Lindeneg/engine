@@ -1,7 +1,10 @@
 #include "asset/asset.h"
 
+#include <math.h>
 #include <string.h>
 
+#include "platform/file.h"
+#include "platform/path.h"
 #include "suites.h"
 
 static asset::Config small_config() {
@@ -156,6 +159,76 @@ static void remove_is_catalog_only(memory::Arena *a) {
     CHECK(scope->used == used_before); // bytes survive until unload_scope
 }
 
+// written beside a file that need not exist: the writer is the editor's, and
+// the editor decides when a sidecar is due
+#define SIDECAR_TEST_FILE "zz_sidecar_test.glb"
+#define SIDECAR_TEST_FILE_CFG "zz_sidecar_test.import.cfg"
+
+static void sidecars_round_trip(memory::Arena *a) {
+    asset::Config cfg = small_config();
+    cfg.root = CL_ASSET_ROOT;
+    asset::Manager *m = MUST(asset::init(a, a, cfg));
+
+    CHECK(asset::exists(m, "engine.cfg"));
+    CHECK(!asset::exists(m, "definitely/not/here.glb"));
+    CHECK(!asset::has_import_sidecar(m, SIDECAR_TEST_FILE));
+
+    // a clip sidecar, read back through the same reader the loader uses
+    CHECK(asset::write_clip_options(m, SIDECAR_TEST_FILE, asset::ClipOptions{.rotation_only = true}) ==
+          result::OK);
+    CHECK(asset::has_import_sidecar(m, SIDECAR_TEST_FILE));
+    CHECK(asset::clip_options(m, SIDECAR_TEST_FILE).rotation_only);
+
+    // a model sidecar over it, and the clip block is gone with the old file
+    CHECK(asset::write_import_options(m, SIDECAR_TEST_FILE,
+                                      asset::ImportOptions{.scale = 0.5f, .z_up = true}) ==
+          result::OK);
+    asset::ImportOptions opts = asset::import_options(m, SIDECAR_TEST_FILE);
+    CHECK(opts.scale == 0.5f && opts.z_up);
+
+    test::mute();
+    CHECK(!asset::clip_options(m, SIDECAR_TEST_FILE).rotation_only);
+    CHECK(test::unmute() == 1); // no 'clip' block in an 'import' sidecar
+
+    CHECK(file::remove(FPATH(a, CL_ASSET_ROOT, SIDECAR_TEST_FILE_CFG)));
+    CHECK(!asset::has_import_sidecar(m, SIDECAR_TEST_FILE));
+}
+
+// settings are live on what is loaded: the import matrix and the clip's flag
+// are read at draw and at sample time, never baked
+static void settings_apply_to_loaded_assets(memory::Arena *a) {
+    asset::Config cfg = small_config();
+    cfg.root = CL_ASSET_ROOT;
+    cfg.max_meshes = 32;
+    cfg.max_materials = 32;
+    cfg.scope_bytes[asset::SCOPE_PERSISTENT] = MiB(4);
+    asset::Manager *m = MUST(asset::init(a, a, cfg));
+
+    CHECK(asset::apply_import_options(m, "weapons/pistol.glb", asset::ImportOptions{}) == 0);
+
+    asset::ModelHandle pistol = MUST(asset::load_model(m, asset::SCOPE_PERSISTENT, "weapons/pistol.glb"));
+    linalg::Vec3 lo, hi;
+    asset::model_bounds(m, pistol, &lo, &hi);
+    f32 width = hi.x - lo.x;
+
+    asset::ImportOptions doubled = asset::import_options(m, "weapons/pistol.glb");
+    doubled.scale *= 2.0f;
+    CHECK(asset::apply_import_options(m, "weapons/pistol.glb", doubled) == 1);
+    asset::model_bounds(m, pistol, &lo, &hi);
+    CHECK(fabsf((hi.x - lo.x) - 2.0f * width) < 1e-4f);
+
+    // a clip bound to any skeleton takes the flag; the fallback binds nothing and says so
+    test::mute();
+    asset::ClipHandle clip = MUST(asset::load_clip(m, asset::SCOPE_PERSISTENT,
+                                                   "animations/pistol_idle.glb",
+                                                   asset::SKELETON_FALLBACK));
+    test::unmute();
+    CHECK(asset::get(m, clip)->rotation_only);
+    CHECK(asset::apply_clip_options(m, "animations/pistol_idle.glb",
+                                    asset::ClipOptions{.rotation_only = false}) == 1);
+    CHECK(!asset::get(m, clip)->rotation_only);
+}
+
 test::Suite asset_suite() {
     static const test::Case cases[] = {
         CASE(fallbacks_are_drawable),
@@ -166,6 +239,8 @@ test::Suite asset_suite() {
         CASE(recycled_slots_reject_stale_handles),
         CASE(garbage_handles_yield_the_fallback),
         CASE(remove_is_catalog_only),
+        CASE(sidecars_round_trip),
+        CASE(settings_apply_to_loaded_assets),
     };
     return test::Suite{.name = "asset", .cases = cases, .count = ARRAY_COUNT(cases)};
 }

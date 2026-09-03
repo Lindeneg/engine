@@ -337,6 +337,50 @@ static inline Mat4 mat4_from_quat(Quat q) {
     return out;
 }
 
+// Inverse of a transform whose bottom row is (0, 0, 0, 1): any TRS, scale
+// included. A singular upper 3x3 (a zero scale) gives identity, which beats
+// NaNs downstream.
+static inline Mat4 mat4_inverse_affine(Mat4 src) {
+    f32 a = src.m[0], d = src.m[1], g = src.m[2];
+    f32 b = src.m[4], e = src.m[5], h = src.m[6];
+    f32 c = src.m[8], f = src.m[9], i = src.m[10];
+
+    f32 c00 = e * i - f * h;
+    f32 c01 = -(d * i - f * g);
+    f32 c02 = d * h - e * g;
+    f32 c10 = -(b * i - c * h);
+    f32 c11 = a * i - c * g;
+    f32 c12 = -(a * h - b * g);
+    f32 c20 = b * f - c * e;
+    f32 c21 = -(a * f - c * d);
+    f32 c22 = a * e - b * d;
+
+    f32 det = a * c00 + b * c01 + c * c02;
+    if (det > -LINALG_DET_EPSILON && det < LINALG_DET_EPSILON)
+        return mat4_identity();
+    f32 inv = 1.0f / det;
+
+    // the inverse 3x3 is the transposed cofactors over det: column-major, so
+    // column 0 holds row 0 of the cofactors
+    Mat4 out{};
+    out.m[0] = c00 * inv;
+    out.m[1] = c01 * inv;
+    out.m[2] = c02 * inv;
+    out.m[4] = c10 * inv;
+    out.m[5] = c11 * inv;
+    out.m[6] = c12 * inv;
+    out.m[8] = c20 * inv;
+    out.m[9] = c21 * inv;
+    out.m[10] = c22 * inv;
+
+    Vec3 t = mat4_translation(src);
+    out.m[12] = -(out.m[0] * t.x + out.m[4] * t.y + out.m[8] * t.z);
+    out.m[13] = -(out.m[1] * t.x + out.m[5] * t.y + out.m[9] * t.z);
+    out.m[14] = -(out.m[2] * t.x + out.m[6] * t.y + out.m[10] * t.z);
+    out.m[15] = 1.0f;
+    return out;
+}
+
 // T * R * S — glTF node transform order (scale, then rotate, then translate)
 static inline Mat4 mat4_from_trs(Vec3 t, Quat r, Vec3 s) {
     Mat4 out = mat4_from_quat(r);

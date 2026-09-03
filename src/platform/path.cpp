@@ -68,4 +68,46 @@ char *swap_ext(memory::Arena *a, const char *path, const char *ext) {
     return out;
 }
 
+static b32 is_sep(char c) { return c == '/' || c == '\\'; }
+
+// one character of a path, as the platform's file system compares it
+static char fold(char c) {
+    if (is_sep(c))
+        return '/';
+#if PLATFORM_WINDOWS
+    if (c >= 'A' && c <= 'Z')
+        return (char)(c - 'A' + 'a');
+#endif
+    return c;
+}
+
+b32 relative_to(const char *root, const char *abs, char *out, u32 cap) {
+    ASSERT(root && abs && out && cap);
+
+    u64 root_len = strlen(root);
+    while (root_len > 0 && is_sep(root[root_len - 1]))
+        root_len--; // a trailing slash on the root is not part of the prefix
+
+    for (u64 i = 0; i < root_len; i++)
+        if (fold(root[i]) != fold(abs[i]))
+            return false;
+
+    // the match must end at a directory boundary: "assets2/x" is not under "assets"
+    if (!is_sep(abs[root_len]))
+        return false;
+
+    const char *rest = abs + root_len;
+    while (is_sep(*rest))
+        rest++;
+
+    u64 len = strlen(rest);
+    if (len == 0 || len + 1 > cap)
+        return false;
+
+    for (u64 i = 0; i < len; i++)
+        out[i] = is_sep(rest[i]) ? '/' : rest[i];
+    out[len] = 0;
+    return true;
+}
+
 } // namespace path

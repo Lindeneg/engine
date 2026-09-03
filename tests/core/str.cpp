@@ -4,24 +4,27 @@
 
 #include "suites.h"
 
-static void separators_collapse_to_underscore(memory::Arena *) {
+static void separators_are_dropped(memory::Arena *) {
     char buf[64];
 
     str::canonical_name(buf, sizeof(buf), "mixamorig:Hips");
-    CHECK(strcmp(buf, "mixamorig_Hips") == 0);
+    CHECK(strcmp(buf, "mixamorigHips") == 0);
 
     str::canonical_name(buf, sizeof(buf), "a.b c-d:e");
-    CHECK(strcmp(buf, "a_b_c_d_e") == 0);
+    CHECK(strcmp(buf, "abcde") == 0);
 }
 
-// the whole point: the two exporters in our asset pipeline must agree
-static void both_exporter_spellings_agree(memory::Arena *) {
-    char fbx[64];
-    char three[64];
+// the whole point: every exporter in the asset pipeline must agree
+static void all_exporter_spellings_agree(memory::Arena *) {
+    char colon[64];
+    char underscore[64];
+    char bare[64];
 
-    str::canonical_name(fbx, sizeof(fbx), "mixamorig:RightHandMiddle3");
-    str::canonical_name(three, sizeof(three), "mixamorig_RightHandMiddle3");
-    CHECK(strcmp(fbx, three) == 0);
+    str::canonical_name(colon, sizeof(colon), "mixamorig:RightHandMiddle3");
+    str::canonical_name(underscore, sizeof(underscore), "mixamorig_RightHandMiddle3");
+    str::canonical_name(bare, sizeof(bare), "mixamorigRightHandMiddle3");
+    CHECK(strcmp(colon, underscore) == 0);
+    CHECK(strcmp(colon, bare) == 0);
 }
 
 static void is_idempotent(memory::Arena *) {
@@ -36,7 +39,7 @@ static void is_idempotent(memory::Arena *) {
 static void case_is_preserved(memory::Arena *) {
     char buf[64];
     str::canonical_name(buf, sizeof(buf), "mixamorig:LeftUpLeg");
-    CHECK(strcmp(buf, "mixamorig_LeftUpLeg") == 0);
+    CHECK(strcmp(buf, "mixamorigLeftUpLeg") == 0);
 }
 
 static void truncates_without_overflow(memory::Arena *) {
@@ -105,8 +108,8 @@ static void utf8_steps_back_and_encodes(memory::Arena *) {
 
 test::Suite str_suite() {
     static const test::Case cases[] = {
-        CASE(separators_collapse_to_underscore),
-        CASE(both_exporter_spellings_agree),
+        CASE(separators_are_dropped),
+        CASE(all_exporter_spellings_agree),
         CASE(is_idempotent),
         CASE(case_is_preserved),
         CASE(truncates_without_overflow),

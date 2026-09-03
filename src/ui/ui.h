@@ -91,6 +91,9 @@ struct Config {
     u32 max_id_depth;
 };
 
+// columns a row can be split into
+#define UI_MAX_COLUMNS 8
+
 // The `ui` block of engine.cfg; NULL or missing keys take the defaults.
 Config config_from(config::Node *block);
 
@@ -115,8 +118,11 @@ void pop_id();
 void begin_panel(const char *title, canvas::Rect r);
 void end_panel();
 
-// Rows fill left to right across n columns, then wrap. 1 is one widget per row.
+// Rows fill left to right across n columns, then wrap. 1 is one widget per
+// row. With weights the columns share the width in that proportion; without,
+// equally.
 void columns(u32 n);
+void columns(u32 n, const f32 *weights);
 
 void label(const char *text);
 b32 button(const char *label);         // true on the click
@@ -129,12 +135,25 @@ void separator();
 // enter or on a click elsewhere, and a number field reverts on escape.
 b32 slider(const char *id, f32 *value, f32 lo, f32 hi);
 b32 float_field(const char *id, f32 *value);
+b32 int_field(const char *id, i32 *value);
 b32 text_field(const char *id, char *buf, u32 cap);
+
+// A button showing names[*index]; a click steps to the next name.
+b32 enum_field(const char *id, const char *const *names, u32 count, i32 *index);
+
+// True while an item holds the button: a slider mid-drag, a button held down.
+b32 dragging();
 
 // A collapsing header. True when open, and then everything up to tree_pop is
 // indented and scoped under its id. open_by_default applies the first time it is seen.
 b32 tree_node(const char *label, b32 open_by_default);
 void tree_pop();
+
+// A hierarchy row: the mark folds and the label selects. True when the label
+// was clicked. *out_open is the fold, remembered by id; a row without children
+// has no mark and is never open. When open, what follows up to tree_pop is
+// indented and scoped, as with tree_node.
+b32 tree_item(const char *label, b32 has_children, b32 selected, b32 *out_open);
 
 const Style *style();
 

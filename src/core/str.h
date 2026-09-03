@@ -7,8 +7,9 @@ namespace str {
 // Index of s in names, or -1. For the enum <-> name tables config files use.
 i32 name_index(const char *const *names, u32 count, const char *s);
 
-// Non-alphanumerics become '_', so "mixamorig:Hips" and "mixamorig_Hips"
-// compare equal. Truncates to cap - 1; NULL reads as "".
+// Non-alphanumerics are dropped, so "mixamorig:Hips", "mixamorig_Hips" and
+// "mixamorigHips" all compare equal: three exporters, one joint. Truncates to
+// cap - 1; NULL reads as "".
 void canonical_name(char *dst, u64 cap, const char *src);
 
 // UTF-8. next decodes one codepoint and advances s, 0 at the end; a malformed

@@ -45,11 +45,34 @@ static void swaps_the_extension(memory::Arena *a) {
     CHECK(strcmp(path::swap_ext(a, "soldier.glb", ""), "soldier") == 0);
 }
 
+static void relative_to_strips_the_root(memory::Arena *) {
+    char out[64];
+
+    CHECK(path::relative_to("D:/games/assets", "D:/games/assets/weapons/pistol.glb", out,
+                            sizeof(out)));
+    CHECK(strcmp(out, "weapons/pistol.glb") == 0);
+
+    // either slash, a trailing one on the root, and the OS's own spelling
+    CHECK(path::relative_to("D:/games/assets/", "D:\\games\\assets\\weapons\\pistol.glb", out,
+                            sizeof(out)));
+    CHECK(strcmp(out, "weapons/pistol.glb") == 0);
+
+    // outside the root, a sibling folder sharing the prefix, and the root itself
+    CHECK(!path::relative_to("D:/games/assets", "D:/games/other/pistol.glb", out, sizeof(out)));
+    CHECK(!path::relative_to("D:/games/assets", "D:/games/assets2/pistol.glb", out, sizeof(out)));
+    CHECK(!path::relative_to("D:/games/assets", "D:/games/assets", out, sizeof(out)));
+
+    // and it must fit
+    char tiny[8];
+    CHECK(!path::relative_to("D:/games/assets", "D:/games/assets/weapons/pistol.glb", tiny,
+                             sizeof(tiny)));
+}
+
 test::Suite path_suite() {
     static const test::Case cases[] = {
         CASE(joins_segments),      CASE(single_segment_gets_no_separator),
         CASE(does_not_normalize),  CASE(result_is_nul_terminated),
-        CASE(swaps_the_extension),
+        CASE(swaps_the_extension), CASE(relative_to_strips_the_root),
     };
     return test::Suite{.name = "path", .cases = cases, .count = ARRAY_COUNT(cases)};
 }

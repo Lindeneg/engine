@@ -355,6 +355,47 @@ static void later_panel_wins_the_pointer(memory::Arena *a) {
     teardown();
 }
 
+static void int_and_enum_fields(memory::Arena *a) {
+    setup(a);
+    linalg::Vec2 p = row(PANEL, 0, 20.0f);
+    i32 value = 3;
+
+    begin(at(p));
+    ui::int_field("n", &value);
+    finish();
+    begin(press(p));
+    ui::int_field("n", &value);
+    finish();
+
+    ui::Input typing = at(p);
+    typing.text = "42";
+    begin(typing);
+    ui::int_field("n", &value);
+    finish();
+
+    ui::Input enter = at(p);
+    enter.key_pressed[window::KEY_ENTER] = 1;
+    begin(enter);
+    CHECK(ui::int_field("n", &value));
+    finish();
+    CHECK(value == 42);
+
+    // the enum steps around its names on each click
+    static const char *names[] = {"low", "high"};
+    i32 index = 1;
+    ui::Input frames[] = {at(p), press(p), release(p)};
+    b32 changed = false;
+    for (u32 i = 0; i < ARRAY_COUNT(frames); i++) {
+        begin(frames[i]);
+        changed = ui::enum_field("mode", names, ARRAY_COUNT(names), &index) || changed;
+        finish();
+    }
+    CHECK(changed);
+    CHECK(index == 0);
+
+    teardown();
+}
+
 static void style_reads_the_file_shape(memory::Arena *a) {
     config::Doc *doc = MUST(config::parse(
         a, memory::push_str(a, "row_height 30\naccent 1 0 0\n"), "ui.cfg"));
@@ -378,6 +419,7 @@ test::Suite ui_suite() {
         CASE(tree_node_remembers_being_opened),
         CASE(panel_scrolls_with_the_wheel),
         CASE(later_panel_wins_the_pointer),
+        CASE(int_and_enum_fields),
         CASE(style_reads_the_file_shape),
     };
     return test::Suite{.name = "ui", .cases = cases, .count = ARRAY_COUNT(cases)};
