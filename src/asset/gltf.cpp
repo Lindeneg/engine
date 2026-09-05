@@ -896,6 +896,8 @@ asset::ClipResult load_clip(asset::Manager *m, asset::Scope s, const char *abs_p
              (f64)max_bind_t);
     if (!clip->rotation_only && max_bind_t > LINALG_ZERO_EPSILON &&
         max_clip_t > max_bind_t * GLTF_RETARGET_WARN_RATIO)
+        // TODO: maybe set rotation_only here as a defensive configuration OR present the warning
+        // clearly in the editor, user will rarely watch warnings in the terminal
         LOG_WARN("gltf: %s translates %.1fx further than the target skeleton -- if it was authored "
                  "for another rig, it needs rotation_only",
                  abs_path, (f64)(max_clip_t / max_bind_t));
