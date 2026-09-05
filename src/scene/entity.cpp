@@ -20,7 +20,22 @@
 #define LEVEL_EXT ".level"
 #define FILE_EXT_CAP 16 // longest extension above, plus NUL
 
+// what an entity block reads for itself, beside its component blocks
+#define KEY_ID "id"
+#define KEY_DEFINITION "definition"
+#define KEY_OWNED_IDS "owned_ids"
+#define KEY_ATTACH_JOINT "attach_joint"
+#define KEY_ACTIVE "active"
+#define KEY_TRANSFORM "transform"
+#define KEY_CHILD "child"
+
 namespace entity {
+
+// a component under one of these keys would be read as the entity's own field too
+static const char *ENTITY_KEYS[] = {
+    KEY_ID,     KEY_DEFINITION, KEY_OWNED_IDS, KEY_ATTACH_JOINT,
+    KEY_ACTIVE, KEY_TRANSFORM,  KEY_CHILD,
+};
 
 #define DEFAULT_FIXED_HZ 120.0f
 #define DEFAULT_MAX_FIXED_STEPS 8
@@ -235,8 +250,14 @@ static b32 build_layout(const char *key, FieldDesc *fields, u32 count, u64 *out_
                     key, f->key);
             return false;
         }
-        if (f->type == FIELD_ENUM && !f->name_count) {
+        if (f->type == FIELD_ENUM && (!f->names || !f->name_count)) {
             LOG_ERR("entity: component '%s' field '%s' is an enum with no names", key, f->key);
+            return false;
+        }
+        if (f->type == FIELD_ENUM && (f->def.as_i32 < 0 || (u32)f->def.as_i32 >= f->name_count)) {
+            LOG_ERR("entity: component '%s' field '%s' defaults to %d, which is not one of its %u "
+                    "names",
+                    key, f->key, f->def.as_i32, f->name_count);
             return false;
         }
 
@@ -320,6 +341,14 @@ i32 register_component(World *w, const ComponentDesc *desc) {
     }
     if (find_component(w, desc->key) >= 0) {
         LOG_ERR("entity: a component named '%s' is already registered", desc->key);
+        return -1;
+    }
+    for (u32 i = 0; i < ARRAY_COUNT(ENTITY_KEYS); i++) {
+        if (strcmp(desc->key, ENTITY_KEYS[i]) != 0)
+            continue;
+        LOG_ERR("entity: '%s' is a key of the entity block itself; a component cannot be named "
+                "that",
+                desc->key);
         return -1;
     }
 
@@ -1272,9 +1301,12 @@ static void write_fields(memory::Arena *a, config::Doc *doc, config::Node *block
             break;
         }
         case FIELD_STRING:
-            if (!*(const char *)at)
-                continue; // never set
+            // an empty string is left out where empty is the default; where the
+            // default is a name, an empty value is the one way to say "none"
+            if (!*(const char *)at && !*((const char *)d->defaults + f->offset))
+                continue;
             vals[0] = (const char *)at;
+            n = *(const char *)at ? 1 : 0;
             break;
         case FIELD_ENUM: {
             u32 idx = (u32) * (const i32 *)at;
@@ -1356,7 +1388,7 @@ static void read_transform(config::Node *n, Transform *out) {
 
 static void write_transform(memory::Arena *a, config::Doc *doc, config::Node *parent,
                             const Transform *t) {
-    config::Node *block = config::append(a, doc, parent, "transform", NULL, 0);
+    config::Node *block = config::append(a, doc, parent, KEY_TRANSFORM, NULL, 0);
     block->is_block = true;
 
     const char *pos[] = {fmt_f32(a, t->position.x), fmt_f32(a, t->position.y),
@@ -1388,7 +1420,7 @@ static u32 assign_owned_ids(World *w, Handle h, config::Node *ids, u32 n);
 
 static void build_children(World *w, asset::Manager *m, config::Node *body, Handle self,
                            u32 depth) {
-    for (config::Node *c = config::find(body, "child"); c; c = config::find_next(c, "child"))
+    for (config::Node *c = config::find(body, KEY_CHILD); c; c = config::find_next(c, KEY_CHILD))
         build_entity(w, m, c, self, depth);
 }
 
@@ -1499,7 +1531,7 @@ static Handle build_entity(World *w, asset::Manager *m, config::Node *decl, Hand
                            u32 depth) {
     config::Node *body = decl->first_child;
     const char *label = config::value(decl, 0, NULL);
-    const char *def = config::get(body, "definition", NULL);
+    const char *def = config::get(body, KEY_DEFINITION, NULL);
 
     Handle h = NONE;
     if (def) {
@@ -1515,8 +1547,8 @@ static Handle build_entity(World *w, asset::Manager *m, config::Node *decl, Hand
     }
 
     // ids first: a level names its own, and for a reference the ones its definition spawned
-    assign_id(w, h, (u32)config::get_i32(body, "id", 0));
-    config::Node *owned = def ? config::find(body, "owned_ids") : NULL;
+    assign_id(w, h, (u32)config::get_i32(body, KEY_ID, 0));
+    config::Node *owned = def ? config::find(body, KEY_OWNED_IDS) : NULL;
     if (owned)
         assign_owned_ids(w, h, owned, 0);
 
@@ -1528,12 +1560,12 @@ static Handle build_entity(World *w, asset::Manager *m, config::Node *decl, Hand
 
     if (def && label)
         snprintf(e->name, ENTITY_NAME_CAP, "%s", label);
-    e->active = config::get_b32(body, "active", e->active);
-    read_transform(config::find(body, "transform"), &e->local);
+    e->active = config::get_b32(body, KEY_ACTIVE, e->active);
+    read_transform(config::find(body, KEY_TRANSFORM), &e->local);
 
     // after the components: attaching resolves a joint against the parent's skeleton
     if (parent.v)
-        set_parent(w, m, h, parent, config::get(body, "attach_joint", NULL));
+        set_parent(w, m, h, parent, config::get(body, KEY_ATTACH_JOINT, NULL));
 
     build_children(w, m, body, h, depth);
     return h;
@@ -1593,28 +1625,28 @@ void write_entity(memory::Arena *a, config::Doc *doc, config::Node *parent, Worl
     // identity is an instance's, never a definition's: a template is shared
     if (!as_definition) {
         const char *id[] = {memory::push_fmt(a, "%u", e->id)};
-        config::append(a, doc, node, "id", id, 1);
+        config::append(a, doc, node, KEY_ID, id, 1);
     }
 
     b32 by_ref = e->definition[0] != 0;
     if (by_ref) {
         const char *def[] = {e->definition};
-        config::append(a, doc, node, "definition", def, 1);
+        config::append(a, doc, node, KEY_DEFINITION, def, 1);
 
         // the children the definition spawned are not written, so their ids
         // are, in spawn order, and the reader hands them back the same way
         const char *ids[OWNED_IDS_CAP];
         u32 n = as_definition ? 0 : collect_owned_ids(a, w, h, ids, 0);
         if (n)
-            config::append(a, doc, node, "owned_ids", ids, n);
+            config::append(a, doc, node, KEY_OWNED_IDS, ids, n);
     }
     if (parent && e->attach_joint[0]) {
         const char *joint[] = {e->attach_joint};
-        config::append(a, doc, node, "attach_joint", joint, 1);
+        config::append(a, doc, node, KEY_ATTACH_JOINT, joint, 1);
     }
     if (!e->active) {
         const char *off[] = {"false"};
-        config::append(a, doc, node, "active", off, 1);
+        config::append(a, doc, node, KEY_ACTIVE, off, 1);
     }
 
     write_transform(a, doc, node, &e->local);
@@ -1634,7 +1666,7 @@ void write_entity(memory::Arena *a, config::Doc *doc, config::Node *parent, Worl
     for (Handle c = e->first_child; c.v; c = get(w, c)->next_sibling) {
         if (by_ref && get(w, c)->owned_by_definition)
             continue;
-        write_entity(a, doc, node, w, c, "child", false);
+        write_entity(a, doc, node, w, c, KEY_CHILD, false);
     }
 }
 
@@ -1702,7 +1734,7 @@ static b32 rebuild_instance(World *w, asset::Manager *m, Handle h) {
     write_entity(scratch, doc, NULL, w, h, "instance", false);
     if (parent.v && e->attach_joint[0]) {
         const char *joint[] = {e->attach_joint};
-        config::append(scratch, doc, doc->first, "attach_joint", joint, 1);
+        config::append(scratch, doc, doc->first, KEY_ATTACH_JOINT, joint, 1);
     }
 
     // the block holds copies of every string, so the entity can go before it is read

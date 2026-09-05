@@ -624,6 +624,65 @@ static void a_data_component_reads_writes_and_defaults(memory::Arena *a) {
                  d->size - sizeof(entity::Handle)) == 0);
 }
 
+// a declaration the layout cannot be built from is refused, not half-registered
+static void a_bad_declaration_is_refused(memory::Arena *a) {
+    entity::World *w = make_world(a);
+    u32 before = entity::component_count(w);
+
+    // the keys an entity block reads for itself
+    entity::ComponentDesc transform = TRACER;
+    transform.key = "transform";
+    entity::ComponentDesc child = TRACER;
+    child.key = "child";
+
+    // an enum with a count but no names, and one whose default is not a name
+    const entity::FieldDesc nameless[] = {
+        {.key = "style", .type = entity::FIELD_ENUM, .name_count = 2},
+    };
+    const entity::FieldDesc off_the_end[] = {
+        {.key = "style",
+         .type = entity::FIELD_ENUM,
+         .names = TRACER_STYLE_NAMES,
+         .name_count = ARRAY_COUNT(TRACER_STYLE_NAMES),
+         .def = {.as_i32 = 2}},
+    };
+    const entity::ComponentDesc no_names = {.key = "a", .fields = nameless, .field_count = 1};
+    const entity::ComponentDesc bad_default = {.key = "b", .fields = off_the_end, .field_count = 1};
+
+    test::mute();
+    CHECK(entity::register_component(w, &transform) == -1);
+    CHECK(entity::register_component(w, &child) == -1);
+    CHECK(entity::register_component(w, &no_names) == -1);
+    CHECK(entity::register_component(w, &bad_default) == -1);
+    CHECK(test::unmute() == 4);
+
+    CHECK(entity::component_count(w) == before);
+    CHECK(entity::find_component(w, "transform") == -1);
+}
+
+// a string with a default can be emptied, and the file says so
+static void an_emptied_string_default_round_trips(memory::Arena *a) {
+    entity::World *w = make_world(a);
+    asset::Manager *m = shared_assets(a);
+
+    const entity::FieldDesc fields[] = {
+        {.key = "team", .type = entity::FIELD_STRING, .cap = ENTITY_NAME_CAP,
+         .def = {.as_str = "red"}},
+    };
+    const entity::ComponentDesc desc = {.key = "side", .fields = fields, .field_count = 1};
+    u32 side = (u32)entity::register_component(w, &desc);
+    const entity::ComponentDesc *d = entity::component_desc(w, side);
+
+    entity::Handle h = entity::spawn(w, "flag");
+    char *team = (char *)field_at(d, entity::add_component(w, h, side), "team");
+    CHECK(strcmp(team, "red") == 0);
+    team[0] = 0;
+
+    const char *text = written(a, w, h, "entity", true);
+    entity::Handle back = entity::spawn_from_config(w, m, block(a, text, "entity"), entity::NONE);
+    CHECK(((const char *)field_at(d, entity::component(w, back, side), "team"))[0] == 0);
+}
+
 // a component the pools block does not name takes pool_default, which make_world sets to 16
 static void an_unnamed_component_takes_the_default_capacity(memory::Arena *a) {
     entity::World *w = make_world(a);
@@ -654,6 +713,8 @@ test::Suite entity_suite() {
         CASE(missing_model_falls_back_and_is_cached),
         CASE(a_declared_component_is_laid_out_and_registered),
         CASE(a_data_component_reads_writes_and_defaults),
+        CASE(a_bad_declaration_is_refused),
+        CASE(an_emptied_string_default_round_trips),
         CASE(an_unnamed_component_takes_the_default_capacity),
     };
     return test::Suite{.name = "entity", .cases = cases, .count = ARRAY_COUNT(cases)};
