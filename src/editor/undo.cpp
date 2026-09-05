@@ -54,10 +54,6 @@ struct Journal {
     u32 clean;  // the cursor at the last save, or CLEAN_UNKNOWN
 };
 
-#define X(ID, Type, key)                                                                           \
-    static_assert(sizeof(entity::Type) <= UNDO_VALUE_CAP, #Type " does not fit an undo entry");
-COMPONENT_LIST(X)
-#undef X
 static_assert(ENTITY_NAME_CAP <= UNDO_VALUE_CAP, "an entity name does not fit an undo entry");
 static_assert(sizeof(entity::Transform) <= UNDO_VALUE_CAP, "a transform does not fit an undo entry");
 static_assert(sizeof(asset::ImportOptions) <= UNDO_VALUE_CAP, "import options do not fit");
@@ -126,23 +122,23 @@ void record_field(Journal *j, u32 id, i32 component, u32 offset, u32 size, const
     memcpy(e->after, after, size);
 }
 
-void record_add(Journal *j, u32 id, entity::Component c, const void *bytes) {
-    ASSERT(j && bytes);
+void record_add(Journal *j, entity::World *w, u32 id, u32 c, const void *bytes) {
+    ASSERT(j && w && bytes);
     Entry *e = push(j);
     e->kind = KIND_ADD;
     e->id = id;
     e->component = (i32)c;
-    e->size = (u32)entity::component_desc(c)->size;
+    e->size = (u32)entity::component_desc(w, c)->size;
     memcpy(e->after, bytes, e->size);
 }
 
-void record_remove(Journal *j, u32 id, entity::Component c, const void *bytes) {
-    ASSERT(j && bytes);
+void record_remove(Journal *j, entity::World *w, u32 id, u32 c, const void *bytes) {
+    ASSERT(j && w && bytes);
     Entry *e = push(j);
     e->kind = KIND_REMOVE;
     e->id = id;
     e->component = (i32)c;
-    e->size = (u32)entity::component_desc(c)->size;
+    e->size = (u32)entity::component_desc(w, c)->size;
     memcpy(e->before, bytes, e->size);
 }
 
@@ -287,13 +283,17 @@ b32 can_redo(const Journal *j) {
 }
 
 // puts a component back with the bytes it had, and lets it resolve what they name
-static b32 restore_component(entity::World *w, asset::Manager *m, entity::Handle h,
-                             entity::Component c, const u8 *bytes, u32 size) {
+static b32 restore_component(entity::World *w, asset::Manager *m, entity::Handle h, u32 c,
+                             const u8 *bytes, u32 size) {
     void *comp = entity::add_component(w, h, c);
     if (!comp)
         return false;
     memcpy(comp, bytes, size);
-    entity::component_desc(c)->after_read(w, m, h, comp);
+
+    // a data component has nothing to resolve
+    const entity::ComponentDesc *d = entity::component_desc(w, c);
+    if (d->after_read)
+        d->after_read(w, m, h, comp);
     return true;
 }
 
@@ -373,29 +373,32 @@ static b32 apply(Journal *j, entity::World *w, asset::Manager *m, Entry *e, u32 
             return true;
         }
 
-        entity::Component c = (entity::Component)e->component;
+        u32 c = (u32)e->component;
         void *comp = entity::component(w, h, c);
         if (!comp) {
             LOG_WARN("undo: entity %u no longer has the component; skipping the entry", e->id);
             return false;
         }
         memcpy((u8 *)comp + e->offset, bytes, e->size);
-        entity::component_desc(c)->after_read(w, m, h, comp);
+
+        const entity::ComponentDesc *d = entity::component_desc(w, c);
+        if (d->after_read)
+            d->after_read(w, m, h, comp);
         return true;
     }
 
     case KIND_ADD:
         if (forward)
-            return restore_component(w, m, h, (entity::Component)e->component, e->after, e->size);
-        entity::remove_component(w, h, (entity::Component)e->component);
+            return restore_component(w, m, h, (u32)e->component, e->after, e->size);
+        entity::remove_component(w, h, (u32)e->component);
         return true;
 
     case KIND_REMOVE:
         if (forward) {
-            entity::remove_component(w, h, (entity::Component)e->component);
+            entity::remove_component(w, h, (u32)e->component);
             return true;
         }
-        return restore_component(w, m, h, (entity::Component)e->component, e->before, e->size);
+        return restore_component(w, m, h, (u32)e->component, e->before, e->size);
 
     case KIND_REPARENT:
         if (forward)

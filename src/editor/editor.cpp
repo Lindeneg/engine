@@ -624,19 +624,6 @@ static b32 continuing(const Editor *ed) {
     return ui::dragging() || ui::wants_keyboard() || ed->drag.handle != gizmo::HANDLE_NONE;
 }
 
-static u32 field_size(const entity::FieldDesc *f) {
-    switch (f->type) {
-    case entity::FIELD_VEC3:
-        return sizeof(linalg::Vec3);
-    case entity::FIELD_STRING:
-        return f->cap;
-    case entity::FIELD_TABLE:
-        return entity::table_size(f);
-    default:
-        return sizeof(u32); // F32, I32, B32 and ENUM are four bytes each
-    }
-}
-
 // a typed value resolves once the keyboard lets go, not per keystroke
 static b32 typed_field(const entity::FieldDesc *f) {
     return f->type == entity::FIELD_STRING || f->type == entity::FIELD_TABLE;
@@ -656,14 +643,12 @@ static void browse_asset(asset::Manager *m, char *path, u32 cap) {
                  asset::root(m));
 }
 
-static b32 picker_open(const Editor *ed, u32 id, entity::Component c, const entity::FieldDesc *f,
-                       u32 row) {
+static b32 picker_open(const Editor *ed, u32 id, u32 c, const entity::FieldDesc *f, u32 row) {
     return ed->picker_id == id && ed->picker_component == (i32)c && ed->picker_field == f->key &&
            ed->picker_row == row;
 }
 
-static void open_picker(Editor *ed, u32 id, entity::Component c, const entity::FieldDesc *f,
-                        u32 row) {
+static void open_picker(Editor *ed, u32 id, u32 c, const entity::FieldDesc *f, u32 row) {
     ed->picker_id = id;
     ed->picker_component = (i32)c;
     ed->picker_field = f->key;
@@ -706,8 +691,7 @@ static void asset_picker_rows(Editor *ed, asset::Manager *m, const entity::Field
 }
 
 // the "..." beside an asset path: unfolds the imports under the row, or folds them
-static b32 picker_button(Editor *ed, u32 id, entity::Component c, const entity::FieldDesc *f,
-                         u32 row) {
+static b32 picker_button(Editor *ed, u32 id, u32 c, const entity::FieldDesc *f, u32 row) {
     b32 open = picker_open(ed, id, c, f, row);
     if (!ui::button(BROWSE_LABEL))
         return open;
@@ -723,7 +707,7 @@ static b32 picker_button(Editor *ed, u32 id, entity::Component c, const entity::
 // row. Rows are edited in place; the caller's change detection journals the
 // table whole.
 static void table_rows_ui(Editor *ed, entity::World *w, asset::Manager *m, entity::Handle h,
-                          u32 id, entity::Component c, const entity::FieldDesc *f, void *comp) {
+                          u32 id, u32 c, const entity::FieldDesc *f, void *comp) {
     entity::Named *rows = entity::table_rows(comp, f);
     u32 *count = entity::table_count(comp, f);
     b32 clips = f->asset == entity::ASSET_CLIP;
@@ -809,9 +793,8 @@ static void choices_row(const entity::ComponentDesc *d, const entity::FieldDesc 
 }
 
 // one row per field, by type; the key is the row's label and the widget's id
-static void field_row(Editor *ed, entity::World *w, asset::Manager *m, entity::Handle h,
-                      entity::Component c, const entity::ComponentDesc *d,
-                      const entity::FieldDesc *f, void *comp) {
+static void field_row(Editor *ed, entity::World *w, asset::Manager *m, entity::Handle h, u32 c,
+                      const entity::ComponentDesc *d, const entity::FieldDesc *f, void *comp) {
     u8 *at = (u8 *)comp + f->offset;
     u32 id = entity::id_of(w, h);
     switch (f->type) {
@@ -872,7 +855,7 @@ static void field_row(Editor *ed, entity::World *w, asset::Manager *m, entity::H
 }
 
 // an instance of a definition that restates a component writes it back on save
-static void mark_overridden(entity::Entity *e, entity::Component c) {
+static void mark_overridden(entity::Entity *e, u32 c) {
     if (e->definition[0])
         e->overridden |= 1u << c;
 }
@@ -1196,8 +1179,8 @@ static void hierarchy_panel(Editor *ed, entity::World *w, asset::Manager *m, f32
 }
 
 static void component_section(Editor *ed, entity::World *w, asset::Manager *m, entity::Handle h,
-                              entity::Component c) {
-    const entity::ComponentDesc *d = entity::component_desc(c);
+                              u32 c) {
+    const entity::ComponentDesc *d = entity::component_desc(w, c);
     void *comp = entity::component(w, h, c);
     entity::Entity *e = entity::get(w, h);
 
@@ -1207,7 +1190,7 @@ static void component_section(Editor *ed, entity::World *w, asset::Manager *m, e
         for (u32 i = 0; i < d->field_count; i++) {
             const entity::FieldDesc *f = &d->fields[i];
             u8 *at = (u8 *)comp + f->offset;
-            u32 size = field_size(f);
+            u32 size = entity::field_size(f);
 
             u8 before[UNDO_VALUE_CAP];
             memcpy(before, at, size);
@@ -1219,11 +1202,12 @@ static void component_section(Editor *ed, entity::World *w, asset::Manager *m, e
             undo::record_field(ed->journal, e->id, (i32)c, f->offset, size, before, at,
                                continuing(ed));
 
-            // a path or a table resolves when typing stops; anything else right away
+            // a path or a table resolves when typing stops; anything else right
+            // away, unless the component has nothing to resolve
             if (typed_field(f)) {
                 ed->pending_entity = h;
                 ed->pending_component = (i32)c;
-            } else {
+            } else if (d->after_read) {
                 d->after_read(w, m, h, comp);
             }
         }
@@ -1239,7 +1223,7 @@ static void component_section(Editor *ed, entity::World *w, asset::Manager *m, e
     ui::pop_id();
 
     if (remove) {
-        undo::record_remove(ed->journal, e->id, c, comp);
+        undo::record_remove(ed->journal, w, e->id, c, comp);
         entity::remove_component(w, h, c);
     }
 }
@@ -1336,27 +1320,29 @@ static void inspector_panel(Editor *ed, entity::World *w, asset::Manager *m, i32
 
     transform_section(ed, w, h);
 
-    for (u32 c = 0; c < entity::COMPONENT_COUNT; c++)
+    for (u32 c = 0; c < entity::component_count(w); c++)
         if (e->components[c])
-            component_section(ed, w, m, h, (entity::Component)c);
+            component_section(ed, w, m, h, c);
 
     if (entity::camera(w, h) && ui::button("Look through"))
         look_through(ed, e);
 
+    // whatever this world registered, the engine's own and a script's alike
     if (ui::tree_node("Add component", false)) {
-        for (u32 c = 0; c < entity::COMPONENT_COUNT; c++) {
+        for (u32 c = 0; c < entity::component_count(w); c++) {
             if (e->components[c])
                 continue;
-            const entity::ComponentDesc *d = entity::component_desc((entity::Component)c);
+            const entity::ComponentDesc *d = entity::component_desc(w, c);
             if (!ui::button(d->key))
                 continue;
 
-            void *comp = entity::add_component(w, h, (entity::Component)c);
+            void *comp = entity::add_component(w, h, c);
             if (!comp)
                 continue;
-            d->after_read(w, m, h, comp);
-            mark_overridden(e, (entity::Component)c);
-            undo::record_add(ed->journal, e->id, (entity::Component)c, comp);
+            if (d->after_read)
+                d->after_read(w, m, h, comp);
+            mark_overridden(e, c);
+            undo::record_add(ed->journal, w, e->id, c, comp);
         }
         ui::tree_pop();
     }
@@ -1400,7 +1386,7 @@ static void define_model(Editor *ed, entity::World *w, asset::Manager *m, const 
     result::Error e = result::ERR_EXHAUSTED;
     if (r) {
         snprintf(r->model_path, sizeof(r->model_path), "%s", rel);
-        entity::component_desc(entity::COMPONENT_RENDERABLE)->after_read(w, m, h, r);
+        entity::component_desc(w, entity::COMPONENT_RENDERABLE)->after_read(w, m, h, r);
         e = entity::save_definition(w, m, h, stem);
     }
     entity::destroy(w, h);
@@ -1761,12 +1747,13 @@ static void resolve_pending(Editor *ed, entity::World *w, asset::Manager *m) {
     if (ed->pending_component == PENDING_NONE || ui::wants_keyboard())
         return;
 
-    entity::Component c = (entity::Component)ed->pending_component;
+    u32 c = (u32)ed->pending_component;
     void *comp = entity::component(w, ed->pending_entity, c);
     if (comp) {
-        const entity::ComponentDesc *d = entity::component_desc(c);
+        const entity::ComponentDesc *d = entity::component_desc(w, c);
         ensure_sidecars(m, d, comp);
-        d->after_read(w, m, ed->pending_entity, comp);
+        if (d->after_read)
+            d->after_read(w, m, ed->pending_entity, comp);
         forget_shown(ed); // a sidecar may just have appeared for the path on show
     }
     ed->pending_component = PENDING_NONE;

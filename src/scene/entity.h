@@ -10,9 +10,14 @@
 #include "gfx/shader.h"
 #include "math/linalg.h"
 
-// An entity is a fat struct holding one slot index per component type. Adding
-// a component type is engine code: a line in COMPONENT_LIST, a struct whose
-// first field is `Handle owner`, and a field table with defaults in entity.cpp.
+// An entity is a fat struct holding one slot index per component type. The
+// types are a registry the world builds at init, not a list closed at compile
+// time: the engine's five register first, in the order of COMPONENT_LIST, and
+// keep their structs and systems; anything registered after is a data
+// component -- a name and a field list, no C++ struct, its layout computed
+// from the fields. That is what lets a script declare a component and get the
+// reader, the writer, the inspector and the undo journal for free.
+//
 // Which entity has which components is data, in three layers:
 //
 //   assets/<path>.import.cfg   how an asset enters the world       (importer)
@@ -29,6 +34,18 @@
 // else about a definition there is special
 #define ENTITY_TEMPLATE_SUBDIR "templates"
 
+// Engine and data components one world can register. Not a setting: an
+// instance's override mask is one u32, so 32 is what the format can name.
+#define ENTITY_MAX_COMPONENTS 32
+
+// The most one component may occupy. A journal entry carries a whole component,
+// so this is what the editor's UNDO_VALUE_CAP must cover; a declaration whose
+// layout comes out larger is refused at registration rather than discovered by
+// the first undo.
+#define ENTITY_MAX_COMPONENT_BYTES 4096
+
+// The engine's own components, in the order they register. A data component
+// never appears here: it has no struct to name.
 #define COMPONENT_LIST(X)                                                                          \
     X(RENDERABLE, Renderable, "renderable")                                                        \
     X(ANIMATOR, Animator, "animator")                                                              \
@@ -44,12 +61,19 @@ struct Handle {
 
 constexpr Handle NONE = {0};
 
+// The engine's components are compile-time constants because the systems that
+// walk their pools are; every other index is a runtime one.
 enum Component {
 #define X(ID, Type, key) COMPONENT_##ID,
     COMPONENT_LIST(X)
 #undef X
-        COMPONENT_COUNT,
+        COMPONENT_ENGINE_COUNT,
 };
+
+static_assert(COMPONENT_ENGINE_COUNT <= ENTITY_MAX_COMPONENTS,
+              "the engine's own components must fit the registry");
+static_assert(ENTITY_MAX_COMPONENTS <= 32,
+              "Entity.overridden names one component per bit of a u32");
 
 // intrinsic, not a component: every entity has a place in the world
 struct Transform {
@@ -177,7 +201,7 @@ struct Entity {
     char attach_joint[ENTITY_NAME_CAP];
     i32 attach_joint_index;
 
-    u32 components[COMPONENT_COUNT]; // slot index per type, 0 for absent
+    u32 components[ENTITY_MAX_COMPONENTS]; // slot index per registered type, 0 for absent
     b32 active;
 
     // provenance, for writing back
@@ -201,15 +225,30 @@ enum FieldType {
 // editor knows which sidecar belongs beside it
 enum AssetKind { ASSET_NONE, ASSET_MODEL, ASSET_CLIP };
 
+// What a data component's field holds until a file says otherwise. An engine
+// component takes its defaults from a struct instead, which also carries the
+// runtime fields no table names.
+union FieldDefault {
+    f32 as_f32;
+    i32 as_i32; // FIELD_I32, FIELD_B32 and FIELD_ENUM, which is an index
+    linalg::Vec3 as_vec3;
+    const char *as_str; // FIELD_STRING; a FIELD_TABLE starts with no rows
+};
+
 struct FieldDesc {
     const char *key;
     FieldType type;
+
+    // where the value sits in the component. A data component leaves it 0:
+    // registration computes the layout and fills it in.
     u32 offset;
+
     u32 cap;                  // FIELD_STRING: bytes at offset; FIELD_TABLE: rows
     const char *const *names; // FIELD_ENUM: index -> name
     u32 name_count;
     AssetKind asset;          // FIELD_STRING, FIELD_TABLE: the asset the path names, if any
     const char *choices_from; // FIELD_STRING: the table in this component whose names it takes
+    FieldDefault def;         // data components only
 };
 
 // a FIELD_TABLE's rows, its count, and the bytes both take together
@@ -221,8 +260,26 @@ inline u32 *table_count(void *comp, const FieldDesc *f) {
 }
 inline u32 table_size(const FieldDesc *f) { return (u32)(sizeof(Named) * f->cap + sizeof(u32)); }
 
+// what one field occupies, which is what a journal entry copies
+inline u32 field_size(const FieldDesc *f) {
+    switch (f->type) {
+    case FIELD_VEC3:
+        return (u32)sizeof(linalg::Vec3);
+    case FIELD_STRING:
+        return f->cap;
+    case FIELD_TABLE:
+        return table_size(f);
+    default:
+        return 4; // F32, I32, B32 and ENUM are four bytes each
+    }
+}
+
 struct World;
 
+// A component type as it is declared. An engine component gives `size` and a
+// `defaults` instance of its struct; a data component leaves both at 0 and gets
+// its layout and its defaults blob built from the fields. The registry copies
+// everything it keeps, so a declaration may be a temporary -- a script's, say.
 struct ComponentDesc {
     const char *key;
     u64 size;
@@ -230,19 +287,26 @@ struct ComponentDesc {
     const FieldDesc *fields;
     u32 field_count;
 
-    // after the fields are read: resolves paths to handles, validates
+    // after the fields are read: resolves paths to handles, validates. NULL for
+    // a data component, which holds data and behaves not at all.
     void (*after_read)(World *w, asset::Manager *m, Handle h, void *component);
 };
 
-const ComponentDesc *component_desc(Component c);
+// what a component's pool holds, by the component's key
+struct PoolCap {
+    const char *key;
+    u32 cap;
+};
 
 struct Config {
     u32 max_entities;
-    u32 max_renderables;
-    u32 max_animators;
-    u32 max_cameras;
-    u32 max_lights;
-    u32 max_colliders;
+
+    // Pool capacities by component key, for the types this project registers.
+    // The strings are the caller's and are only read while components register,
+    // which is between init and the first spawn.
+    PoolCap pools[ENTITY_MAX_COMPONENTS];
+    u32 pool_count;
+    u32 pool_default; // a component the table does not name. 0 takes the default
 
     // simulation rate; physics must never see a framerate-dependent step. 0 takes the default
     f32 fixed_hz;
@@ -251,14 +315,29 @@ struct Config {
     u32 max_fixed_steps;
 };
 
-// The `world` block of engine.cfg; NULL or missing keys take the defaults.
+// The `world` block of project.cfg; NULL or missing keys take the defaults.
 Config config_from(config::Node *block);
 
 RESULT_TYPE(World *, WorldResult);
 RESULT_TYPE(Handle, HandleResult);
 
-// Pushes the pools and one palette per animator slot once; nothing allocates per frame.
+// Registers the engine's components, pushes their pools and one palette per
+// animator slot; nothing allocates per frame.
 WorldResult init(memory::Arena *a, Config cfg);
+
+// Adds a component type and its pool, whose capacity is what Config named for
+// this key, else pool_default. -1 when the declaration is refused: a key
+// already registered, a registry that is full, a field the layout cannot be
+// built from, or a component larger than ENTITY_MAX_COMPONENT_BYTES.
+//
+// Only between init and the first spawn -- a layout cannot change under
+// entities carrying it -- which is where a script runs its declarations.
+// Registering later is a bug and asserts.
+i32 register_component(World *w, const ComponentDesc *desc);
+
+u32 component_count(World *w);
+const ComponentDesc *component_desc(World *w, u32 index);
+i32 find_component(World *w, const char *key); // -1 when unknown
 
 // NULL for a handle that is not live, including NONE.
 Entity *get(World *w, Handle h);
@@ -287,11 +366,12 @@ b32 set_parent(World *w, asset::Manager *m, Handle child, Handle parent, const c
 // the world and must write into the parent's frame.
 void set_world_position(World *w, Handle h, linalg::Vec3 world);
 
-// With the engine defaults, or the existing component unchanged. The generic
-// pair is for code that works from the descriptor table, an inspector or an
-// undo journal; NULL when the entity is dead or the pool is full.
-void *add_component(World *w, Handle h, Component c);
-void remove_component(World *w, Handle h, Component c);
+// With the registered defaults, or the existing component unchanged. The
+// generic pair is for code that works from the registry, an inspector or an
+// undo journal; NULL when the entity is dead or the pool is full. The index is
+// a Component for the engine's own and a registered one for anything else.
+void *add_component(World *w, Handle h, u32 c);
+void remove_component(World *w, Handle h, u32 c);
 
 Renderable *add_renderable(World *w, Handle h);
 Animator *add_animator(World *w, Handle h);
@@ -313,14 +393,14 @@ linalg::Mat4 collider_frame(World *w, const Collider *c);
 // Every collider as a wire shape, through gfx/debugdraw.
 void draw_colliders(World *w, linalg::Vec4 color);
 
-// The same by index, for code working from the descriptor table.
-void *component(World *w, Handle h, Component c);
+// The same by index, for code working from the registry.
+void *component(World *w, Handle h, u32 c);
 
 // Walking one component's live slots, for the systems and tools that live
 // outside this file. 0 ends the walk, as with a pool index.
-u32 component_first(World *w, Component c);
-u32 component_next(World *w, Component c, u32 slot);
-void *component_at(World *w, Component c, u32 slot);
+u32 component_first(World *w, u32 c);
+u32 component_next(World *w, u32 c, u32 slot);
+void *component_at(World *w, u32 c, u32 slot);
 
 // The first active camera, or NONE.
 Handle active_camera(World *w);

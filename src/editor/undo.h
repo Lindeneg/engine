@@ -24,6 +24,8 @@
 // the largest thing a field entry carries: a whole component, an entity's name,
 // or a table of rows with its count
 #define UNDO_VALUE_CAP 4096
+static_assert(UNDO_VALUE_CAP >= ENTITY_MAX_COMPONENT_BYTES,
+              "an entry must hold the largest component the engine will register");
 
 // the component index that means the entity's own fields
 #define UNDO_ENTITY (-1)
@@ -36,15 +38,16 @@ struct Journal;
 // writing and parsing that text
 Journal *create(memory::Arena *a, memory::Arena *scratch, u32 depth, u32 blob_bytes);
 
-// A field already changed in place. component is an entity::Component, or
-// UNDO_ENTITY with an offset into the Entity itself.
+// A field already changed in place. component is a registered component index,
+// or UNDO_ENTITY with an offset into the Entity itself.
 void record_field(Journal *j, u32 id, i32 component, u32 offset, u32 size, const void *before,
                   const void *after, b32 continuing);
 
 // A component just added, with its bytes as they stand; one about to be
-// removed, with the bytes it had.
-void record_add(Journal *j, u32 id, entity::Component c, const void *bytes);
-void record_remove(Journal *j, u32 id, entity::Component c, const void *bytes);
+// removed, with the bytes it had. The world says how many bytes that is, since
+// a data component's size is only known once it is registered.
+void record_add(Journal *j, entity::World *w, u32 id, u32 c, const void *bytes);
+void record_remove(Journal *j, entity::World *w, u32 id, u32 c, const void *bytes);
 
 // An entity just created, or one about to be destroyed, with its whole
 // subtree. False when the subtree does not fit the blob; the caller then knows

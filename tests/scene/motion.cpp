@@ -25,11 +25,7 @@ static asset::Manager *make_assets(memory::Arena *a) {
 static entity::World *make_world(memory::Arena *a) {
     return MUST(entity::init(a, entity::Config{
                                     .max_entities = 16,
-                                    .max_renderables = 4,
-                                    .max_animators = 2,
-                                    .max_cameras = 2,
-                                    .max_lights = 2,
-                                    .max_colliders = 8,
+                                    .pool_default = 8,
                                 }));
 }
 

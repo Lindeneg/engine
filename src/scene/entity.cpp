@@ -25,27 +25,37 @@ namespace entity {
 #define DEFAULT_FIXED_HZ 120.0f
 #define DEFAULT_MAX_FIXED_STEPS 8
 #define DEFAULT_MAX_ENTITIES 4096
-#define DEFAULT_MAX_COLLIDERS 256
+#define DEFAULT_POOL_CAP 256
 
 // 0 means no id, so the counter starts above it
 #define FIRST_ID 1u
-#define DEFAULT_MAX_RENDERABLES 2048
-#define DEFAULT_MAX_ANIMATORS 64
-#define DEFAULT_MAX_CAMERAS 8
-#define DEFAULT_MAX_LIGHTS 16
 
 Config config_from(config::Node *block) {
     config::Node *body = block ? block->first_child : NULL;
-    return Config{
+
+    Config cfg = {
         .max_entities = (u32)config::get_i32(body, "max_entities", DEFAULT_MAX_ENTITIES),
-        .max_renderables = (u32)config::get_i32(body, "max_renderables", DEFAULT_MAX_RENDERABLES),
-        .max_animators = (u32)config::get_i32(body, "max_animators", DEFAULT_MAX_ANIMATORS),
-        .max_cameras = (u32)config::get_i32(body, "max_cameras", DEFAULT_MAX_CAMERAS),
-        .max_lights = (u32)config::get_i32(body, "max_lights", DEFAULT_MAX_LIGHTS),
-        .max_colliders = (u32)config::get_i32(body, "max_colliders", DEFAULT_MAX_COLLIDERS),
+        .pool_default = (u32)config::get_i32(body, "pool_default", DEFAULT_POOL_CAP),
         .fixed_hz = config::get_f32(body, "fixed_hz", DEFAULT_FIXED_HZ),
         .max_fixed_steps = (u32)config::get_i32(body, "max_fixed_steps", DEFAULT_MAX_FIXED_STEPS),
     };
+
+    // one row per component key; a row naming a component this project never
+    // registers is simply one nothing asks for
+    config::Node *pools = config::find(body, "pools");
+    for (config::Node *p = pools ? pools->first_child : NULL; p; p = p->next_sibling) {
+        if (!p->key)
+            continue;
+        if (cfg.pool_count == ENTITY_MAX_COMPONENTS) {
+            LOG_WARN("entity: %u: more than %d pool capacities; the rest are ignored", p->line,
+                     ENTITY_MAX_COMPONENTS);
+            break;
+        }
+        cfg.pools[cfg.pool_count++] =
+            PoolCap{.key = p->key, .cap = (u32)config::value_i32(p, 0, 0)};
+    }
+
+    return cfg;
 }
 
 // past this a hand-typed quaternion is reported as non-unit; it is normalized either way
@@ -141,17 +151,12 @@ static void after_read_CAMERA(World *w, asset::Manager *m, Handle h, void *c);
 static void after_read_LIGHT(World *w, asset::Manager *m, Handle h, void *c);
 static void after_read_COLLIDER(World *w, asset::Manager *m, Handle h, void *c);
 
-static const ComponentDesc DESCS[COMPONENT_COUNT] = {
+static const ComponentDesc ENGINE_DESCS[COMPONENT_ENGINE_COUNT] = {
 #define X(ID, Type, key)                                                                           \
     {key, sizeof(Type), &ID##_DEFAULTS, ID##_FIELDS, ARRAY_COUNT(ID##_FIELDS), after_read_##ID},
     COMPONENT_LIST(X)
 #undef X
 };
-
-const ComponentDesc *component_desc(Component c) {
-    ASSERT(c < COMPONENT_COUNT);
-    return &DESCS[c];
-}
 
 struct World {
     memory::Arena *arena;
@@ -163,7 +168,12 @@ struct World {
     f32 alpha;       // where this frame sits between two fixed steps
 
     pool::Pool entities;
-    pool::Pool components[COMPONENT_COUNT];
+
+    // the registry: descs[c] and components[c] are one component type, the
+    // engine's own first, in the order of COMPONENT_LIST
+    ComponentDesc descs[ENTITY_MAX_COMPONENTS];
+    pool::Pool components[ENTITY_MAX_COMPONENTS];
+    u32 desc_count;
 
     u32 next_id; // ids only ever go up; a load moves this past what the file holds
 
@@ -177,9 +187,201 @@ struct ComponentHeader {
     Handle owner;
 };
 
-#define X(ID, Type, key) static_assert(offsetof(Type, owner) == 0, #Type " must start with owner");
+#define X(ID, Type, key)                                                                           \
+    static_assert(offsetof(Type, owner) == 0, #Type " must start with owner");                     \
+    static_assert(sizeof(Type) <= ENTITY_MAX_COMPONENT_BYTES, #Type " is too big for a component");
 COMPONENT_LIST(X)
 #undef X
+
+u32 component_count(World *w) {
+    ASSERT(w);
+    return w->desc_count;
+}
+
+const ComponentDesc *component_desc(World *w, u32 index) {
+    ASSERT(w && index < w->desc_count);
+    return &w->descs[index];
+}
+
+i32 find_component(World *w, const char *key) {
+    ASSERT(w && key);
+    for (u32 c = 0; c < w->desc_count; c++)
+        if (strcmp(w->descs[c].key, key) == 0)
+            return (i32)c;
+    return -1;
+}
+
+// a string is bytes; every other field is built out of u32s and is read as one
+static u32 field_align(const FieldDesc *f) { return f->type == FIELD_STRING ? 1u : 4u; }
+
+static u32 align_up(u32 v, u32 align) { return (v + align - 1) & ~(align - 1); }
+
+// The layout a data component's fields describe: owner first, as every
+// component has, then the fields in declaration order, each on its own
+// alignment. False when a field could not be laid out, which is a declaration
+// the caller must fix.
+static b32 build_layout(const char *key, FieldDesc *fields, u32 count, u64 *out_size) {
+    u32 off = (u32)sizeof(ComponentHeader);
+
+    for (u32 i = 0; i < count; i++) {
+        FieldDesc *f = &fields[i];
+        if (!f->key || !f->key[0]) {
+            LOG_ERR("entity: component '%s' declares a field with no name", key);
+            return false;
+        }
+        if ((f->type == FIELD_STRING || f->type == FIELD_TABLE) && !f->cap) {
+            LOG_ERR("entity: component '%s' field '%s' needs a cap: bytes for a string, rows for a "
+                    "table",
+                    key, f->key);
+            return false;
+        }
+        if (f->type == FIELD_ENUM && !f->name_count) {
+            LOG_ERR("entity: component '%s' field '%s' is an enum with no names", key, f->key);
+            return false;
+        }
+
+        off = align_up(off, field_align(f));
+        f->offset = off;
+        off += field_size(f);
+    }
+
+    // a table's count follows its rows and must land aligned, which it does
+    // because a Named is a whole number of u32s
+    static_assert(sizeof(Named) % 4 == 0, "a table's count follows its rows and must stay aligned");
+
+    *out_size = align_up(off, 4);
+    return true;
+}
+
+// a data component's blob: what every field says before a file speaks
+static void build_defaults(const ComponentDesc *d, void *blob) {
+    for (u32 i = 0; i < d->field_count; i++) {
+        const FieldDesc *f = &d->fields[i];
+        u8 *at = (u8 *)blob + f->offset;
+        switch (f->type) {
+        case FIELD_F32:
+            *(f32 *)at = f->def.as_f32;
+            break;
+        case FIELD_I32:
+        case FIELD_B32:
+        case FIELD_ENUM:
+            *(i32 *)at = f->def.as_i32;
+            break;
+        case FIELD_VEC3:
+            *(linalg::Vec3 *)at = f->def.as_vec3;
+            break;
+        case FIELD_STRING:
+            if (f->def.as_str)
+                snprintf((char *)at, f->cap, "%s", f->def.as_str);
+            break;
+        case FIELD_TABLE:
+            break; // a table starts empty, which the zeroed blob already says
+        }
+    }
+}
+
+// every string the registry keeps is its own copy: a declaration may be a
+// script's, and the script outlives nothing
+static const char *const *copy_names(memory::Arena *a, const char *const *names, u32 count) {
+    const char **out = push_array(a, const char *, count);
+    for (u32 i = 0; i < count; i++)
+        out[i] = memory::push_str(a, names[i]);
+    return out;
+}
+
+static u32 pool_cap_for(const Config *cfg, const char *key) {
+    u32 fallback = cfg->pool_default ? cfg->pool_default : DEFAULT_POOL_CAP;
+
+    for (u32 i = 0; i < cfg->pool_count; i++) {
+        if (!cfg->pools[i].key || strcmp(cfg->pools[i].key, key) != 0)
+            continue;
+
+        // a pool of nothing is a typo, not an intent: no entity could hold one
+        if (!cfg->pools[i].cap) {
+            LOG_WARN("entity: the pools block gives %s a capacity of 0; using %u", key, fallback);
+            break;
+        }
+        return cfg->pools[i].cap;
+    }
+    return fallback;
+}
+
+i32 register_component(World *w, const ComponentDesc *desc) {
+    ASSERT(w && desc && desc->key);
+    ASSERT_MSG(w->entities.live == 0,
+               "entity: '%s' registered after the world was populated; a layout cannot change "
+               "under the entities carrying it",
+               desc->key);
+
+    if (w->desc_count == ENTITY_MAX_COMPONENTS) {
+        LOG_ERR("entity: '%s' does not fit; a world registers at most %d components", desc->key,
+                ENTITY_MAX_COMPONENTS);
+        return -1;
+    }
+    if (find_component(w, desc->key) >= 0) {
+        LOG_ERR("entity: a component named '%s' is already registered", desc->key);
+        return -1;
+    }
+
+    memory::Arena *a = w->arena;
+    ComponentDesc *d = &w->descs[w->desc_count];
+    *d = *desc;
+    d->key = memory::push_str(a, desc->key);
+
+    FieldDesc *fields = push_array(a, FieldDesc, desc->field_count ? desc->field_count : 1);
+    for (u32 i = 0; i < desc->field_count; i++) {
+        fields[i] = desc->fields[i];
+        fields[i].key = memory::push_str(a, desc->fields[i].key ? desc->fields[i].key : "");
+        if (fields[i].choices_from)
+            fields[i].choices_from = memory::push_str(a, fields[i].choices_from);
+        if (fields[i].type == FIELD_ENUM && fields[i].names)
+            fields[i].names = copy_names(a, fields[i].names, fields[i].name_count);
+        if (fields[i].type == FIELD_STRING && fields[i].def.as_str)
+            fields[i].def.as_str = memory::push_str(a, fields[i].def.as_str);
+    }
+    d->fields = fields;
+
+    // a field that steps through a table must name one of this component's, or
+    // the inspector would assert on a row nobody could have edited
+    for (u32 i = 0; i < d->field_count; i++) {
+        if (!fields[i].choices_from)
+            continue;
+
+        b32 found = false;
+        for (u32 t = 0; t < d->field_count; t++)
+            found |= fields[t].type == FIELD_TABLE &&
+                     strcmp(fields[t].key, fields[i].choices_from) == 0;
+        if (!found) {
+            LOG_ERR("entity: component '%s' field '%s' chooses from '%s', which is not one of its "
+                    "tables",
+                    d->key, fields[i].key, fields[i].choices_from);
+            return -1;
+        }
+    }
+
+    // a declaration without a struct describes its own layout
+    if (!d->size && !build_layout(d->key, fields, d->field_count, &d->size))
+        return -1;
+
+    if (!d->size || d->size > ENTITY_MAX_COMPONENT_BYTES) {
+        LOG_ERR("entity: '%s' comes to %llu bytes; a component holds at most %d", d->key,
+                (unsigned long long)d->size, ENTITY_MAX_COMPONENT_BYTES);
+        return -1;
+    }
+
+    void *blob = memory::push(a, d->size, alignof(u32));
+    if (desc->defaults)
+        memcpy(blob, desc->defaults, d->size);
+    else
+        build_defaults(d, blob);
+    d->defaults = blob;
+
+    // +1 for the pool's reserved index 0, so the configured count is the usable one
+    u32 cap = pool_cap_for(&w->cfg, d->key);
+    w->components[w->desc_count] = pool::create(a, cap + 1, d->size);
+
+    return (i32)w->desc_count++;
+}
 
 WorldResult init(memory::Arena *a, Config cfg) {
     ASSERT(a);
@@ -200,23 +402,23 @@ WorldResult init(memory::Arena *a, Config cfg) {
     // so the configured count is the usable one
     w->entities = pool::create(a, cfg.max_entities + 1, sizeof(Entity));
 
-    u32 caps[COMPONENT_COUNT] = {
-        cfg.max_renderables + 1,
-        cfg.max_animators + 1,
-        cfg.max_cameras + 1,
-        cfg.max_lights + 1,
-        cfg.max_colliders + 1,
-    };
-    for (u32 c = 0; c < COMPONENT_COUNT; c++)
-        w->components[c] = pool::create(a, caps[c], DESCS[c].size);
+    // first and in this order, so COMPONENT_RENDERABLE and its siblings are the
+    // indices the systems walk
+    for (u32 c = 0; c < COMPONENT_ENGINE_COUNT; c++) {
+        if (register_component(w, &ENGINE_DESCS[c]) == (i32)c)
+            continue;
+        LOG_ERR("entity: the engine's own component '%s' would not register", ENGINE_DESCS[c].key);
+        return WorldResult{.err = result::ERR_INVALID};
+    }
 
     // sized for the reserved slot 0 too, so a slot indexes the palette directly
-    u64 palette_slots = (u64)caps[COMPONENT_ANIMATOR] * SHADER_MAX_JOINTS;
+    u64 palette_slots = (u64)w->components[COMPONENT_ANIMATOR].cap * SHADER_MAX_JOINTS;
     w->skin = push_array(a, linalg::Mat4, palette_slots);
     w->global = push_array(a, linalg::Mat4, palette_slots);
 
     LOG_INFO("entity: world with %u entities, %u renderables, %u animators (%.2f MiB palettes)",
-             cfg.max_entities, caps[COMPONENT_RENDERABLE], caps[COMPONENT_ANIMATOR],
+             cfg.max_entities, w->components[COMPONENT_RENDERABLE].cap,
+             w->components[COMPONENT_ANIMATOR].cap,
              (f64)(palette_slots * sizeof(linalg::Mat4) * 2) / (1024.0 * 1024.0));
     LOG_INFO("entity: simulating at %.1f Hz, at most %u step(s) per frame",
              (f64)(1.0f / w->fixed_dt), w->max_fixed_steps);
@@ -340,7 +542,7 @@ void destroy(World *w, Handle h) {
 
     unlink(w, h);
 
-    for (u32 c = 0; c < COMPONENT_COUNT; c++)
+    for (u32 c = 0; c < w->desc_count; c++)
         if (e->components[c])
             pool::release(&w->components[c], e->components[c]);
 
@@ -453,8 +655,8 @@ void set_world_position(World *w, Handle h, linalg::Vec3 world) {
     e->local.position = linalg::mat4_mul_point(linalg::mat4_inverse_affine(p->world), world);
 }
 
-void *add_component(World *w, Handle h, Component type) {
-    ASSERT(w && type < COMPONENT_COUNT);
+void *add_component(World *w, Handle h, u32 type) {
+    ASSERT(w && type < w->desc_count);
 
     Entity *e = get(w, h);
     if (!e) {
@@ -467,20 +669,21 @@ void *add_component(World *w, Handle h, Component type) {
 
     u32 idx = pool::alloc(&w->components[type], 0);
     if (!idx) {
-        LOG_WARN("entity: component pool %u is full, \"%s\" goes without", type, e->name);
+        LOG_WARN("entity: the %s pool is full at %u, \"%s\" goes without", w->descs[type].key,
+                 w->components[type].cap - 1, e->name);
         return NULL;
     }
 
     e->components[type] = idx;
 
     void *c = pool::at(&w->components[type], idx);
-    memcpy(c, DESCS[type].defaults, DESCS[type].size);
+    memcpy(c, w->descs[type].defaults, w->descs[type].size);
     ((ComponentHeader *)c)->owner = h;
     return c;
 }
 
-void remove_component(World *w, Handle h, Component type) {
-    ASSERT(w && type < COMPONENT_COUNT);
+void remove_component(World *w, Handle h, u32 type) {
+    ASSERT(w && type < w->desc_count);
 
     Entity *e = get(w, h);
     if (!e || !e->components[type])
@@ -514,23 +717,23 @@ Collider *add_collider(World *w, Handle h) {
     return (Collider *)add_component(w, h, COMPONENT_COLLIDER);
 }
 
-u32 component_first(World *w, Component c) {
-    ASSERT(w && c < COMPONENT_COUNT);
+u32 component_first(World *w, u32 c) {
+    ASSERT(w && c < w->desc_count);
     return pool::first(&w->components[c]);
 }
 
-u32 component_next(World *w, Component c, u32 slot) {
-    ASSERT(w && c < COMPONENT_COUNT);
+u32 component_next(World *w, u32 c, u32 slot) {
+    ASSERT(w && c < w->desc_count);
     return pool::next(&w->components[c], slot);
 }
 
-void *component_at(World *w, Component c, u32 slot) {
-    ASSERT(w && c < COMPONENT_COUNT);
+void *component_at(World *w, u32 c, u32 slot) {
+    ASSERT(w && c < w->desc_count);
     return slot ? pool::at(&w->components[c], slot) : NULL;
 }
 
-void *component(World *w, Handle h, Component c) {
-    ASSERT(w && c < COMPONENT_COUNT);
+void *component(World *w, Handle h, u32 c) {
+    ASSERT(w && c < w->desc_count);
     return component_of(w, h, c);
 }
 
@@ -1192,18 +1395,19 @@ static void build_children(World *w, asset::Manager *m, config::Node *body, Hand
 // returns a bit per component block present: the override mask for a definition reference
 static u32 read_components(World *w, asset::Manager *m, Handle h, config::Node *body) {
     u32 present = 0;
-    for (u32 c = 0; c < COMPONENT_COUNT; c++) {
-        config::Node *block = config::find(body, DESCS[c].key);
+    for (u32 c = 0; c < component_count(w); c++) {
+        const ComponentDesc *d = component_desc(w, c);
+        config::Node *block = config::find(body, d->key);
         if (!block)
             continue;
 
-        void *comp = add_component(w, h, (Component)c);
+        void *comp = add_component(w, h, c);
         if (!comp)
             continue;
 
-        read_fields(&DESCS[c], block->first_child, comp);
-        if (DESCS[c].after_read)
-            DESCS[c].after_read(w, m, h, comp);
+        read_fields(d, block->first_child, comp);
+        if (d->after_read)
+            d->after_read(w, m, h, comp);
         present |= 1u << c;
     }
     return present;
@@ -1415,15 +1619,16 @@ void write_entity(memory::Arena *a, config::Doc *doc, config::Node *parent, Worl
 
     write_transform(a, doc, node, &e->local);
 
-    for (u32 c = 0; c < COMPONENT_COUNT; c++) {
+    for (u32 c = 0; c < component_count(w); c++) {
         if (!e->components[c])
             continue;
         if (by_ref && !(e->overridden & (1u << c)))
             continue;
 
-        config::Node *block = config::append(a, doc, node, DESCS[c].key, NULL, 0);
+        const ComponentDesc *d = component_desc(w, c);
+        config::Node *block = config::append(a, doc, node, d->key, NULL, 0);
         block->is_block = true;
-        write_fields(a, doc, block, &DESCS[c], pool::at(&w->components[c], e->components[c]));
+        write_fields(a, doc, block, d, pool::at(&w->components[c], e->components[c]));
     }
 
     for (Handle c = e->first_child; c.v; c = get(w, c)->next_sibling) {

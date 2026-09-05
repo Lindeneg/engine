@@ -35,11 +35,7 @@ static asset::Manager *shared_assets(memory::Arena *scratch) {
 static entity::World *make_world(memory::Arena *a) {
     return MUST(entity::init(a, entity::Config{
                                     .max_entities = 64,
-                                    .max_renderables = 16,
-                                    .max_animators = 8,
-                                    .max_cameras = 4,
-                                    .max_lights = 4,
-                                    .max_colliders = 8,
+                                    .pool_default = 16,
                                 }));
 }
 
@@ -487,6 +483,160 @@ static void missing_model_falls_back_and_is_cached(memory::Arena *a) {
     CHECK(strstr(written(a, w, h1, "entity", false), "model nope/missing.glb") != NULL);
 }
 
+// A component with no C++ struct behind it: what a script will declare. Its
+// layout, its defaults and its place in a file all come out of this table.
+static const char *TRACER_STYLE_NAMES[] = {"line", "beam"};
+
+static const entity::FieldDesc TRACER_FIELDS[] = {
+    {.key = "speed", .type = entity::FIELD_F32, .def = {.as_f32 = 900.0f}},
+    {.key = "visible", .type = entity::FIELD_B32, .def = {.as_i32 = true}},
+    {.key = "model",
+     .type = entity::FIELD_STRING,
+     .cap = ENTITY_PATH_CAP,
+     .asset = entity::ASSET_MODEL},
+    {.key = "style",
+     .type = entity::FIELD_ENUM,
+     .names = TRACER_STYLE_NAMES,
+     .name_count = ARRAY_COUNT(TRACER_STYLE_NAMES),
+     .def = {.as_i32 = 1}},
+    {.key = "clips", .type = entity::FIELD_TABLE, .cap = 4, .asset = entity::ASSET_CLIP},
+    {.key = "tint", .type = entity::FIELD_VEC3, .def = {.as_vec3 = {1.0f, 0.5f, 0.25f}}},
+};
+
+static const entity::ComponentDesc TRACER = {
+    .key = "tracer",
+    .fields = TRACER_FIELDS,
+    .field_count = ARRAY_COUNT(TRACER_FIELDS),
+};
+
+static const char *SHOT = "entity \"shot\" {\n"
+                          "    tracer {\n"
+                          "        speed 1200\n"
+                          "        visible false\n"
+                          "        model models/pistol.glb\n"
+                          "        style line\n"
+                          "        clips {\n"
+                          "            fly animations/pistol_idle.glb\n"
+                          "        }\n"
+                          "        tint 0 1 0\n"
+                          "    }\n"
+                          "}\n";
+
+// a data component has no struct, so its fields are reached through the registry
+static const entity::FieldDesc *field_of(const entity::ComponentDesc *d, const char *key) {
+    for (u32 i = 0; i < d->field_count; i++)
+        if (strcmp(d->fields[i].key, key) == 0)
+            return &d->fields[i];
+    CHECK(false);
+    return &d->fields[0];
+}
+
+static void *field_at(const entity::ComponentDesc *d, void *comp, const char *key) {
+    return (u8 *)comp + field_of(d, key)->offset;
+}
+
+static void a_declared_component_is_laid_out_and_registered(memory::Arena *a) {
+    entity::World *w = make_world(a);
+
+    i32 tracer = entity::register_component(w, &TRACER);
+    CHECK(tracer == (i32)entity::COMPONENT_ENGINE_COUNT);
+    CHECK(entity::component_count(w) == (u32)entity::COMPONENT_ENGINE_COUNT + 1);
+    CHECK(entity::find_component(w, "tracer") == tracer);
+    CHECK(entity::find_component(w, "nothing") == -1);
+
+    // the engine's own registered first and kept their indices
+    CHECK(entity::find_component(w, "renderable") == (i32)entity::COMPONENT_RENDERABLE);
+    CHECK(entity::find_component(w, "collider") == (i32)entity::COMPONENT_COLLIDER);
+
+    // a key can only be claimed once, and the declaration is copied, not held
+    test::mute();
+    CHECK(entity::register_component(w, &TRACER) == -1);
+    CHECK(test::unmute() == 1);
+
+    const entity::ComponentDesc *d = entity::component_desc(w, (u32)tracer);
+    CHECK(d->key != TRACER.key && strcmp(d->key, "tracer") == 0);
+    CHECK(d->fields != TRACER_FIELDS);
+    CHECK(d->after_read == NULL);
+
+    // owner first, then the fields in declaration order, none overlapping
+    CHECK(d->fields[0].offset == sizeof(entity::Handle));
+    for (u32 i = 1; i < d->field_count; i++)
+        CHECK(d->fields[i].offset >=
+              d->fields[i - 1].offset + entity::field_size(&d->fields[i - 1]));
+
+    const entity::FieldDesc *last = &d->fields[d->field_count - 1];
+    CHECK(d->size >= last->offset + entity::field_size(last));
+    CHECK(d->size <= ENTITY_MAX_COMPONENT_BYTES);
+}
+
+static void a_data_component_reads_writes_and_defaults(memory::Arena *a) {
+    entity::World *w = make_world(a);
+    asset::Manager *m = shared_assets(a);
+
+    u32 tracer = (u32)entity::register_component(w, &TRACER);
+    const entity::ComponentDesc *d = entity::component_desc(w, tracer);
+
+    // a fresh component is what the field table said
+    entity::Handle blank = entity::spawn(w, "blank");
+    void *c = entity::add_component(w, blank, tracer);
+    CHECK(c != NULL);
+    CHECK(((entity::Handle *)c)->v == blank.v);
+    CHECK(*(f32 *)field_at(d, c, "speed") == 900.0f);
+    CHECK(*(b32 *)field_at(d, c, "visible"));
+    CHECK(*(i32 *)field_at(d, c, "style") == 1);
+    CHECK(((const char *)field_at(d, c, "model"))[0] == 0);
+    CHECK(((linalg::Vec3 *)field_at(d, c, "tint"))->y == 0.5f);
+
+    const entity::FieldDesc *clips = field_of(d, "clips");
+    CHECK(*entity::table_count(c, clips) == 0);
+
+    // and a file says otherwise for every type
+    entity::Handle h = entity::spawn_from_config(w, m, block(a, SHOT, "entity"), entity::NONE);
+    void *shot = entity::component(w, h, tracer);
+    CHECK(shot != NULL);
+    CHECK(*(f32 *)field_at(d, shot, "speed") == 1200.0f);
+    CHECK(!*(b32 *)field_at(d, shot, "visible"));
+    CHECK(*(i32 *)field_at(d, shot, "style") == 0);
+    CHECK(strcmp((const char *)field_at(d, shot, "model"), "models/pistol.glb") == 0);
+    CHECK(((linalg::Vec3 *)field_at(d, shot, "tint"))->y == 1.0f);
+    CHECK(*entity::table_count(shot, clips) == 1);
+    CHECK(strcmp(entity::table_rows(shot, clips)[0].name, "fly") == 0);
+
+    // written back as the block it was read from
+    const char *text = written(a, w, h, "entity", true);
+    CHECK(strstr(text, "tracer {") != NULL);
+    CHECK(strstr(text, "speed 1200") != NULL);
+    CHECK(strstr(text, "style line") != NULL);
+    CHECK(strstr(text, "fly animations/pistol_idle.glb") != NULL);
+
+    // and the level round trips through text with the bytes intact
+    u8 before[ENTITY_MAX_COMPONENT_BYTES];
+    memcpy(before, shot, d->size);
+    u32 id = entity::id_of(w, h);
+
+    char *level = entity::write_level(a, w);
+    entity::clear(w);
+    CHECK(entity::load_level_text(w, m, level, "<test>") == 2);
+
+    void *back = entity::component(w, entity::find_by_id(w, id), tracer);
+    CHECK(back != NULL);
+    CHECK(memcmp((u8 *)back + sizeof(entity::Handle), before + sizeof(entity::Handle),
+                 d->size - sizeof(entity::Handle)) == 0);
+}
+
+// a component the pools block does not name takes pool_default, which make_world sets to 16
+static void an_unnamed_component_takes_the_default_capacity(memory::Arena *a) {
+    entity::World *w = make_world(a);
+    u32 tracer = (u32)entity::register_component(w, &TRACER);
+
+    for (u32 i = 0; i < 16; i++)
+        CHECK(entity::add_component(w, entity::spawn(w, "shot"), tracer) != NULL);
+
+    test::mute();
+    CHECK(entity::add_component(w, entity::spawn(w, "one too many"), tracer) == NULL);
+    CHECK(test::unmute() == 1);
+}
+
 test::Suite entity_suite() {
     static const test::Case cases[] = {
         CASE(defaults_come_from_the_table),
@@ -502,6 +652,9 @@ test::Suite entity_suite() {
         CASE(a_saved_definition_is_reloaded_into_its_instances),
         CASE(the_clip_table_plays_by_name),
         CASE(missing_model_falls_back_and_is_cached),
+        CASE(a_declared_component_is_laid_out_and_registered),
+        CASE(a_data_component_reads_writes_and_defaults),
+        CASE(an_unnamed_component_takes_the_default_capacity),
     };
     return test::Suite{.name = "entity", .cases = cases, .count = ARRAY_COUNT(cases)};
 }

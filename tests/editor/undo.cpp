@@ -27,11 +27,7 @@ static asset::Manager *make_assets(memory::Arena *a, const char *root) {
 static entity::World *make_world(memory::Arena *a) {
     return MUST(entity::init(a, entity::Config{
                                     .max_entities = 16,
-                                    .max_renderables = 8,
-                                    .max_animators = 2,
-                                    .max_cameras = 4,
-                                    .max_lights = 2,
-                                    .max_colliders = 4,
+                                    .pool_default = 8,
                                 }));
 }
 
@@ -186,20 +182,74 @@ static void components_come_and_go(memory::Arena *a) {
 
     entity::Camera *c = entity::add_camera(w, h);
     c->fov_y = 45.0f;
-    undo::record_add(j, id, entity::COMPONENT_CAMERA, c);
+    undo::record_add(j, w, id, entity::COMPONENT_CAMERA, c);
 
     CHECK(undo::undo(j, w, m));
     CHECK(entity::camera(w, h) == NULL);
     CHECK(undo::redo(j, w, m));
     CHECK(entity::camera(w, h) && entity::camera(w, h)->fov_y == 45.0f);
 
-    undo::record_remove(j, id, entity::COMPONENT_CAMERA, entity::camera(w, h));
+    undo::record_remove(j, w, id, entity::COMPONENT_CAMERA, entity::camera(w, h));
     entity::remove_component(w, h, entity::COMPONENT_CAMERA);
     CHECK(entity::camera(w, h) == NULL);
 
     CHECK(undo::undo(j, w, m));
     CHECK(entity::camera(w, h) && entity::camera(w, h)->fov_y == 45.0f);
     CHECK(entity::camera(w, h)->owner.v == h.v);
+}
+
+// A component with no C++ struct behind it, the way a script will declare one:
+// the journal knows it only through the registry.
+static const entity::FieldDesc HEALTH_FIELDS[] = {
+    {.key = "hp", .type = entity::FIELD_F32, .def = {.as_f32 = 100.0f}},
+    {.key = "faction", .type = entity::FIELD_STRING, .cap = ENTITY_NAME_CAP},
+};
+
+static const entity::ComponentDesc HEALTH = {
+    .key = "health",
+    .fields = HEALTH_FIELDS,
+    .field_count = ARRAY_COUNT(HEALTH_FIELDS),
+};
+
+static void a_data_component_journals_like_any_other(memory::Arena *a) {
+    asset::Manager *m = make_assets(a, ".");
+    entity::World *w = make_world(a);
+    u32 health = (u32)entity::register_component(w, &HEALTH);
+    undo::Journal *j = undo::create(a, a, DEPTH, BLOB);
+
+    const entity::ComponentDesc *d = entity::component_desc(w, health);
+    const entity::FieldDesc *hp = &d->fields[0];
+
+    entity::Handle h = entity::spawn(w, "grunt");
+    u32 id = entity::id_of(w, h);
+
+    void *c = entity::add_component(w, h, health);
+    CHECK(c != NULL);
+    undo::record_add(j, w, id, health, c);
+
+    // a field change, journalled through the descriptor like any other
+    f32 *at = (f32 *)((u8 *)c + hp->offset);
+    CHECK(*at == 100.0f);
+    f32 before = *at;
+    *at = 40.0f;
+    undo::record_field(j, id, (i32)health, hp->offset, entity::field_size(hp), &before, at, false);
+
+    CHECK(undo::undo(j, w, m));
+    CHECK(*(f32 *)((u8 *)entity::component(w, h, health) + hp->offset) == 100.0f);
+    CHECK(undo::redo(j, w, m));
+    CHECK(*(f32 *)((u8 *)entity::component(w, h, health) + hp->offset) == 40.0f);
+
+    // and back past the add, which takes the component with it
+    CHECK(undo::undo(j, w, m));
+    CHECK(undo::undo(j, w, m));
+    CHECK(entity::component(w, h, health) == NULL);
+
+    // restoring it needs no after_read and keeps the bytes it had
+    CHECK(undo::redo(j, w, m));
+    void *back = entity::component(w, h, health);
+    CHECK(back != NULL);
+    CHECK(((entity::Handle *)back)->v == h.v);
+    CHECK(*(f32 *)((u8 *)back + hp->offset) == 100.0f);
 }
 
 // a parent with a camera and a child under it, positioned and named
@@ -364,6 +414,7 @@ test::Suite undo_suite() {
         CASE(new_edits_drop_the_redo_tail_and_depth_the_oldest),
         CASE(the_save_point_is_clean_until_the_journal_moves),
         CASE(components_come_and_go),
+        CASE(a_data_component_journals_like_any_other),
         CASE(a_deleted_subtree_comes_back_with_its_ids),
         CASE(a_created_entity_is_undone_and_redone),
         CASE(a_reparent_is_undone_with_its_transform),
