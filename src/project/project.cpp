@@ -57,6 +57,8 @@ result::Error open(memory::Arena *a, const char *dir, Project *out) {
              config::get(doc.val->first, "title", out->name));
     snprintf(out->level, sizeof(out->level), "%s",
              config::get(doc.val->first, "level", DEFAULT_LEVEL));
+    snprintf(out->script, sizeof(out->script), "%s",
+             config::get(doc.val->first, "script", PROJECT_DEFAULT_SCRIPT));
 
     LOG_INFO("project: opened '%s' at %s, level '%s'", out->name, dir, out->level);
     return result::OK;
@@ -69,6 +71,7 @@ result::Error save(memory::Arena *scratch, Project *p) {
     set_key(scratch, p->doc, "name", p->name);
     set_key(scratch, p->doc, "title", p->title);
     set_key(scratch, p->doc, "level", p->level);
+    set_key(scratch, p->doc, "script", p->script);
 
     // the values above were pushed into scratch; the doc keeps pointing at them
     // only until this scope ends, so the file is written before that
@@ -111,7 +114,7 @@ result::Error create(memory::Arena *a, memory::Arena *scratch, const char *engin
 
     // the template's own folders that ship empty do not survive a copy, so they are made
     static const char *DIRS[] = {PROJECT_LEVEL_DIR, PROJECT_ENTITY_DIR, PROJECT_MODEL_DIR,
-                                 PROJECT_ANIMATION_DIR};
+                                 PROJECT_ANIMATION_DIR, PROJECT_SCRIPT_DIR};
     for (u32 i = 0; i < ARRAY_COUNT(DIRS); i++)
         if (!file::make_directory(FPATH(scratch, dir, DIRS[i]))) {
             memory::temp_end(t);

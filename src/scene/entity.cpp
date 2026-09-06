@@ -160,15 +160,20 @@ static const FieldDesc COLLIDER_FIELDS[] = {
     {.key = "offset", .type = FIELD_VEC3, .offset = FIELD(Collider, offset)},
 };
 
-static void after_read_RENDERABLE(World *w, asset::Manager *m, Handle h, void *c);
-static void after_read_ANIMATOR(World *w, asset::Manager *m, Handle h, void *c);
-static void after_read_CAMERA(World *w, asset::Manager *m, Handle h, void *c);
-static void after_read_LIGHT(World *w, asset::Manager *m, Handle h, void *c);
-static void after_read_COLLIDER(World *w, asset::Manager *m, Handle h, void *c);
+static void after_read_RENDERABLE(World *w, asset::Manager *m, Handle h, void *c, void *);
+static void after_read_ANIMATOR(World *w, asset::Manager *m, Handle h, void *c, void *);
+static void after_read_CAMERA(World *w, asset::Manager *m, Handle h, void *c, void *);
+static void after_read_LIGHT(World *w, asset::Manager *m, Handle h, void *c, void *);
+static void after_read_COLLIDER(World *w, asset::Manager *m, Handle h, void *c, void *);
 
 static const ComponentDesc ENGINE_DESCS[COMPONENT_ENGINE_COUNT] = {
-#define X(ID, Type, key)                                                                           \
-    {key, sizeof(Type), &ID##_DEFAULTS, ID##_FIELDS, ARRAY_COUNT(ID##_FIELDS), after_read_##ID},
+#define X(ID, Type, name)                                                                          \
+    {.key = name,                                                                                  \
+     .size = sizeof(Type),                                                                         \
+     .defaults = &ID##_DEFAULTS,                                                                   \
+     .fields = ID##_FIELDS,                                                                        \
+     .field_count = ARRAY_COUNT(ID##_FIELDS),                                                      \
+     .after_read = after_read_##ID},
     COMPONENT_LIST(X)
 #undef X
 };
@@ -224,6 +229,88 @@ i32 find_component(World *w, const char *key) {
         if (strcmp(w->descs[c].key, key) == 0)
             return (i32)c;
     return -1;
+}
+
+static b32 same_string(const char *a, const char *b) {
+    if (!a || !b)
+        return a == b || (a && !a[0]) || (b && !b[0]);
+    return strcmp(a, b) == 0;
+}
+
+// what differs between a registered field and a declared one, or NULL
+static const char *field_difference(const FieldDesc *a, const FieldDesc *b) {
+    if (!same_string(a->key, b->key))
+        return "name";
+    if (a->type != b->type)
+        return "type";
+    if (a->asset != b->asset)
+        return "asset kind";
+    if (!same_string(a->choices_from, b->choices_from))
+        return "choices_from";
+
+    switch (a->type) {
+    case FIELD_F32:
+        return a->def.as_f32 == b->def.as_f32 ? NULL : "default";
+    case FIELD_I32:
+    case FIELD_B32:
+        return a->def.as_i32 == b->def.as_i32 ? NULL : "default";
+    case FIELD_VEC3:
+        return a->def.as_vec3.x == b->def.as_vec3.x && a->def.as_vec3.y == b->def.as_vec3.y &&
+                       a->def.as_vec3.z == b->def.as_vec3.z
+                   ? NULL
+                   : "default";
+    case FIELD_STRING:
+        if (a->cap != b->cap)
+            return "cap";
+        return same_string(a->def.as_str, b->def.as_str) ? NULL : "default";
+    case FIELD_TABLE:
+        return a->cap == b->cap ? NULL : "cap";
+    case FIELD_ENUM:
+        if (a->name_count != b->name_count)
+            return "name count";
+        if (a->def.as_i32 != b->def.as_i32)
+            return "default";
+        for (u32 i = 0; i < a->name_count; i++)
+            if (!same_string(a->names[i], b->names[i]))
+                return "names";
+        return NULL;
+    }
+    return "type";
+}
+
+b32 declaration_matches(World *w, const ComponentDesc *desc) {
+    ASSERT(w && desc && desc->key);
+
+    i32 c = find_component(w, desc->key);
+    if (c < 0) {
+        LOG_WARN("entity: no component '%s' is registered", desc->key);
+        return false;
+    }
+
+    const ComponentDesc *d = &w->descs[c];
+    if (d->field_count != desc->field_count) {
+        LOG_WARN("entity: '%s' is registered with %u fields, declared with %u", desc->key,
+                 d->field_count, desc->field_count);
+        return false;
+    }
+
+    // a struct declares its size; a field list gets one computed, which the
+    // same fields compute again
+    if (desc->size && desc->size != d->size) {
+        LOG_WARN("entity: '%s' is registered at %llu bytes, declared at %llu", desc->key,
+                 (unsigned long long)d->size, (unsigned long long)desc->size);
+        return false;
+    }
+
+    for (u32 i = 0; i < d->field_count; i++) {
+        const char *differs = field_difference(&d->fields[i], &desc->fields[i]);
+        if (!differs)
+            continue;
+        LOG_WARN("entity: '%s' field '%s' is declared with a different %s than registered",
+                 desc->key, d->fields[i].key, differs);
+        return false;
+    }
+    return true;
 }
 
 // a string is bytes; every other field is built out of u32s and is read as one
@@ -527,6 +614,29 @@ Handle find_by_id(World *w, u32 id) {
     return NONE;
 }
 
+Handle find_by_name(World *w, const char *name) {
+    ASSERT(w && name);
+    for (Handle h = first(w); h.v; h = next(w, h))
+        if (strcmp(get(w, h)->name, name) == 0)
+            return h;
+    return NONE;
+}
+
+// what a module outside the world does before a slot goes: a script's despawn, say
+static void release_component(World *w, Handle h, u32 type) {
+    Entity *e = get(w, h);
+    u32 slot = e->components[type];
+    if (!slot)
+        return;
+
+    const ComponentDesc *d = &w->descs[type];
+    if (d->before_remove)
+        d->before_remove(w, h, pool::at(&w->components[type], slot), d->user);
+
+    pool::release(&w->components[type], slot);
+    e->components[type] = 0;
+}
+
 static void unlink(World *w, Handle h) {
     Entity *e = get(w, h);
     if (!e || e->parent.v == 0)
@@ -572,8 +682,7 @@ void destroy(World *w, Handle h) {
     unlink(w, h);
 
     for (u32 c = 0; c < w->desc_count; c++)
-        if (e->components[c])
-            pool::release(&w->components[c], e->components[c]);
+        release_component(w, h, c);
 
     pool::release(&w->entities, pool::handle_index(h.v));
 }
@@ -715,11 +824,10 @@ void remove_component(World *w, Handle h, u32 type) {
     ASSERT(w && type < w->desc_count);
 
     Entity *e = get(w, h);
-    if (!e || !e->components[type])
+    if (!e)
         return;
 
-    pool::release(&w->components[type], e->components[type]);
-    e->components[type] = 0;
+    release_component(w, h, type);
     e->overridden &= ~(1u << type);
 }
 
@@ -1122,7 +1230,7 @@ void draw_bounds(World *w, asset::Manager *m, linalg::Vec4 color) {
     }
 }
 
-static void after_read_RENDERABLE(World *w, asset::Manager *m, Handle h, void *c) {
+static void after_read_RENDERABLE(World *w, asset::Manager *m, Handle h, void *c, void *) {
     Renderable *r = (Renderable *)c;
 
     if (!r->model_path[0]) {
@@ -1137,10 +1245,10 @@ static void after_read_RENDERABLE(World *w, asset::Manager *m, Handle h, void *c
     // from a file the animator is read after this and does not exist yet
     Animator *a = animator(w, h);
     if (a)
-        after_read_ANIMATOR(w, m, h, a);
+        after_read_ANIMATOR(w, m, h, a, NULL);
 }
 
-static void after_read_ANIMATOR(World *w, asset::Manager *m, Handle h, void *c) {
+static void after_read_ANIMATOR(World *w, asset::Manager *m, Handle h, void *c, void *) {
     Animator *a = (Animator *)c;
 
     Renderable *r = renderable(w, h);
@@ -1176,7 +1284,7 @@ static void after_read_ANIMATOR(World *w, asset::Manager *m, Handle h, void *c) 
     a->finished = false;
 }
 
-static void after_read_CAMERA(World *, asset::Manager *, Handle, void *c) {
+static void after_read_CAMERA(World *, asset::Manager *, Handle, void *c, void *) {
     Camera *cam = (Camera *)c;
     if (cam->z_near > 0.0f && cam->z_far > cam->z_near)
         return;
@@ -1188,10 +1296,10 @@ static void after_read_CAMERA(World *, asset::Manager *, Handle, void *c) {
     cam->z_far = CAMERA_DEFAULTS.z_far;
 }
 
-static void after_read_LIGHT(World *, asset::Manager *, Handle, void *) {}
+static void after_read_LIGHT(World *, asset::Manager *, Handle, void *, void *) {}
 
 // a shape with no extent is a hole in the world, not a wall; it is put back to the default
-static void after_read_COLLIDER(World *w, asset::Manager *, Handle h, void *c) {
+static void after_read_COLLIDER(World *w, asset::Manager *, Handle h, void *c, void *) {
     Collider *col = (Collider *)c;
     const char *name = get(w, h)->name;
 
@@ -1439,7 +1547,7 @@ static u32 read_components(World *w, asset::Manager *m, Handle h, config::Node *
 
         read_fields(d, block->first_child, comp);
         if (d->after_read)
-            d->after_read(w, m, h, comp);
+            d->after_read(w, m, h, comp, d->user);
         present |= 1u << c;
     }
     return present;

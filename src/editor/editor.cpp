@@ -1002,6 +1002,9 @@ static void project_section(Editor *ed) {
     ui::label("title");
     if (ui::text_field("title", ed->project->title, sizeof(ed->project->title)))
         ed->project_pending = true;
+    ui::label("main script");
+    if (ui::text_field("script", ed->project->script, sizeof(ed->project->script)))
+        ed->project_pending = true;
     ui::label("starts in");
     ui::label_dim(ed->project->level);
     ui::columns(1);
@@ -1208,7 +1211,7 @@ static void component_section(Editor *ed, entity::World *w, asset::Manager *m, e
                 ed->pending_entity = h;
                 ed->pending_component = (i32)c;
             } else if (d->after_read) {
-                d->after_read(w, m, h, comp);
+                d->after_read(w, m, h, comp, d->user);
             }
         }
 
@@ -1340,7 +1343,7 @@ static void inspector_panel(Editor *ed, entity::World *w, asset::Manager *m, i32
             if (!comp)
                 continue;
             if (d->after_read)
-                d->after_read(w, m, h, comp);
+                d->after_read(w, m, h, comp, d->user);
             mark_overridden(e, c);
             undo::record_add(ed->journal, w, e->id, c, comp);
         }
@@ -1386,7 +1389,8 @@ static void define_model(Editor *ed, entity::World *w, asset::Manager *m, const 
     result::Error e = result::ERR_EXHAUSTED;
     if (r) {
         snprintf(r->model_path, sizeof(r->model_path), "%s", rel);
-        entity::component_desc(w, entity::COMPONENT_RENDERABLE)->after_read(w, m, h, r);
+        const entity::ComponentDesc *d = entity::component_desc(w, entity::COMPONENT_RENDERABLE);
+        d->after_read(w, m, h, r, d->user);
         e = entity::save_definition(w, m, h, stem);
     }
     entity::destroy(w, h);
@@ -1753,7 +1757,7 @@ static void resolve_pending(Editor *ed, entity::World *w, asset::Manager *m) {
         const entity::ComponentDesc *d = entity::component_desc(w, c);
         ensure_sidecars(m, d, comp);
         if (d->after_read)
-            d->after_read(w, m, ed->pending_entity, comp);
+            d->after_read(w, m, ed->pending_entity, comp, d->user);
         forget_shown(ed); // a sidecar may just have appeared for the path on show
     }
     ed->pending_component = PENDING_NONE;

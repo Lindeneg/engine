@@ -18,6 +18,9 @@ endif()
 find_package(glfw3 CONFIG REQUIRED)
 find_package(glad CONFIG REQUIRED)
 
+# the game's scripting language; the port exports the FindLua variables
+find_package(Lua REQUIRED)
+
 set(ENGINE_SOURCES
         src/core/config.cpp
         src/core/frametime.cpp
@@ -60,6 +63,14 @@ set(ENGINE_SOURCES
         src/scene/entity.cpp
         src/scene/motion.cpp
 
+        src/script/bind.cpp
+        src/script/bind_debugdraw.cpp
+        src/script/bind_entity.cpp
+        src/script/bind_input.cpp
+        src/script/bind_log.cpp
+        src/script/bind_motion.cpp
+        src/script/script.cpp
+
         src/editor/dashboard.cpp
         src/editor/editor.cpp
         src/editor/gizmo.cpp
@@ -78,8 +89,8 @@ add_executable(ExploreApp
         ${ENGINE_SOURCES}
         ${GAME_SOURCES}
 )
-target_include_directories(ExploreApp PRIVATE src third_party)
-target_link_libraries(ExploreApp PRIVATE glfw glad::glad)
+target_include_directories(ExploreApp PRIVATE src third_party ${LUA_INCLUDE_DIR})
+target_link_libraries(ExploreApp PRIVATE glfw glad::glad ${LUA_LIBRARIES})
 
 # the native file and folder pickers
 if (WIN32)
@@ -105,8 +116,8 @@ if (CL_BUILD_TESTS)
             ${TEST_SOURCES}
             ${ENGINE_SOURCES}
     )
-    target_include_directories(ExploreTests PRIVATE src tests third_party)
-    target_link_libraries(ExploreTests PRIVATE glfw glad::glad)
+    target_include_directories(ExploreTests PRIVATE src tests third_party ${LUA_INCLUDE_DIR})
+    target_link_libraries(ExploreTests PRIVATE glfw glad::glad ${LUA_LIBRARIES})
     if (WIN32)
         target_link_libraries(ExploreTests PRIVATE comdlg32 ole32 uuid)
     endif ()

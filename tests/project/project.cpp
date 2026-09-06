@@ -31,11 +31,14 @@ static void a_project_is_created_from_the_template(memory::Arena *a) {
 
     file::Entry entries[16];
     u32 n = file::list(dir, entries, 16);
-    CHECK(n == 6);
+    CHECK(n == 7);
     CHECK(strcmp(entries[0].name, "animations") == 0 && entries[0].is_directory);
     CHECK(strcmp(entries[1].name, "entities") == 0);
     CHECK(strcmp(entries[2].name, "input.cfg") == 0 && !entries[2].is_directory);
     CHECK(strcmp(entries[5].name, "project.cfg") == 0);
+    CHECK(strcmp(entries[6].name, "scripts") == 0 && entries[6].is_directory);
+    CHECK(strcmp(p.script, PROJECT_DEFAULT_SCRIPT) == 0);
+    CHECK(file::exists(FPATH(a, dir, p.script)));
 
     // a second create over it is refused
     test::mute();

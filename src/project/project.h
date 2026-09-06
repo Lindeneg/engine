@@ -25,6 +25,10 @@
 #define PROJECT_ENTITY_DIR "entities"
 #define PROJECT_MODEL_DIR "models"
 #define PROJECT_ANIMATION_DIR "animations"
+#define PROJECT_SCRIPT_DIR "scripts"
+
+// the `script` key when the file has none: the template's main script
+#define PROJECT_DEFAULT_SCRIPT "scripts/main.lua"
 
 #define PROJECT_NAME_CAP 64
 #define PROJECT_PATH_CAP 512
@@ -36,6 +40,10 @@ struct Project {
     char name[PROJECT_NAME_CAP];
     char title[PROJECT_NAME_CAP]; // the window's
     char level[PROJECT_NAME_CAP]; // opened first, under levels/
+
+    // the main script, relative to dir: declares components at open, and its
+    // hooks run beside the entities' while playing
+    char script[PROJECT_PATH_CAP];
 
     // the whole file, kept, for the blocks the engine reads by name: world, player
     config::Doc *doc;

@@ -19,6 +19,7 @@
 #include "platform/window.h"
 #include "project/project.h"
 #include "scene/entity.h"
+#include "script/script.h"
 #include "ui/ui.h"
 
 // The engine's own resources -- shaders, the UI font, its settings, the
@@ -95,7 +96,7 @@ static void timing_label(const char *fmt, f64 value) {
 }
 
 static void debug_panel(const Overlay *o, const frametime::Stats *t, u32 steps, DebugView *view,
-                        game::Player *player) {
+                        game::Player *player, u64 script_bytes) {
     ui::begin_panel("Debug", canvas::Rect{o->padding, o->padding, o->panel.x, o->panel.y});
 
     if (ui::tree_node("Timing", true)) {
@@ -103,6 +104,7 @@ static void debug_panel(const Overlay *o, const frametime::Stats *t, u32 steps, 
         timing_label("frame %.2f ms", (f64)t->smoothed_dt * 1000.0);
         timing_label("worst %.2f ms", (f64)t->worst_dt * 1000.0);
         timing_label("fixed steps %.0f", (f64)steps);
+        timing_label("scripts %.0f KiB", (f64)script_bytes / 1024.0);
         ui::tree_pop();
     }
 
@@ -290,6 +292,10 @@ int main(int argc, char **argv) {
     entity::World *world{MUST(
         entity::init(&perm, entity::config_from(config::find(proj.doc->first, "world"))))};
 
+    // the project's declarations, before the level fills the world with them
+    script::State *scripts{MUST(script::init(&perm, &scratch, world, assets, in, &proj))};
+    script::declare(scripts); // its own error is logged; the project opens regardless
+
     // everything in the world comes from the level file
     MUST(entity::load_level(world, assets, proj.level));
 
@@ -310,6 +316,7 @@ int main(int argc, char **argv) {
     input::Action toggle_look = input::find(in, "toggle_mouse_look");
     input::Action toggle_debug = input::find(in, "toggle_debug_draw");
     input::Action toggle_editor = input::find(in, "toggle_editor");
+    input::Action reload_scripts = input::find(in, "reload_scripts");
     b32 debug_draw = false;
 
     // The session opens in edit mode: the level file is the authority, and play
@@ -328,11 +335,27 @@ int main(int argc, char **argv) {
 
         if (input::pressed(in, toggle_editor)) {
             b32 edit = !editor::active(ed);
-            editor::set_active(ed, world, assets, in, win, edit);
 
-            // play starts from a fresh copy of the level, so the player starts fresh too
-            if (!edit)
-                player = make_player(player_cfg, in, world, body_name);
+            // scripts stop before the world is put back, and start once the copy is up
+            if (edit) {
+                script::stop(scripts);
+                editor::set_active(ed, world, assets, in, win, true);
+            } else {
+                editor::set_active(ed, world, assets, in, win, false);
+                if (script::start(scripts) == result::OK) {
+                    // play starts from a fresh copy of the level, so the player starts fresh too
+                    player = make_player(player_cfg, in, world, body_name);
+                } else {
+                    editor::set_active(ed, world, assets, in, win, true);
+                }
+            }
+        }
+
+        // the scripts again, on the level as it stands
+        if (input::pressed(in, reload_scripts) && script::running(scripts) &&
+            script::reload(scripts) != result::OK) {
+            script::stop(scripts);
+            editor::set_active(ed, world, assets, in, win, true);
         }
 
         // while editing the editor owns the cursor and the maps
@@ -380,9 +403,11 @@ int main(int argc, char **argv) {
 
             steps = entity::begin_frame(world, dt);
             for (u32 i = 0; i < steps; i++) {
+                script::fixed_update(scripts, entity::fixed_dt(world));
                 game::step(&player, world, assets, in, entity::fixed_dt(world));
                 entity::step_fixed(world, assets);
             }
+            script::update(scripts, dt);
 
             // after the body has moved, before end_frame rebuilds world transforms
             game::place_camera(&player, world);
@@ -401,7 +426,7 @@ int main(int argc, char **argv) {
                 game::draw_debug(&player, world);
             if (view.colliders && !editing) // the editor draws them itself
                 entity::draw_colliders(world, collider_color);
-            debug_panel(&overlay, &timing, steps, &view, &player);
+            debug_panel(&overlay, &timing, steps, &view, &player, script::bytes(scripts));
         }
         ui::end_frame();
 
@@ -420,6 +445,8 @@ int main(int argc, char **argv) {
 
         window::swap(win);
     }
+
+    script::stop(scripts);
 
 #if CL_MEM_STATS
     memory::log_stats(&perm, "perm");

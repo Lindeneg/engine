@@ -293,7 +293,7 @@ static b32 restore_component(entity::World *w, asset::Manager *m, entity::Handle
     // a data component has nothing to resolve
     const entity::ComponentDesc *d = entity::component_desc(w, c);
     if (d->after_read)
-        d->after_read(w, m, h, comp);
+        d->after_read(w, m, h, comp, d->user);
     return true;
 }
 
@@ -383,7 +383,7 @@ static b32 apply(Journal *j, entity::World *w, asset::Manager *m, Entry *e, u32 
 
         const entity::ComponentDesc *d = entity::component_desc(w, c);
         if (d->after_read)
-            d->after_read(w, m, h, comp);
+            d->after_read(w, m, h, comp, d->user);
         return true;
     }
 

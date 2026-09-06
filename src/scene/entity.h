@@ -289,7 +289,14 @@ struct ComponentDesc {
 
     // after the fields are read: resolves paths to handles, validates. NULL for
     // a data component, which holds data and behaves not at all.
-    void (*after_read)(World *w, asset::Manager *m, Handle h, void *component);
+    void (*after_read)(World *w, asset::Manager *m, Handle h, void *component, void *user);
+
+    // before the component's slot is released, by remove_component or destroy;
+    // NULL when nothing outside the world holds on to one
+    void (*before_remove)(World *w, Handle h, void *component, void *user);
+
+    // handed to both callbacks: what the declaring module needs to reach
+    void *user;
 };
 
 // what a component's pool holds, by the component's key
@@ -339,6 +346,12 @@ u32 component_count(World *w);
 const ComponentDesc *component_desc(World *w, u32 index);
 i32 find_component(World *w, const char *key); // -1 when unknown
 
+// Whether registering desc would change nothing: a component of that key is
+// registered with the same fields, types, caps, names, defaults and size. For
+// a declaration that runs again after the world is populated, a script's say,
+// and must only be the one already made.
+b32 declaration_matches(World *w, const ComponentDesc *desc);
+
 // NULL for a handle that is not live, including NONE.
 Entity *get(World *w, Handle h);
 b32 alive(World *w, Handle h);
@@ -353,6 +366,10 @@ Handle spawn_with_id(World *w, const char *name, u32 id);
 // the live entities, which an editor does a few times a frame.
 u32 id_of(World *w, Handle h);
 Handle find_by_id(World *w, u32 id);
+
+// The first live entity of that name, in pool order; NONE for none. Names are
+// not unique, so this is for a script or a loader that placed one and knows it.
+Handle find_by_name(World *w, const char *name);
 
 // Recursive over children.
 void destroy(World *w, Handle h);
