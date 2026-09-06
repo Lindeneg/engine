@@ -8,8 +8,9 @@
 // A project is a folder the engine is pointed at: project.cfg at its root,
 // levels/, entities/ with templates/, models/, animations/, and its own
 // input.cfg. Everything a game is lives there; the engine's own resources live
-// in the engine folder and are the same for every project. The engine knows
-// the folder it was given and nothing else about content.
+// in the resources folder (the "engine root" below) and are the same for every
+// project. The engine knows the folder it was given and nothing else about
+// content.
 //
 // A new project is a copy of the engine's project_template with its name
 // written in. The dashboard lists recent projects from a file in the engine

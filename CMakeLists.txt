@@ -89,9 +89,10 @@ if (WIN32)
     target_link_libraries(ExploreApp PRIVATE comdlg32 ole32 uuid)
 endif ()
 
-# The engine's own resources. A game is a project folder given at launch or
-# chosen on the dashboard; the engine binary knows no content of its own.
-target_compile_definitions(ExploreApp PRIVATE CL_ENGINE_ROOT="${CMAKE_SOURCE_DIR}/engine")
+# The engine's own resources, in resources/. A game is a project folder given
+# at launch or chosen on the dashboard; the engine binary knows no content of
+# its own. example/ is one such project.
+target_compile_definitions(ExploreApp PRIVATE CL_ENGINE_ROOT="${CMAKE_SOURCE_DIR}/resources")
 
 add_custom_command(TARGET ExploreApp POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
@@ -116,7 +117,7 @@ if (CL_BUILD_TESTS)
 
     # the tests' own project: a fixture they read and never edit by hand
     target_compile_definitions(ExploreTests PRIVATE
-            CL_ENGINE_ROOT="${CMAKE_SOURCE_DIR}/engine"
+            CL_ENGINE_ROOT="${CMAKE_SOURCE_DIR}/resources"
             CL_TEST_FIXTURE="${CMAKE_SOURCE_DIR}/tests/fixture")
 
     # so `make test` alone still refreshes clangd's view of tests/

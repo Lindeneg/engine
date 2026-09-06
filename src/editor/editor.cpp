@@ -69,7 +69,7 @@
 #define ASSET_FILTER_LABEL "glTF binary"
 #define SCRIPT_EXTENSION "lua"
 
-// the engine folder's starter scripts, copied in as a project's new script
+// the resources folder's starter scripts, copied in as a project's new script
 #define STARTER_SCRIPT_DIR "scripts"
 #define BROWSE_LABEL "..."
 #define ABS_PATH_CAP 1024
@@ -1574,9 +1574,9 @@ static void scripts_section(Editor *ed, asset::Manager *m) {
     ui::columns(1);
 
     if (!ed->cfg.engine_root) {
-        ui::label_dim("(the engine folder is unknown; no starters)");
+        ui::label_dim("(the resources folder is unknown; no starters)");
     } else if (ed->starter_count == 0) {
-        ui::label_dim("(the engine folder has no starters)");
+        ui::label_dim("(the resources folder has no starters)");
     } else {
         ui::columns(2, SPLIT_ROW);
         for (u32 i = 0; i < ed->starter_count; i++) {
