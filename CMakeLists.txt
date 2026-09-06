@@ -84,9 +84,9 @@ add_executable(ExploreApp
 target_include_directories(ExploreApp PRIVATE src third_party ${LUA_INCLUDE_DIR})
 target_link_libraries(ExploreApp PRIVATE glfw glad::glad ${LUA_LIBRARIES})
 
-# the native file and folder pickers
+# the native file and folder pickers, and handing a file to the shell
 if (WIN32)
-    target_link_libraries(ExploreApp PRIVATE comdlg32 ole32 uuid)
+    target_link_libraries(ExploreApp PRIVATE comdlg32 ole32 uuid shell32)
 endif ()
 
 # The engine's own resources, in resources/. A game is a project folder given
@@ -112,7 +112,7 @@ if (CL_BUILD_TESTS)
     target_include_directories(ExploreTests PRIVATE src tests third_party ${LUA_INCLUDE_DIR})
     target_link_libraries(ExploreTests PRIVATE glfw glad::glad ${LUA_LIBRARIES})
     if (WIN32)
-        target_link_libraries(ExploreTests PRIVATE comdlg32 ole32 uuid)
+        target_link_libraries(ExploreTests PRIVATE comdlg32 ole32 uuid shell32)
     endif ()
 
     # the tests' own project: a fixture they read and never edit by hand

@@ -163,21 +163,29 @@ static void a_hook_that_raises_is_reported_once_and_switched_off(memory::Arena *
     entity::Handle h = spawn_probe(a, &f, "broken", "scripts/broken.lua");
     CHECK(script::start(f.s) == result::OK);
 
+    CHECK(script::last_error(f.s)[0] == 0);
     test::mute();
     script::update(f.s, 0.1f);
     script::update(f.s, 0.1f);
     CHECK(test::unmute() == 1);
 
-    // the rest of the level plays on
+    // the rest of the level plays on, and the failure is there to be shown
     CHECK(script::running(f.s));
     CHECK(hp(&f, h) == 5.0f);
+    CHECK(strstr(script::last_error(f.s), "boom") != NULL);
+    CHECK(strstr(script::last_error(f.s), "broken.lua") != NULL);
 
-    // a reload gives it another chance, and it fails the same way once more
+    // a reload gives it another chance, wiping the slate, and it fails the same way once more
     test::mute();
     CHECK(script::reload(f.s) == result::OK);
+    CHECK(script::last_error(f.s)[0] == 0);
     script::update(f.s, 0.1f);
     CHECK(test::unmute() == 1);
+    CHECK(strstr(script::last_error(f.s), "boom") != NULL);
+
+    // stopping keeps it, for an editor showing what ended play
     script::stop(f.s);
+    CHECK(strstr(script::last_error(f.s), "boom") != NULL);
 }
 
 static void a_changed_declaration_refuses_play(memory::Arena *a) {

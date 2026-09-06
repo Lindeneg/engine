@@ -89,8 +89,18 @@ static void timing_label(const char *fmt, f64 value) {
     ui::label(line);
 }
 
+// a message's first line: for a traceback the file, the line and the error
+static void first_line(const char *text, char *out, u64 cap) {
+    u64 n = 0;
+    while (text[n] && text[n] != '\n' && n + 1 < cap) {
+        out[n] = text[n];
+        n++;
+    }
+    out[n] = 0;
+}
+
 static void debug_panel(const Overlay *o, const frametime::Stats *t, u32 steps, DebugView *view,
-                        u64 script_bytes) {
+                        const script::State *scripts) {
     ui::begin_panel("Debug", canvas::Rect{o->padding, o->padding, o->panel.x, o->panel.y});
 
     if (ui::tree_node("Timing", true)) {
@@ -98,8 +108,16 @@ static void debug_panel(const Overlay *o, const frametime::Stats *t, u32 steps, 
         timing_label("frame %.2f ms", (f64)t->smoothed_dt * 1000.0);
         timing_label("worst %.2f ms", (f64)t->worst_dt * 1000.0);
         timing_label("fixed steps %.0f", (f64)steps);
-        timing_label("scripts %.0f KiB", (f64)script_bytes / 1024.0);
+        timing_label("scripts %.0f KiB", (f64)script::bytes(scripts) / 1024.0);
         ui::tree_pop();
+    }
+
+    // what the scripts last failed with, while the editor is out of sight
+    const char *error = script::last_error(scripts);
+    if (error[0]) {
+        char line[OVERLAY_TEXT_CAP];
+        first_line(error, line, sizeof(line));
+        ui::label_dim(line);
     }
 
     if (ui::tree_node("Lines", false)) {
@@ -210,6 +228,7 @@ static b32 open_session(Engine *e, Session *s, const char *dir) {
         LOG_ERR("main: level '%s' could not be read; the world starts empty", s->proj.level);
 
     s->ed = editor::init(a, &e->scratch, &e->snapshot, e->editor_cfg, e->in, &s->proj);
+    editor::set_script_error(s->ed, script::last_error(s->scripts));
     s->play_map = input::find_map(e->in, e->editor_cfg.play_map);
 
     // The session opens in edit mode: the level file is the authority, and play
@@ -440,7 +459,7 @@ int main(int argc, char **argv) {
                 entity::draw_bounds(s.world, e.assets, bounds_color);
             if (view.colliders && !editing) // the editor draws them itself
                 entity::draw_colliders(s.world, collider_color);
-            debug_panel(&overlay, &timing, steps, &view, script::bytes(s.scripts));
+            debug_panel(&overlay, &timing, steps, &view, s.scripts);
         }
         ui::end_frame();
 

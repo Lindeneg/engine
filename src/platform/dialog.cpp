@@ -8,6 +8,7 @@
 #include <windows.h>
 
 #include <commdlg.h>
+#include <shellapi.h>
 #include <shobjidl.h>
 #endif
 
@@ -108,6 +109,18 @@ b32 choose_folder(const char *title, char *out, u32 cap) {
     return ok;
 }
 
+// ShellExecute reports success as a value above 32, by its own convention
+#define SHELL_EXECUTE_OK 32
+
+b32 open_external(const char *path) {
+    ASSERT(path);
+    INT_PTR r = (INT_PTR)ShellExecuteA(NULL, "open", path, NULL, NULL, SW_SHOWNORMAL);
+    if (r > SHELL_EXECUTE_OK)
+        return true;
+    LOG_WARN("dialog: the OS would not open %s (%d)", path, (int)r);
+    return false;
+}
+
 #else
 
 b32 open_file(const char *, const char *, const char *, const char *, char *out, u32 cap) {
@@ -121,6 +134,22 @@ b32 choose_folder(const char *, char *out, u32 cap) {
     ASSERT(out && cap);
     out[0] = 0;
     LOG_WARN_ONCE("dialog: no folder picker on this platform yet; pass the project as an argument");
+    return false;
+}
+
+// the freedesktop way; the command returns once the opener has been handed the file
+#define OPEN_COMMAND_CAP 1200
+
+b32 open_external(const char *path) {
+    ASSERT(path);
+    char cmd[OPEN_COMMAND_CAP];
+    if (snprintf(cmd, sizeof(cmd), "xdg-open '%s' &", path) >= (i32)sizeof(cmd)) {
+        LOG_WARN("dialog: the path is too long to open: %s", path);
+        return false;
+    }
+    if (system(cmd) == 0)
+        return true;
+    LOG_WARN("dialog: xdg-open would not open %s", path);
     return false;
 }
 

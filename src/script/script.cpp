@@ -46,7 +46,15 @@ struct State {
     project::Project *project;
     u32 component;
     Main main;
+    char last_error[SCRIPT_ERROR_CAP];
 };
+
+// the log line and the remembered one are the same text
+#define SCRIPT_ERR(s, ...)                                                                         \
+    do {                                                                                           \
+        LOG_ERR(__VA_ARGS__);                                                                      \
+        snprintf((s)->last_error, sizeof((s)->last_error), __VA_ARGS__);                          \
+    } while (0)
 
 static const Script SCRIPT_DEFAULTS = {.hooks_ref = LUA_NOREF, .self_ref = LUA_NOREF};
 static const entity::FieldDesc SCRIPT_FIELDS[] = {
@@ -190,12 +198,15 @@ static b32 load_chunk(State *s, const char *rel) {
     }
     memory::temp_end(t);
 
-    if (blob.err != result::OK)
-        return false; // read said why
+    if (blob.err != result::OK) {
+        // read said why in the log; the panel gets the short of it
+        snprintf(s->last_error, sizeof(s->last_error), "script: %s could not be read", rel);
+        return false;
+    }
 
     b32 ok = status == LUA_OK && call(L, 0, 1);
     if (!ok) {
-        LOG_ERR("script: %s", lua_tostring(L, -1));
+        SCRIPT_ERR(s, "script: %s", lua_tostring(L, -1));
         lua_pop(L, 1);
     }
     return ok;
@@ -221,7 +232,7 @@ static i32 hooks_for(State *s, const char *path) {
 
     b32 loaded = load_chunk(s, path);
     if (loaded && lua_type(L, -1) != LUA_TTABLE) {
-        LOG_ERR("script: %s did not return a table of hooks", path);
+        SCRIPT_ERR(s, "script: %s did not return a table of hooks", path);
         lua_pop(L, 1);
         loaded = false;
     }
@@ -262,8 +273,8 @@ static b32 run_hook(State *s, i32 hooks_ref, i32 self_ref, Hook hook, b32 with_d
     if (call(L, with_dt ? 2 : 1, 0))
         return true;
 
-    LOG_ERR("script: %s; %s is off for that script until the scripts reload", lua_tostring(L, -1),
-            HOOK_NAMES[hook]);
+    SCRIPT_ERR(s, "script: %s; %s is off for that script until the scripts reload",
+               lua_tostring(L, -1), HOOK_NAMES[hook]);
     lua_pop(L, 1);
     return false;
 }
@@ -411,6 +422,7 @@ result::Error start(State *s) {
     if (s->ctx.L)
         stop(s);
 
+    s->last_error[0] = 0;
     open_state(s);
     if (!run_main(s)) {
         close_state(s);
@@ -486,7 +498,7 @@ result::Error run(State *s, const char *code, const char *name) {
     lua_State *L = s->ctx.L;
     b32 ok = luaL_loadbuffer(L, code, strlen(code), name) == LUA_OK && call(L, 0, 0);
     if (!ok) {
-        LOG_ERR("script: %s", lua_tostring(L, -1));
+        SCRIPT_ERR(s, "script: %s", lua_tostring(L, -1));
         lua_pop(L, 1);
     }
     return ok ? result::OK : result::ERR_INVALID;
@@ -497,6 +509,11 @@ u64 bytes(const State *s) {
     if (!s->ctx.L)
         return 0;
     return (u64)lua_gc(s->ctx.L, LUA_GCCOUNT) * 1024 + (u64)lua_gc(s->ctx.L, LUA_GCCOUNTB);
+}
+
+const char *last_error(const State *s) {
+    ASSERT(s);
+    return s->last_error;
 }
 
 } // namespace script

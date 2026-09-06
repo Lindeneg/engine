@@ -271,6 +271,7 @@ struct Editor {
     AssetPath *starters;
     u32 starter_count;
     char new_script_name[ENTITY_NAME_CAP];
+    const char *script_error; // the session's, shown under the list
 
     // the assets panel's selection, whose settings it shows
     char asset_selected[ENTITY_PATH_CAP];
@@ -323,6 +324,7 @@ struct Editor {
 
 static u32 scan_files(Editor *ed, const char *root, const char *dir, const char *ext,
                       AssetPath *out);
+static void open_script(Editor *ed, asset::Manager *m, const char *rel);
 
 Editor *init(memory::Arena *a, memory::Arena *scratch, memory::Arena *snapshot, Config cfg,
              input::State *in, project::Project *proj) {
@@ -967,9 +969,9 @@ static void clip_import_rows(Editor *ed, asset::Manager *m, AssetShown *s) {
 }
 
 // a way from a component's asset path to where that asset's settings are edited
-static void asset_link_row(Editor *ed, const entity::FieldDesc *f, const void *comp) {
-    if (f->type != entity::FIELD_STRING || f->asset == entity::ASSET_NONE ||
-        f->asset == entity::ASSET_SCRIPT)
+static void asset_link_row(Editor *ed, asset::Manager *m, const entity::FieldDesc *f,
+                           const void *comp) {
+    if (f->type != entity::FIELD_STRING || f->asset == entity::ASSET_NONE)
         return;
     const char *path = (const char *)comp + f->offset;
     if (!path[0])
@@ -978,9 +980,13 @@ static void asset_link_row(Editor *ed, const entity::FieldDesc *f, const void *c
     ui::push_id(f->key);
     ui::columns(2, SPLIT_ROW);
     ui::spacer();
-    if (ui::button("import settings..."))
+    if (f->asset == entity::ASSET_SCRIPT) {
+        if (ui::button("open in editor..."))
+            open_script(ed, m, path);
+    } else if (ui::button("import settings...")) {
         select_asset(ed, path,
                      f->asset == entity::ASSET_MODEL ? ASSET_KIND_MODEL : ASSET_KIND_CLIP);
+    }
     ui::pop_id();
 }
 
@@ -1063,6 +1069,29 @@ Request take_request(Editor *ed) {
     Request r = ed->request;
     ed->request = REQUEST_NONE;
     return r;
+}
+
+void set_script_error(Editor *ed, const char *text) {
+    ASSERT(ed);
+    ed->script_error = text;
+}
+
+// the file behind a project path, to whatever the OS edits it with
+static void open_script(Editor *ed, asset::Manager *m, const char *rel) {
+    memory::ArenaTemp t = memory::temp_begin(ed->scratch);
+    dialog::open_external(FPATH(ed->scratch, asset::root(m), rel));
+    memory::temp_end(t);
+}
+
+// a message's first line, which for a traceback is the file, the line and the
+// error, and which is all a row has room for
+static void first_line(const char *text, char *out, u64 cap) {
+    u64 n = 0;
+    while (text[n] && text[n] != '\n' && n + 1 < cap) {
+        out[n] = text[n];
+        n++;
+    }
+    out[n] = 0;
 }
 
 static void project_section(Editor *ed) {
@@ -1301,7 +1330,7 @@ static void component_section(Editor *ed, entity::World *w, asset::Manager *m, e
 
         // the settings of the assets those paths name live in the assets panel
         for (u32 i = 0; i < d->field_count; i++)
-            asset_link_row(ed, &d->fields[i], comp);
+            asset_link_row(ed, m, &d->fields[i], comp);
 
         ui::columns(1);
         remove = ui::button("Remove");
@@ -1602,8 +1631,24 @@ static void scripts_section(Editor *ed, asset::Manager *m) {
 
     if (ed->script_count == 0)
         ui::label_dim("(none)");
-    for (u32 i = 0; i < ed->script_count; i++)
+    ui::push_id("scripts");
+    for (u32 i = 0; i < ed->script_count; i++) {
+        ui::push_id(i);
+        ui::columns(2, SPLIT_ROW);
         ui::label(path::basename(ed->scripts[i].v));
+        if (ui::button("open in editor..."))
+            open_script(ed, m, ed->scripts[i].v);
+        ui::columns(1);
+        ui::pop_id();
+    }
+    ui::pop_id();
+
+    // what the scripts last failed with, from the session
+    if (ed->script_error && ed->script_error[0]) {
+        char line[STATUS_CAP];
+        first_line(ed->script_error, line, sizeof(line));
+        ui::label_dim(line);
+    }
 
     ui::columns(2, SPLIT_ROW);
     ui::label("new");

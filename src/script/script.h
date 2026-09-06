@@ -44,6 +44,9 @@
 // the component's key in a file, and what the inspector lists it as
 #define SCRIPT_COMPONENT_KEY "script"
 
+// what last_error holds of a message; a traceback past this is cut, the log has it whole
+#define SCRIPT_ERROR_CAP 1024
+
 namespace script {
 
 // The engine component this module registers: a path, and the play state's
@@ -96,5 +99,10 @@ result::Error run(State *s, const char *code, const char *name);
 
 // What the play state holds, in bytes; 0 outside play.
 u64 bytes(const State *s);
+
+// The most recent failure, as the log had it: a file that would not load, a
+// hook that raised, a chunk run by hand. "" when the last start or reload has
+// seen none; it stays through stop, so an editor can show what ended play.
+const char *last_error(const State *s);
 
 } // namespace script

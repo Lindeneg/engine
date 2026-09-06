@@ -112,6 +112,10 @@ enum Request { REQUEST_NONE, REQUEST_REOPEN, REQUEST_CLOSE };
 
 Request take_request(Editor *ed);
 
+// What the scripts last failed with, shown under the scripts list; "" for
+// nothing. The text is the caller's and is read each frame, not copied.
+void set_script_error(Editor *ed, const char *text);
+
 // Edit mode is the authority and play runs on a copy: leaving edit mode takes
 // a snapshot of the world, and coming back clears the world and rebuilds it
 // from that snapshot. Nothing the game did survives, and nothing it spawned.
