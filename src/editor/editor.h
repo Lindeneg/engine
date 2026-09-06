@@ -98,9 +98,19 @@ struct Editor;
 // Resolves the maps and actions once. Starts inactive, with the editor map off.
 // The session opens on the project's start level; the project outlives the
 // editor, which writes its title and start level back through project::save.
-// scratch serves the journal's subtree text and the panels' listings.
-Editor *init(memory::Arena *a, memory::Arena *scratch, Config cfg, input::State *in,
-             project::Project *proj);
+// scratch serves the journal's subtree text and the panels' listings;
+// snapshot is the editor's own, reset whenever play begins, sized by
+// Config.snapshot_bytes and made once by whoever makes editors.
+Editor *init(memory::Arena *a, memory::Arena *scratch, memory::Arena *snapshot, Config cfg,
+             input::State *in, project::Project *proj);
+
+// What the Project section asked of the session: the same folder opened again
+// from its files, so a changed script declaration takes, or closed for the
+// dashboard. Either is refused once while the level has unsaved changes and
+// goes ahead on the next click. Taking it clears it.
+enum Request { REQUEST_NONE, REQUEST_REOPEN, REQUEST_CLOSE };
+
+Request take_request(Editor *ed);
 
 // Edit mode is the authority and play runs on a copy: leaving edit mode takes
 // a snapshot of the world, and coming back clears the world and rebuilds it

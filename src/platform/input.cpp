@@ -308,6 +308,30 @@ result::Error add_maps(State *s, memory::Arena *a, memory::Arena *scratch, const
     return result::OK;
 }
 
+Mark mark(const State *s) {
+    ASSERT(s);
+    return Mark{s->map_count, s->action_count};
+}
+
+void rewind(State *s, Mark m) {
+    ASSERT(s && m.maps <= s->map_count && m.actions <= s->action_count);
+
+    for (u32 i = m.actions + 1; i <= s->action_count; i++) {
+        strmap::remove(&s->by_action, s->actions[i].name);
+        s->actions[i] = ActionDef{};
+    }
+    for (u32 i = m.maps + 1; i <= s->map_count; i++) {
+        strmap::remove(&s->by_map, s->maps[i].name);
+        s->maps[i] = MapDef{};
+    }
+
+    if (s->map_count != m.maps)
+        LOG_INFO("input: %u map(s) with %u action(s) dropped", s->map_count - m.maps,
+                 s->action_count - m.actions);
+    s->map_count = m.maps;
+    s->action_count = m.actions;
+}
+
 void update(State *s, window::Window *w) {
     ASSERT(s && w);
 

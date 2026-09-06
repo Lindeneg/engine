@@ -722,6 +722,22 @@ void unload_scope(Manager *m, Scope s) {
     LOG_INFO("asset: unloaded scope %u", (u32)s);
 }
 
+result::Error reopen(Manager *m, const char *root) {
+    ASSERT(m && root);
+
+    i32 root_len = snprintf(m->root, ROOT_CAP, "%s", root);
+    if (root_len < 0 || root_len >= ROOT_CAP) {
+        LOG_ERR("asset: root path longer than %d bytes: %s", ROOT_CAP, root);
+        return result::ERR_INVALID;
+    }
+
+    for (u32 s = 0; s < SCOPE_COUNT; s++)
+        unload_scope(m, (Scope)s);
+
+    LOG_INFO("asset: root %s", m->root);
+    return result::OK;
+}
+
 void on_mesh_release(Manager *m, MeshReleaseFn fn, void *user) {
     ASSERT(m);
     m->mesh_release = fn;

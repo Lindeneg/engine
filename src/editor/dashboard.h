@@ -23,6 +23,10 @@ struct Dashboard;
 
 Dashboard *init(memory::Arena *a, const char *engine_root, Config cfg);
 
+// Reads the recent list again into a, for a dashboard shown after a project
+// was open: that project is at the front now.
+void refresh(Dashboard *d, memory::Arena *a);
+
 enum Result {
     RESULT_NONE, // still choosing
     RESULT_OPEN, // out_dir names the project

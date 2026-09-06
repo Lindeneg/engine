@@ -74,6 +74,27 @@ static void maps_are_added_after_init(memory::Arena *a) {
           result::ERR_PARSE);
     CHECK(test::unmute() >= 1);
 
+    // rewinding to before the project's maps drops them, names and all, so
+    // another project's file can declare the same names
+    input::State *again = MUST(input::init(&state, a, FPATH(a, CL_ENGINE_ROOT, "input.cfg"), 8, 128));
+    input::Mark before = input::mark(again);
+    CHECK(input::add_maps(again, &state, a,
+                          FPATH(a, CL_ENGINE_ROOT, PROJECT_TEMPLATE_DIR, "input.cfg")) ==
+          result::OK);
+    input::Action fire = input::find(again, "fire");
+    CHECK(fire.v != 0);
+    input::rewind(again, before);
+    CHECK(input::map_count(again) == before.maps);
+    CHECK(!input::down(again, fire));
+    test::mute();
+    CHECK(input::find(again, "fire").v == 0);
+    CHECK(test::unmute() == 1);
+    CHECK(input::add_maps(again, &state, a,
+                          FPATH(a, CL_ENGINE_ROOT, PROJECT_TEMPLATE_DIR, "input.cfg")) ==
+          result::OK);
+    CHECK(input::find(again, "fire").v != 0);
+    CHECK(input::find(again, "quit").v != 0);
+
     // and a state with room for one map keeps only the first
     memory::Arena small = memory::create(KiB(64));
     test::mute();

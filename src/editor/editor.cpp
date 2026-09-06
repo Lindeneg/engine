@@ -239,6 +239,9 @@ struct Editor {
     // the project, and the level being edited, which need not be its start level
     project::Project *project;
     b32 project_pending; // the title was typed into; written once the keyboard lets go
+    Request request;     // for the session, until taken
+    Request confirm;     // refused once for unsaved changes; the same again goes ahead
+    char project_status[STATUS_CAP];
     char level[ENTITY_NAME_CAP];
     char new_level_name[ENTITY_NAME_CAP];
     char discard_level[ENTITY_NAME_CAP]; // opening this again abandons unsaved changes
@@ -284,7 +287,7 @@ struct Editor {
 
     // the level as text from the moment play began; its own arena, reset per snapshot
     memory::Arena *scratch;
-    memory::Arena snapshot_arena;
+    memory::Arena *snapshot_arena;
     char *snapshot_text; // NULL when nothing is playing
 
     // a path typed into a component resolves once the keyboard lets go, not per keystroke
@@ -321,16 +324,17 @@ struct Editor {
 static u32 scan_files(Editor *ed, const char *root, const char *dir, const char *ext,
                       AssetPath *out);
 
-Editor *init(memory::Arena *a, memory::Arena *scratch, Config cfg, input::State *in,
-             project::Project *proj) {
-    ASSERT(a && scratch && in && proj);
+Editor *init(memory::Arena *a, memory::Arena *scratch, memory::Arena *snapshot, Config cfg,
+             input::State *in, project::Project *proj) {
+    ASSERT(a && scratch && snapshot && in && proj);
+    ASSERT_MSG(snapshot != a && snapshot != scratch, "editor: the snapshot arena is reset whole");
 
     Editor *ed = push_struct(a, Editor);
     ed->cfg = cfg;
     ed->view = cfg.camera.start;
     ed->journal = undo::create(a, scratch, cfg.undo_depth, cfg.undo_blob);
     ed->scratch = scratch;
-    ed->snapshot_arena = memory::create(cfg.snapshot_bytes);
+    ed->snapshot_arena = snapshot;
     ed->pending_component = PENDING_NONE;
     ed->hot_handle = gizmo::HANDLE_NONE;
     ed->drag.handle = gizmo::HANDLE_NONE;
@@ -374,8 +378,8 @@ Editor *init(memory::Arena *a, memory::Arena *scratch, Config cfg, input::State 
 
 void snapshot(Editor *ed, entity::World *w) {
     ASSERT(ed && w);
-    memory::reset(&ed->snapshot_arena);
-    ed->snapshot_text = entity::write_level(&ed->snapshot_arena, w);
+    memory::reset(ed->snapshot_arena);
+    ed->snapshot_text = entity::write_level(ed->snapshot_arena, w);
 }
 
 b32 restore(Editor *ed, entity::World *w, asset::Manager *m) {
@@ -1041,6 +1045,26 @@ static void rescan(Editor *ed, asset::Manager *m) {
     ed->scanned = true;
 }
 
+// unsaved changes refuse the first click and say so; the same request again is the answer
+static void ask(Editor *ed, Request r) {
+    if (dirty(ed) && ed->confirm != r) {
+        ed->confirm = r;
+        snprintf(ed->project_status, sizeof(ed->project_status),
+                 "unsaved changes in %s: save first, or click again to discard them", ed->level);
+        return;
+    }
+    ed->request = r;
+    ed->confirm = REQUEST_NONE;
+    ed->project_status[0] = 0;
+}
+
+Request take_request(Editor *ed) {
+    ASSERT(ed);
+    Request r = ed->request;
+    ed->request = REQUEST_NONE;
+    return r;
+}
+
 static void project_section(Editor *ed) {
     if (!ui::tree_node("Project", true))
         return;
@@ -1054,7 +1078,18 @@ static void project_section(Editor *ed) {
         ed->project_pending = true;
     ui::label("starts in");
     ui::label_dim(ed->project->level);
+
+    // the folder again from its files, or the dashboard
+    ui::spacer();
+    if (ui::button("Reopen"))
+        ask(ed, REQUEST_REOPEN);
+    ui::spacer();
+    if (ui::button("Close"))
+        ask(ed, REQUEST_CLOSE);
     ui::columns(1);
+
+    if (ed->project_status[0])
+        ui::label_dim(ed->project_status);
     ui::tree_pop();
 }
 
@@ -1066,6 +1101,8 @@ static void fresh_level(Editor *ed, entity::World *w) {
     forget_shown(ed);
     ed->discard_level[0] = 0;
     ed->level_status[0] = 0;
+    ed->confirm = REQUEST_NONE;
+    ed->project_status[0] = 0;
 }
 
 // an empty level under the typed name, written at once so it is there to come back to

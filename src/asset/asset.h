@@ -291,6 +291,10 @@ void remove(Manager *m, ModelHandle h);
 // Resets the scope's arena, invalidating its handles; meshes go through the release hook first.
 void unload_scope(Manager *m, Scope s);
 
+// Every scope unloaded and the root moved to another project folder: the
+// manager itself, its pools and its fallbacks, serve the whole run.
+result::Error reopen(Manager *m, const char *root);
+
 // How the renderer learns a mesh is going away; the manager never calls GL itself.
 typedef void (*MeshReleaseFn)(void *user, MeshHandle h);
 void on_mesh_release(Manager *m, MeshReleaseFn fn, void *user);

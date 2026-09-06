@@ -46,11 +46,17 @@ Dashboard *init(memory::Arena *a, const char *engine_root, Config cfg) {
     d->cfg = cfg;
     snprintf(d->engine_root, sizeof(d->engine_root), "%s", engine_root);
 
-    if (cfg.recent_cap) {
+    if (cfg.recent_cap)
         d->recent = push_array(a, const char *, cfg.recent_cap);
-        d->recent_count = project::recent(a, engine_root, d->recent, cfg.recent_cap);
-    }
+    refresh(d, a);
     return d;
+}
+
+void refresh(Dashboard *d, memory::Arena *a) {
+    ASSERT(d && a);
+    d->recent_count = 0;
+    if (d->cfg.recent_cap)
+        d->recent_count = project::recent(a, d->engine_root, d->recent, d->cfg.recent_cap);
 }
 
 static Result take(const char *dir, char *out_dir, u32 cap) {

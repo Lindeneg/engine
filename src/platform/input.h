@@ -88,6 +88,18 @@ StateResult init(memory::Arena *a, memory::Arena *scratch, const char *path, u32
                  u32 max_actions);
 result::Error add_maps(State *s, memory::Arena *a, memory::Arena *scratch, const char *path);
 
+// Where the tables stand, and back to it: the maps and actions added since
+// the mark are dropped, names included, so a project's maps leave with it and
+// the next project's may use the same names. Ids handed out after the mark
+// are dead and read as nothing.
+struct Mark {
+    u32 maps;
+    u32 actions;
+};
+
+Mark mark(const State *s);
+void rewind(State *s, Mark m);
+
 // Samples the devices and works out this frame's edges. Call once per frame,
 // after window::poll.
 void update(State *s, window::Window *w);

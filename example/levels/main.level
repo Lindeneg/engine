@@ -50,15 +50,25 @@ instance player {
             new1 animations/pistol_idle.glb
             new2 animations/pistol_walk.glb
         }
-        start new1
-        speed 1
+        start new2
+        speed 0.7
         autoplay true
-    }
-    player {
-        eye_offset 0 1.7 2.5
     }
     script {
         path scripts/player.lua
+    }
+    player {
+        move_speed 4
+        look_sensitivity 0.12
+        pitch_min -89
+        pitch_max 89
+        radius 0.35
+        gravity 9.81
+        ground_height -10
+        eye_offset 0 1.7 2.5
+        range 200
+        tracer_seconds 1.5
+        tracer_color 1 0.9 0.3
     }
     child pistol {
         id 20
