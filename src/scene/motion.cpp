@@ -208,4 +208,46 @@ Result move_and_slide(entity::World *w, asset::Manager *m, linalg::Vec3 position
     return res;
 }
 
+RayResult ray_cast(entity::World *w, linalg::Vec3 origin, linalg::Vec3 dir, f32 max_distance,
+                   entity::Handle ignore) {
+    ASSERT(w);
+
+    RayResult res{};
+    if (linalg::vec3_length_sq(dir) < LINALG_ZERO_EPSILON) {
+        LOG_WARN_ONCE("motion: a ray needs a direction");
+        return res;
+    }
+    dir = linalg::vec3_normalize(dir);
+
+    for (u32 s = entity::component_first(w, entity::COMPONENT_COLLIDER); s;
+         s = entity::component_next(w, entity::COMPONENT_COLLIDER, s)) {
+        entity::Collider *c =
+            (entity::Collider *)entity::component_at(w, entity::COMPONENT_COLLIDER, s);
+
+        Contact k;
+        if (!contact_of(w, c, origin, ignore, &k))
+            continue;
+
+        // the frame is rigid, so the direction stays unit and t stays metres
+        intersect::Ray ray{k.center, linalg::mat4_mul_dir(k.inverse, dir)};
+        intersect::Hit h;
+        b32 hit;
+        if (c->shape == entity::COLLIDER_SPHERE)
+            hit = intersect::ray_sphere(ray, linalg::Vec3{0.0f, 0.0f, 0.0f}, c->radius,
+                                        max_distance, &h);
+        else
+            hit = intersect::ray_aabb(ray, box_of(c), max_distance, &h);
+        if (!hit || (res.hit && h.t >= res.distance))
+            continue;
+
+        res.hit = true;
+        res.entity = c->owner;
+        res.distance = h.t;
+        res.point = linalg::mat4_mul_point(k.frame, h.point);
+        res.normal = linalg::mat4_mul_dir(k.frame, h.normal);
+    }
+
+    return res;
+}
+
 } // namespace motion

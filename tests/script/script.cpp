@@ -127,13 +127,16 @@ static void hooks_run_on_both_clocks_and_despawn_at_stop(memory::Arena *a) {
     CHECK(strcmp(entity::table_rows(comp, clips)[0].value, "animations/pistol_idle.glb") == 0);
     CHECK(entity::table_rows(comp, clips)[1].value[0] == 0);
 
-    // two fixed steps: +1 from the probe and +10 from main each; one frame: +100
-    script::fixed_update(f.s, 0.5f);
-    script::fixed_update(f.s, 0.5f);
+    // the frame's first half, two fixed steps and the second half: +100, then
+    // +1 from the probe and +10 from main each step, then +1000
     script::update(f.s, 0.25f);
-    CHECK(hp(&f, h) == 123.0f);
+    script::fixed_update(f.s, 0.5f);
+    script::fixed_update(f.s, 0.5f);
+    script::late_update(f.s, 0.25f);
+    CHECK(hp(&f, h) == 1123.0f);
+    // on_update ran before the steps, so it saw none of them
     linalg::Vec3 tint = *(linalg::Vec3 *)health_field(&f, h, "tint");
-    CHECK(tint.x == 2.0f && tint.y == 0.25f);
+    CHECK(tint.x == 0.0f && tint.y == 0.25f);
 
     // an entity given a script during play is spawned on the next tick
     entity::Handle late = spawn_probe(a, &f, "late", "scripts/probe.lua");

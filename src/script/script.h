@@ -23,10 +23,15 @@
 //
 //       local M = {}
 //       function M.on_spawn(self) self.speed = 4 end
+//       function M.on_update(self, dt) ... end         -- frame rate, before the fixed steps
 //       function M.on_fixed_update(self, dt) ... end   -- the simulation clock
-//       function M.on_update(self, dt) ... end         -- frame rate
+//       function M.on_late_update(self, dt) ... end    -- frame rate, after them
 //       function M.on_despawn(self) end
 //       return M
+//
+// on_update is where a frame's input is read, a mouse delta say, so the steps
+// that follow move by it; on_late_update is where a camera follows what the
+// steps did.
 //
 // A play state lives from start to stop and everything a script made goes with
 // it; edit mode has no state at all. The main script failing to load refuses
@@ -78,10 +83,12 @@ void stop(State *s);
 b32 running(const State *s);
 result::Error reload(State *s);
 
-// The two clocks. Entities that gained a script component since the last call
-// are spawned first, so a script that spawns an entity sees its hooks run.
-void fixed_update(State *s, f32 dt);
+// The two clocks, the frame's in two halves around the fixed steps. Entities
+// that gained a script component since the last call are spawned first, so a
+// script that spawns an entity sees its hooks run.
 void update(State *s, f32 dt);
+void fixed_update(State *s, f32 dt);
+void late_update(State *s, f32 dt);
 
 // A chunk of Lua in the play state, for a test or a console. Its error, if
 // any, is logged.

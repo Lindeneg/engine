@@ -15,10 +15,11 @@ namespace bind_entity {
 
 // the FieldType and AssetKind enums by the words a declaration uses, in enum order
 static const char *FIELD_TYPE_NAMES[] = {"f32", "i32", "b32", "vec3", "string", "enum", "table"};
-static const char *ASSET_NAMES[] = {"none", "model", "clip"};
+static const char *ASSET_NAMES[] = {"none", "model", "clip", "script"};
 static_assert(ARRAY_COUNT(FIELD_TYPE_NAMES) == entity::FIELD_TABLE + 1,
               "every FieldType needs a name");
-static_assert(ARRAY_COUNT(ASSET_NAMES) == entity::ASSET_CLIP + 1, "every AssetKind needs a name");
+static_assert(ARRAY_COUNT(ASSET_NAMES) == entity::ASSET_SCRIPT + 1,
+              "every AssetKind needs a name");
 
 // what a proxy userdata holds: the entity and which of its components
 struct ComponentRef {
@@ -366,6 +367,11 @@ static i32 next(lua_State *L) {
     return 1;
 }
 
+static i32 active_camera(lua_State *L) {
+    bind::push_handle(L, entity::active_camera(bind::context(L)->world));
+    return 1;
+}
+
 static i32 transform(lua_State *L) {
     entity::Entity *e = bind::check_entity(bind::context(L), L, 1);
     (void)e;
@@ -638,6 +644,7 @@ static const bind::Function FUNCTIONS[] = {
     {"set_parent", set_parent},
     {"first", first},
     {"next", next},
+    {"active_camera", active_camera},
     {"transform", transform},
     {"world_position", world_position},
     {"world_axis", world_axis},

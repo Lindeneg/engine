@@ -14,8 +14,9 @@
 local M = {}
 
 function M.on_spawn(self) end
-function M.on_fixed_update(self, dt) end
 function M.on_update(self, dt) end
+function M.on_fixed_update(self, dt) end
+function M.on_late_update(self, dt) end
 function M.on_despawn(self) end
 
 return M

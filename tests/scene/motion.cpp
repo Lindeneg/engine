@@ -176,8 +176,75 @@ static void colliders_round_trip_through_a_file(memory::Arena *a) {
     CHECK(entity::collider(w2, hb)->size.x == 1.0f);
 }
 
+// a bullet: the nearest face, exactly, whatever the box's turn, and never its own subtree
+static void a_ray_hits_the_nearest_collider_exactly(memory::Arena *a) {
+    asset::Manager *m = make_assets(a);
+    entity::World *w = make_world(a);
+
+    // two walls down -Z, the nearer one turned 45 degrees so its face is a diagonal
+    entity::Handle near = box(w, "near", linalg::Vec3{0.0f, 0.0f, -5.0f},
+                              linalg::Vec3{4.0f, 4.0f, 0.5f}, 45.0f);
+    box(w, "far", linalg::Vec3{0.0f, 0.0f, -10.0f}, linalg::Vec3{4.0f, 4.0f, 0.5f}, 0.0f);
+    entity::end_frame(w, m, a, 0.0f);
+
+    // straight down -Z from the origin: the diagonal face x + z = -5 + 0.25 *
+    // sqrt(2) in the world is met at x = 0, and the length need not be unit
+    linalg::Vec3 origin{0.0f, 0.0f, 0.0f};
+    motion::RayResult r =
+        motion::ray_cast(w, origin, linalg::Vec3{0.0f, 0.0f, -3.0f}, 100.0f, entity::NONE);
+    CHECK(r.hit);
+    CHECK(r.entity.v == near.v);
+    f32 face = 5.0f - 0.25f * sqrtf(2.0f);
+    CHECK(NEAR(r.distance, face));
+    CHECK(NEAR(r.point.z, -face) && NEAR(r.point.x, 0.0f));
+
+    // the normal faces the ray: (1, 0, 1) / sqrt(2) on that face
+    f32 s = 1.0f / sqrtf(2.0f);
+    CHECK(NEAR(r.normal.x, s) && NEAR(r.normal.z, s) && NEAR(r.normal.y, 0.0f));
+
+    // ignoring the near wall reaches the far one, at its face 9.75 away
+    r = motion::ray_cast(w, origin, linalg::Vec3{0.0f, 0.0f, -1.0f}, 100.0f, near);
+    CHECK(r.hit && r.entity.v != near.v);
+    CHECK(NEAR(r.distance, 9.75f));
+    CHECK(NEAR(r.normal.z, 1.0f));
+
+    // out of range, the wrong way, and no direction at all
+    CHECK(!motion::ray_cast(w, origin, linalg::Vec3{0.0f, 0.0f, -1.0f}, 4.0f, entity::NONE).hit);
+    CHECK(!motion::ray_cast(w, origin, linalg::Vec3{0.0f, 0.0f, 1.0f}, 100.0f, entity::NONE).hit);
+    test::mute();
+    CHECK(!motion::ray_cast(w, origin, linalg::Vec3{0.0f, 0.0f, 0.0f}, 100.0f, entity::NONE).hit);
+    CHECK(test::unmute() == 1);
+}
+
+static void a_ray_hits_a_sphere_and_reports_being_inside(memory::Arena *a) {
+    asset::Manager *m = make_assets(a);
+    entity::World *w = make_world(a);
+
+    entity::Handle ball = entity::spawn(w, "ball");
+    entity::get(w, ball)->local.position = linalg::Vec3{3.0f, 1.0f, 0.0f};
+    entity::Collider *c = entity::add_collider(w, ball);
+    c->shape = entity::COLLIDER_SPHERE;
+    c->radius = 1.0f;
+    entity::end_frame(w, m, a, 0.0f);
+
+    // from the left along +X, at the sphere's height: the surface is a radius short of the centre
+    motion::RayResult r = motion::ray_cast(w, linalg::Vec3{0.0f, 1.0f, 0.0f},
+                                           linalg::Vec3{1.0f, 0.0f, 0.0f}, 10.0f, entity::NONE);
+    CHECK(r.hit && r.entity.v == ball.v);
+    CHECK(NEAR(r.distance, 2.0f));
+    CHECK(NEAR(r.point.x, 2.0f) && NEAR(r.normal.x, -1.0f));
+
+    // from inside: a hit at no distance with nothing to face
+    r = motion::ray_cast(w, linalg::Vec3{3.0f, 1.0f, 0.0f}, linalg::Vec3{1.0f, 0.0f, 0.0f}, 10.0f,
+                         entity::NONE);
+    CHECK(r.hit && r.distance == 0.0f);
+    CHECK(linalg::vec3_length_sq(r.normal) == 0.0f);
+}
+
 test::Suite motion_suite() {
     static const test::Case cases[] = {
+        CASE(a_ray_hits_the_nearest_collider_exactly),
+        CASE(a_ray_hits_a_sphere_and_reports_being_inside),
         CASE(a_rotated_box_stops_at_its_real_face),
         CASE(a_sphere_collider_stops_a_radius_short),
         CASE(a_floor_grounds_and_the_offset_places_the_shape),

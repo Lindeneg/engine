@@ -223,7 +223,7 @@ enum FieldType {
 
 // what a string field or a table's values name under the asset root, so an
 // editor knows which sidecar belongs beside it
-enum AssetKind { ASSET_NONE, ASSET_MODEL, ASSET_CLIP };
+enum AssetKind { ASSET_NONE, ASSET_MODEL, ASSET_CLIP, ASSET_SCRIPT };
 
 // What a data component's field holds until a file says otherwise. An engine
 // component takes its defaults from a struct instead, which also carries the

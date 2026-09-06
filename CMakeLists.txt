@@ -77,17 +77,9 @@ set(ENGINE_SOURCES
         src/editor/undo.cpp
 )
 
-# Not the engine: one game's decisions, built alongside it until there is a
-# scripting language to move them into. Nothing in ENGINE_SOURCES may include
-# these, and the test runner does not link them.
-set(GAME_SOURCES
-        src/game/player.cpp
-)
-
 add_executable(ExploreApp
         src/main.cpp
         ${ENGINE_SOURCES}
-        ${GAME_SOURCES}
 )
 target_include_directories(ExploreApp PRIVATE src third_party ${LUA_INCLUDE_DIR})
 target_link_libraries(ExploreApp PRIVATE glfw glad::glad ${LUA_LIBRARIES})

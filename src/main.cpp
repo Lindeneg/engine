@@ -8,7 +8,6 @@
 #include "core/memory.h"
 #include "editor/dashboard.h"
 #include "editor/editor.h"
-#include "game/player.h"
 #include "gfx/canvas.h"
 #include "gfx/debugdraw.h"
 #include "gfx/font.h"
@@ -44,7 +43,6 @@
 #define DEFAULT_MAX_MAPS 8
 #define DEFAULT_MAX_ACTIONS 128
 #define DEFAULT_RECENT_PROJECTS 8
-#define DEFAULT_PLAYER_BODY "player"
 #define DEFAULT_BOUNDS_COLOR linalg::Vec4{1.0f, 0.85f, 0.1f, 1.0f}
 #define DEFAULT_COLLIDER_COLOR linalg::Vec4{0.3f, 0.9f, 0.9f, 1.0f}
 
@@ -53,8 +51,6 @@
 #define DEFAULT_OVERLAY_PANEL_H 330.0f
 #define DEFAULT_OVERLAY_SMOOTHING 0.05f
 #define DEFAULT_OVERLAY_WINDOW 1.0
-#define DEFAULT_SENSITIVITY_MIN 0.01f
-#define DEFAULT_SENSITIVITY_MAX 0.5f
 #define OVERLAY_TEXT_CAP 128
 
 // the debug panel toggle_debug_draw opens; the `overlay` block of engine.cfg
@@ -63,29 +59,23 @@ struct Overlay {
     linalg::Vec2 panel; // width and height
     f32 smoothing;      // per-frame blend toward the new frame time
     f64 window;         // seconds, for the frame rate and the worst frame
-    f32 sensitivity_min;
-    f32 sensitivity_max;
 };
 
 static Overlay overlay_from(config::Node *block) {
     config::Node *body = block ? block->first_child : NULL;
     config::Node *panel = config::find(body, "panel");
-    config::Node *range = config::find(body, "sensitivity_range");
     return Overlay{
         .padding = config::get_f32(body, "padding", DEFAULT_OVERLAY_PADDING),
         .panel = linalg::Vec2{config::value_f32(panel, 0, DEFAULT_OVERLAY_PANEL_W),
                               config::value_f32(panel, 1, DEFAULT_OVERLAY_PANEL_H)},
         .smoothing = config::get_f32(body, "smoothing", DEFAULT_OVERLAY_SMOOTHING),
         .window = (f64)config::get_f32(body, "window", (f32)DEFAULT_OVERLAY_WINDOW),
-        .sensitivity_min = config::value_f32(range, 0, DEFAULT_SENSITIVITY_MIN),
-        .sensitivity_max = config::value_f32(range, 1, DEFAULT_SENSITIVITY_MAX),
     };
 }
 
 // what the toggle shows; the panel edits these
 struct DebugView {
     b32 bounds;
-    b32 body_sphere;
     b32 colliders;
 };
 
@@ -96,7 +86,7 @@ static void timing_label(const char *fmt, f64 value) {
 }
 
 static void debug_panel(const Overlay *o, const frametime::Stats *t, u32 steps, DebugView *view,
-                        game::Player *player, u64 script_bytes) {
+                        u64 script_bytes) {
     ui::begin_panel("Debug", canvas::Rect{o->padding, o->padding, o->panel.x, o->panel.y});
 
     if (ui::tree_node("Timing", true)) {
@@ -116,37 +106,9 @@ static void debug_panel(const Overlay *o, const frametime::Stats *t, u32 steps, 
 
     ui::separator();
     ui::checkbox("Bounds", &view->bounds);
-    ui::checkbox("Body sphere", &view->body_sphere);
     ui::checkbox("Colliders", &view->colliders);
 
-    ui::columns(2);
-    ui::label("Look sensitivity");
-    ui::slider("look_sensitivity", &player->look_sensitivity, o->sensitivity_min,
-               o->sensitivity_max);
-    ui::columns(1);
-
     ui::end_panel();
-}
-
-static entity::Handle find_root(entity::World *w, const char *name) {
-    for (entity::Handle h = entity::first(w); h.v; h = entity::next(w, h)) {
-        entity::Entity *e = entity::get(w, h);
-        if (e && !e->parent.v && strcmp(e->name, name) == 0)
-            return h;
-    }
-    return entity::NONE;
-}
-
-// The player is game code driving an entity the level placed. The engine knows
-// nothing about it beyond the handle it is given, and the handle is looked up
-// each time play starts, since play runs on a fresh copy of the level.
-static game::Player make_player(config::Node *player_cfg, input::State *in, entity::World *w,
-                                const char *body_name) {
-    entity::Handle body = find_root(w, body_name);
-    if (!body.v)
-        LOG_WARN("main: the level has no root entity named \"%s\", so nothing is driven",
-                 body_name);
-    return game::create(player_cfg, in, body);
 }
 
 // Frames until a project is chosen: the dashboard alone over a cleared screen.
@@ -299,15 +261,8 @@ int main(int argc, char **argv) {
     // everything in the world comes from the level file
     MUST(entity::load_level(world, assets, proj.level));
 
-    config::Node *player_cfg = config::find(proj.doc->first, "player");
-    const char *body_name =
-        config::get(player_cfg ? player_cfg->first_child : NULL, "body", DEFAULT_PLAYER_BODY);
-
-    // built when play starts, from the copy of the level play runs on
-    game::Player player{};
-
     Overlay overlay = overlay_from(config::find(cfg, "overlay"));
-    DebugView view{.bounds = true, .body_sphere = true, .colliders = true};
+    DebugView view{.bounds = true, .colliders = true};
 
     editor::Editor *ed = editor::init(&perm, &scratch, editor_cfg, in, &proj);
 
@@ -342,12 +297,8 @@ int main(int argc, char **argv) {
                 editor::set_active(ed, world, assets, in, win, true);
             } else {
                 editor::set_active(ed, world, assets, in, win, false);
-                if (script::start(scripts) == result::OK) {
-                    // play starts from a fresh copy of the level, so the player starts fresh too
-                    player = make_player(player_cfg, in, world, body_name);
-                } else {
+                if (script::start(scripts) != result::OK)
                     editor::set_active(ed, world, assets, in, win, true);
-                }
             }
         }
 
@@ -398,19 +349,17 @@ int main(int argc, char **argv) {
         b32 editing = editor::active(ed);
         u32 steps = 0;
         if (!editing) {
-            // aim first, so the fixed steps below move in the direction being looked
-            game::aim(&player, in);
+            // the frame's input first, so the fixed steps move by it
+            script::update(scripts, dt);
 
             steps = entity::begin_frame(world, dt);
             for (u32 i = 0; i < steps; i++) {
                 script::fixed_update(scripts, entity::fixed_dt(world));
-                game::step(&player, world, assets, in, entity::fixed_dt(world));
                 entity::step_fixed(world, assets);
             }
-            script::update(scripts, dt);
 
-            // after the body has moved, before end_frame rebuilds world transforms
-            game::place_camera(&player, world);
+            // after the steps have moved things, before end_frame rebuilds world transforms
+            script::late_update(scripts, dt);
         }
 
         entity::end_frame(world, assets, &scratch, dt);
@@ -422,11 +371,9 @@ int main(int argc, char **argv) {
         if (debug_draw) {
             if (view.bounds)
                 entity::draw_bounds(world, assets, bounds_color);
-            if (view.body_sphere)
-                game::draw_debug(&player, world);
             if (view.colliders && !editing) // the editor draws them itself
                 entity::draw_colliders(world, collider_color);
-            debug_panel(&overlay, &timing, steps, &view, &player, script::bytes(scripts));
+            debug_panel(&overlay, &timing, steps, &view, script::bytes(scripts));
         }
         ui::end_frame();
 

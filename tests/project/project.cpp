@@ -56,7 +56,7 @@ static void a_project_is_created_from_the_template(memory::Arena *a) {
     CHECK(project::open(a, dir, &back) == result::OK);
     CHECK(strcmp(back.title, "A Title") == 0);
     CHECK(strcmp(back.level, "arena") == 0);
-    CHECK(config::find(back.doc->first, "player") != NULL);
+    CHECK(config::find(back.doc->first, "world") != NULL);
 
     CHECK(file::remove_directory(dir));
     CHECK(!project::is_project(dir));

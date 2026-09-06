@@ -54,6 +54,12 @@ instance player {
         speed 1
         autoplay true
     }
+    player {
+        eye_offset 0 1.7 2.5
+    }
+    script {
+        path scripts/player.lua
+    }
     child pistol {
         id 20
         definition pistol

@@ -79,6 +79,10 @@ struct Config {
     u32 undo_depth;    // edits remembered
     u32 undo_blob;     // bytes an entry holds for a created or deleted subtree
     u32 snapshot_bytes; // room for the level as text while it plays
+
+    // where the engine's starter scripts live; NULL when unknown, as in a
+    // test, and then no script can be made from one
+    const char *engine_root;
 };
 
 // The document's top level; NULL or missing keys take the defaults. Strings are copied into a.

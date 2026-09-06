@@ -67,6 +67,10 @@
 // the picker's filter: every asset is a .glb
 #define ASSET_EXTENSION "glb"
 #define ASSET_FILTER_LABEL "glTF binary"
+#define SCRIPT_EXTENSION "lua"
+
+// the engine folder's starter scripts, copied in as a project's new script
+#define STARTER_SCRIPT_DIR "scripts"
 #define BROWSE_LABEL "..."
 #define ABS_PATH_CAP 1024
 
@@ -215,6 +219,7 @@ ConfigResult load_config(memory::Arena *a, memory::Arena *scratch, const char *r
     }
 
     Config c = config_from(a, doc.val->first);
+    c.engine_root = memory::push_str(a, root);
     memory::temp_end(t);
     return ConfigResult{.val = c};
 }
@@ -256,6 +261,13 @@ struct Editor {
     u32 model_count;
     AssetPath *animations;
     u32 animation_count;
+    AssetPath *scripts;
+    u32 script_count;
+
+    // the engine's starter scripts, scanned once, and the name a new one gets
+    AssetPath *starters;
+    u32 starter_count;
+    char new_script_name[ENTITY_NAME_CAP];
 
     // the assets panel's selection, whose settings it shows
     char asset_selected[ENTITY_PATH_CAP];
@@ -306,6 +318,9 @@ struct Editor {
     input::Action snap;
 };
 
+static u32 scan_files(Editor *ed, const char *root, const char *dir, const char *ext,
+                      AssetPath *out);
+
 Editor *init(memory::Arena *a, memory::Arena *scratch, Config cfg, input::State *in,
              project::Project *proj) {
     ASSERT(a && scratch && in && proj);
@@ -327,6 +342,11 @@ Editor *init(memory::Arena *a, memory::Arena *scratch, Config cfg, input::State 
     ed->definitions = push_array(a, entity::Name, LIST_CAP);
     ed->models = push_array(a, AssetPath, LIST_CAP);
     ed->animations = push_array(a, AssetPath, LIST_CAP);
+    ed->scripts = push_array(a, AssetPath, LIST_CAP);
+    ed->starters = push_array(a, AssetPath, LIST_CAP);
+    if (cfg.engine_root)
+        ed->starter_count =
+            scan_files(ed, cfg.engine_root, STARTER_SCRIPT_DIR, SCRIPT_EXTENSION, ed->starters);
 
     ed->play_map = input::find_map(in, cfg.play_map);
     ed->editor_map = input::find_map(in, EDITOR_MAP);
@@ -657,20 +677,40 @@ static void open_picker(Editor *ed, u32 id, u32 c, const entity::FieldDesc *f, u
 
 static void close_picker(Editor *ed) { ed->picker_field = NULL; }
 
-// what the project has imported of the field's kind, one row each, and the OS
-// picker for a file the project does not hold yet; a choice writes the path
-// and the caller's change detection does the rest
+// What the project holds of the field's kind, one row each, and for an
+// imported kind the OS picker for a file the project does not hold yet; a
+// script is made in the assets panel, never brought in from elsewhere. A
+// choice writes the path and the caller's change detection does the rest.
 static void asset_picker_rows(Editor *ed, asset::Manager *m, const entity::FieldDesc *f,
                               char *path, u32 cap) {
-    b32 model = f->asset == entity::ASSET_MODEL;
-    const AssetPath *paths = model ? ed->models : ed->animations;
-    u32 count = model ? ed->model_count : ed->animation_count;
+    const AssetPath *paths;
+    u32 count;
+    const char *none;
+    switch (f->asset) {
+    case entity::ASSET_MODEL:
+        paths = ed->models;
+        count = ed->model_count;
+        none = "(no models imported)";
+        break;
+    case entity::ASSET_CLIP:
+        paths = ed->animations;
+        count = ed->animation_count;
+        none = "(no animations imported)";
+        break;
+    case entity::ASSET_SCRIPT:
+        paths = ed->scripts;
+        count = ed->script_count;
+        none = "(no scripts; make one in the assets panel)";
+        break;
+    case entity::ASSET_NONE:
+        return;
+    }
 
     ui::push_id("picker");
     ui::columns(2, SPLIT_ROW);
     if (count == 0) {
         ui::spacer();
-        ui::label_dim(model ? "(no models imported)" : "(no animations imported)");
+        ui::label_dim(none);
     }
     for (u32 i = 0; i < count; i++) {
         ui::spacer();
@@ -681,10 +721,12 @@ static void asset_picker_rows(Editor *ed, asset::Manager *m, const entity::Field
         }
         ui::pop_id();
     }
-    ui::spacer();
-    if (ui::button("Other file...")) {
-        browse_asset(m, path, cap);
-        close_picker(ed);
+    if (f->asset != entity::ASSET_SCRIPT) {
+        ui::spacer();
+        if (ui::button("Other file...")) {
+            browse_asset(m, path, cap);
+            close_picker(ed);
+        }
     }
     ui::columns(1);
     ui::pop_id();
@@ -922,7 +964,8 @@ static void clip_import_rows(Editor *ed, asset::Manager *m, AssetShown *s) {
 
 // a way from a component's asset path to where that asset's settings are edited
 static void asset_link_row(Editor *ed, const entity::FieldDesc *f, const void *comp) {
-    if (f->type != entity::FIELD_STRING || f->asset == entity::ASSET_NONE)
+    if (f->type != entity::FIELD_STRING || f->asset == entity::ASSET_NONE ||
+        f->asset == entity::ASSET_SCRIPT)
         return;
     const char *path = (const char *)comp + f->offset;
     if (!path[0])
@@ -962,17 +1005,18 @@ static b32 ends_with_ext(const char *name, const char *ext) {
     return *dot == 0 && *ext == 0;
 }
 
-// the .glb files directly in <root>/<dir>, as paths under the root
-static u32 scan_assets(Editor *ed, asset::Manager *m, const char *dir, AssetPath *out) {
+// the files of one extension directly in <root>/<dir>, as "dir/name" paths
+static u32 scan_files(Editor *ed, const char *root, const char *dir, const char *ext,
+                      AssetPath *out) {
     memory::ArenaTemp t = memory::temp_begin(ed->scratch);
 
     file::Entry *entries = push_array(ed->scratch, file::Entry, LIST_CAP);
-    u32 found = file::list(FPATH(ed->scratch, asset::root(m), dir), entries, LIST_CAP);
+    u32 found = file::list(FPATH(ed->scratch, root, dir), entries, LIST_CAP);
     found = MIN(found, (u32)LIST_CAP);
 
     u32 n = 0;
     for (u32 i = 0; i < found; i++) {
-        if (entries[i].is_directory || !ends_with_ext(entries[i].name, ASSET_EXTENSION))
+        if (entries[i].is_directory || !ends_with_ext(entries[i].name, ext))
             continue;
         snprintf(out[n++].v, ENTITY_PATH_CAP, "%s/%s", dir, entries[i].name);
     }
@@ -983,14 +1027,17 @@ static u32 scan_assets(Editor *ed, asset::Manager *m, const char *dir, AssetPath
 
 // the project folder's listings, taken when first shown and after anything is written
 static void rescan(Editor *ed, asset::Manager *m) {
+    const char *root = asset::root(m);
     u32 levels = entity::list_levels(m, ed->levels, LIST_CAP);
     u32 templates = entity::list_definitions(m, ENTITY_TEMPLATE_SUBDIR, ed->templates, LIST_CAP);
     u32 definitions = entity::list_definitions(m, NULL, ed->definitions, LIST_CAP);
     ed->level_count = MIN(levels, (u32)LIST_CAP);
     ed->template_count = MIN(templates, (u32)LIST_CAP);
     ed->definition_count = MIN(definitions, (u32)LIST_CAP);
-    ed->model_count = scan_assets(ed, m, PROJECT_MODEL_DIR, ed->models);
-    ed->animation_count = scan_assets(ed, m, PROJECT_ANIMATION_DIR, ed->animations);
+    ed->model_count = scan_files(ed, root, PROJECT_MODEL_DIR, ASSET_EXTENSION, ed->models);
+    ed->animation_count =
+        scan_files(ed, root, PROJECT_ANIMATION_DIR, ASSET_EXTENSION, ed->animations);
+    ed->script_count = scan_files(ed, root, PROJECT_SCRIPT_DIR, SCRIPT_EXTENSION, ed->scripts);
     ed->scanned = true;
 }
 
@@ -1472,6 +1519,80 @@ static void asset_list(Editor *ed, const char *title, const AssetPath *paths, u3
     ui::tree_pop();
 }
 
+// A new script under scripts/, as a copy of one of the engine's starters, so a
+// project never needs a file made outside the binary. The text is edited
+// wherever the author likes until the editor can.
+static void new_script(Editor *ed, asset::Manager *m, const char *starter) {
+    const char *name = ed->new_script_name;
+    if (!valid_name(name, ed->asset_status))
+        return;
+
+    char rel[ENTITY_PATH_CAP];
+    const char *ext = ends_with_ext(name, SCRIPT_EXTENSION) ? "" : "." SCRIPT_EXTENSION;
+    if (snprintf(rel, sizeof(rel), "%s/%s%s", PROJECT_SCRIPT_DIR, name, ext) >= (i32)sizeof(rel)) {
+        snprintf(ed->asset_status, sizeof(ed->asset_status),
+                 "the name is longer than the %d bytes a path may be", ENTITY_PATH_CAP);
+        return;
+    }
+
+    memory::ArenaTemp t = memory::temp_begin(ed->scratch);
+    const char *dst = FPATH(ed->scratch, asset::root(m), rel);
+    const char *src = FPATH(ed->scratch, ed->cfg.engine_root, starter);
+    b32 ok = false;
+    if (file::exists(dst))
+        snprintf(ed->asset_status, sizeof(ed->asset_status), "%s exists already", rel);
+    else
+        ok = file::make_directory(FPATH(ed->scratch, asset::root(m), PROJECT_SCRIPT_DIR)) &&
+             file::copy(src, dst) == result::OK;
+    memory::temp_end(t);
+
+    if (!ok) {
+        if (!ed->asset_status[0])
+            snprintf(ed->asset_status, sizeof(ed->asset_status),
+                     "%s could not be written; the log says why", rel);
+        return;
+    }
+
+    snprintf(ed->asset_status, sizeof(ed->asset_status), "made %s", rel);
+    ed->new_script_name[0] = 0;
+    rescan(ed, m);
+}
+
+// the project's scripts, and a new one from a starter under the typed name
+static void scripts_section(Editor *ed, asset::Manager *m) {
+    if (!ui::tree_node("scripts", true))
+        return;
+
+    if (ed->script_count == 0)
+        ui::label_dim("(none)");
+    for (u32 i = 0; i < ed->script_count; i++)
+        ui::label(path::basename(ed->scripts[i].v));
+
+    ui::columns(2, SPLIT_ROW);
+    ui::label("new");
+    ui::text_field("new_script", ed->new_script_name, sizeof(ed->new_script_name));
+    ui::columns(1);
+
+    if (!ed->cfg.engine_root) {
+        ui::label_dim("(the engine folder is unknown; no starters)");
+    } else if (ed->starter_count == 0) {
+        ui::label_dim("(the engine folder has no starters)");
+    } else {
+        ui::columns(2, SPLIT_ROW);
+        for (u32 i = 0; i < ed->starter_count; i++) {
+            char label[ENTITY_PATH_CAP];
+            snprintf(label, sizeof(label), "from %s", path::basename(ed->starters[i].v));
+            ui::spacer();
+            ui::push_id(i);
+            if (ui::button(label))
+                new_script(ed, m, ed->starters[i].v);
+            ui::pop_id();
+        }
+        ui::columns(1);
+    }
+    ui::tree_pop();
+}
+
 static void asset_settings(Editor *ed, asset::Manager *m) {
     ui::separator();
     ui::label(ed->asset_selected);
@@ -1501,6 +1622,7 @@ static void assets_panel(Editor *ed, entity::World *w, asset::Manager *m, f32 to
 
     asset_list(ed, "models", ed->models, ed->model_count, ASSET_KIND_MODEL);
     asset_list(ed, "animations", ed->animations, ed->animation_count, ASSET_KIND_CLIP);
+    scripts_section(ed, m);
 
     if (ed->asset_selected[0])
         asset_settings(ed, m);
@@ -1720,6 +1842,8 @@ static void focus_selection(Editor *ed, entity::World *w, asset::Manager *m) {
 // loader's warning says which to flip. Only for a file that exists, or a typo
 // would litter the tree.
 static void ensure_sidecar(asset::Manager *m, entity::AssetKind kind, const char *path) {
+    if (kind == entity::ASSET_SCRIPT) // no import settings: the file is the whole asset
+        return;
     if (!path[0] || !asset::exists(m, path) || asset::has_import_sidecar(m, path))
         return;
     if (kind == entity::ASSET_MODEL)

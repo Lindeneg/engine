@@ -65,4 +65,20 @@ struct Result {
 Result move_and_slide(entity::World *w, asset::Manager *m, linalg::Vec3 position, f32 radius,
                       linalg::Vec3 motion, entity::Handle ignore);
 
+struct RayResult {
+    b32 hit;
+    entity::Handle entity; // whose collider, when hit
+    linalg::Vec3 point;
+    linalg::Vec3 normal;
+    f32 distance; // metres along the ray
+};
+
+// A bullet: the nearest collider along the ray within max_distance, tested
+// exactly in each collider's own frame. `dir` need not be unit length; a zero
+// direction hits nothing and warns once. `ignore` is as for move_and_slide. A
+// ray starting inside a collider hits it at distance 0 with a zero normal,
+// which is the intersect convention for "there is no surface to report".
+RayResult ray_cast(entity::World *w, linalg::Vec3 origin, linalg::Vec3 dir, f32 max_distance,
+                   entity::Handle ignore);
+
 } // namespace motion

@@ -21,10 +21,17 @@
 
 namespace script {
 
-enum Hook { HOOK_SPAWN, HOOK_DESPAWN, HOOK_FIXED_UPDATE, HOOK_UPDATE, HOOK_COUNT };
+enum Hook {
+    HOOK_SPAWN,
+    HOOK_DESPAWN,
+    HOOK_UPDATE,
+    HOOK_FIXED_UPDATE,
+    HOOK_LATE_UPDATE,
+    HOOK_COUNT,
+};
 
-static const char *HOOK_NAMES[HOOK_COUNT] = {"on_spawn", "on_despawn", "on_fixed_update",
-                                              "on_update"};
+static const char *HOOK_NAMES[HOOK_COUNT] = {"on_spawn", "on_despawn", "on_update",
+                                              "on_fixed_update", "on_late_update"};
 
 // the main script's hooks, run beside the entities' with an empty self
 struct Main {
@@ -46,7 +53,8 @@ static const entity::FieldDesc SCRIPT_FIELDS[] = {
     {.key = "path",
      .type = entity::FIELD_STRING,
      .offset = (u32)offsetof(Script, path),
-     .cap = ENTITY_PATH_CAP},
+     .cap = ENTITY_PATH_CAP,
+     .asset = entity::ASSET_SCRIPT},
 };
 static_assert(offsetof(Script, owner) == 0, "Script must start with owner");
 
@@ -458,6 +466,14 @@ void update(State *s, f32 dt) {
         return;
     spawn_pending(s);
     run_all(s, HOOK_UPDATE, bind::PHASE_FRAME, dt);
+}
+
+void late_update(State *s, f32 dt) {
+    ASSERT(s);
+    if (!s->ctx.L)
+        return;
+    spawn_pending(s);
+    run_all(s, HOOK_LATE_UPDATE, bind::PHASE_FRAME, dt);
 }
 
 result::Error run(State *s, const char *code, const char *name) {

@@ -24,6 +24,11 @@ function M.on_update(self, dt)
     h.tint = {x = self.steps, y = dt, z = 0}
 end
 
+function M.on_late_update(self, dt)
+    local h = engine.entity.component(self.entity, "health")
+    h.hp = h.hp + 1000
+end
+
 function M.on_despawn(self)
     engine.entity.component(self.entity, "health").hp = -1
 end
