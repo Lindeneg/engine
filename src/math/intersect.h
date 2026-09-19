@@ -160,4 +160,70 @@ b32 depenetrate_sphere_sphere(linalg::Vec3 center, f32 radius, linalg::Vec3 othe
 b32 depenetrate_sphere_aabb(linalg::Vec3 center, f32 radius, Aabb box, linalg::Vec3 *out_normal,
                             f32 *out_depth);
 
+// A convex polytope: outward planes, vertices and edges. What a box becomes to
+// a capsule, since a moving capsule against a box is a moving sphere against
+// the box extruded along the capsule's axis, and that extrusion is convex.
+// The sizes fit that shape: two boxes' corners, their edges and the edges
+// between them, the six faces and up to six between them.
+#define INTERSECT_POLYTOPE_MAX_VERTICES 16
+#define INTERSECT_POLYTOPE_MAX_EDGES 32
+#define INTERSECT_POLYTOPE_MAX_PLANES 12
+
+// how far a point may sit outside a plane and still count as on it
+#define INTERSECT_PLANE_EPSILON 1e-5f
+
+struct Plane {
+    linalg::Vec3 n; // unit, outward
+    f32 d;          // n . p == d on the plane
+};
+
+struct PolytopeEdge {
+    u32 a;
+    u32 b;
+};
+
+struct Polytope {
+    Plane planes[INTERSECT_POLYTOPE_MAX_PLANES];
+    u32 plane_count;
+    linalg::Vec3 vertices[INTERSECT_POLYTOPE_MAX_VERTICES];
+    u32 vertex_count;
+    PolytopeEdge edges[INTERSECT_POLYTOPE_MAX_EDGES];
+    u32 edge_count;
+    Aabb bounds;
+};
+
+// The hull of the box and the box moved by d. A zero d is the box itself.
+void polytope_extrude_box(Aabb box, linalg::Vec3 d, Polytope *out);
+
+// Inside or on the surface.
+b32 polytope_contains(const Polytope *p, linalg::Vec3 point);
+
+// The point itself when inside; else the nearest of its faces, edges and vertices.
+linalg::Vec3 polytope_closest_point(const Polytope *p, linalg::Vec3 point);
+
+// Exact, as the box sweep is: the faces offset by the radius, the edges as
+// cylinders, the vertices as spheres, and the nearest of them all. Hit::t is
+// the fraction of motion; Hit::point is where the sphere's centre stands at
+// contact. A start already overlapping reports t = 0 and a zero normal.
+b32 sweep_sphere_polytope(linalg::Vec3 center, f32 radius, linalg::Vec3 motion, const Polytope *p,
+                          Hit *out);
+
+// As depenetrate_sphere_aabb, for a polytope: from outside by the closest
+// point, from inside by the nearest plane.
+b32 depenetrate_sphere_polytope(linalg::Vec3 center, f32 radius, const Polytope *p,
+                                linalg::Vec3 *out_normal, f32 *out_depth);
+
+// A capsule is a segment with a radius; a capsule against a sphere is a
+// sphere against a capsule with the roles swapped, which these answer.
+linalg::Vec3 closest_point_segment(linalg::Vec3 a, linalg::Vec3 b, linalg::Vec3 p);
+
+// The sphere against the still capsule from a to b: a ray against the
+// segment's cylinder and end spheres with the summed radius. Conventions as
+// sweep_sphere_polytope.
+b32 sweep_sphere_capsule(linalg::Vec3 center, f32 radius, linalg::Vec3 motion, linalg::Vec3 a,
+                         linalg::Vec3 b, f32 capsule_radius, Hit *out);
+
+b32 depenetrate_sphere_capsule(linalg::Vec3 center, f32 radius, linalg::Vec3 a, linalg::Vec3 b,
+                               f32 capsule_radius, linalg::Vec3 *out_normal, f32 *out_depth);
+
 } // namespace intersect

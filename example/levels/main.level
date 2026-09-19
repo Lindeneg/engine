@@ -63,6 +63,8 @@ instance player {
         pitch_min -89
         pitch_max 89
         radius 0.35
+        height 1.8
+        step_height 0.4
         gravity 9.81
         ground_height -10
         eye_offset 0 1.7 2.5
@@ -73,9 +75,10 @@ instance player {
     child pistol {
         id 20
         definition pistol
+        attach_joint mixamorigRightHand
         transform {
-            position -0.0259295 1.66843 0.530861
-            rotation 0 -90 0
+            position 0 0.09 0.04
+            rotation 180 0 90
             scale 1
         }
         renderable {

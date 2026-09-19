@@ -8,6 +8,9 @@
 #define NEAR(a, b) (fabsf((a) - (b)) < 1e-3f)
 #define RADIUS 0.5f
 
+// the sphere every older case moves: a body of no height and no step
+static motion::Body ball(linalg::Vec3 at) { return motion::Body{at, RADIUS, 2.0f * RADIUS, 0.0f}; }
+
 static asset::Manager *make_assets(memory::Arena *a) {
     return MUST(asset::init(a, a,
                             asset::Config{
@@ -52,7 +55,7 @@ static void a_rotated_box_stops_at_its_real_face(memory::Arena *a) {
 
     linalg::Vec3 start{3.0f, 0.0f, 3.0f};
     linalg::Vec3 toward{-2.5f, 0.0f, -2.5f};
-    motion::Result r = motion::move_and_slide(w, m, start, RADIUS, toward, entity::NONE);
+    motion::Result r = motion::move_and_slide(w, m, ball(start), toward, entity::NONE);
     CHECK(r.hit);
 
     // the face's outward normal is (1, 0, 1) / sqrt(2), and the body rests a
@@ -77,14 +80,14 @@ static void a_sphere_collider_stops_a_radius_short(memory::Arena *a) {
     c->radius = 1.0f;
     entity::end_frame(w, m, a, 0.0f);
 
-    motion::Result r = motion::move_and_slide(w, m, linalg::Vec3{0.0f, 0.0f, 0.0f}, RADIUS,
+    motion::Result r = motion::move_and_slide(w, m, ball(linalg::Vec3{0.0f, 0.0f, 0.0f}),
                                               linalg::Vec3{0.0f, 0.0f, -10.0f}, entity::NONE);
     CHECK(r.hit);
     CHECK(NEAR(r.normal.z, 1.0f));
     CHECK(NEAR(r.position.z, -5.0f + 1.0f + RADIUS + MOTION_SKIN));
 
     // and pushes a body that starts inside it out, along the line of centres
-    r = motion::move_and_slide(w, m, linalg::Vec3{0.0f, 0.0f, -4.4f}, RADIUS,
+    r = motion::move_and_slide(w, m, ball(linalg::Vec3{0.0f, 0.0f, -4.4f}),
                                linalg::Vec3{0.0f, 0.0f, 0.0f}, entity::NONE);
     CHECK(r.depenetrated && !r.stuck);
     CHECK(r.position.z > -4.4f + 0.8f);
@@ -101,7 +104,7 @@ static void a_floor_grounds_and_the_offset_places_the_shape(memory::Arena *a) {
     entity::collider(w, h)->offset = linalg::Vec3{0.0f, -0.5f, 0.0f};
     entity::end_frame(w, m, a, 0.0f);
 
-    motion::Result r = motion::move_and_slide(w, m, linalg::Vec3{1.0f, 2.0f, 1.0f}, RADIUS,
+    motion::Result r = motion::move_and_slide(w, m, ball(linalg::Vec3{1.0f, 2.0f, 1.0f}),
                                               linalg::Vec3{0.0f, -5.0f, 0.0f}, entity::NONE);
     CHECK(r.grounded);
     CHECK(NEAR(r.position.y, RADIUS + MOTION_SKIN));
@@ -109,7 +112,7 @@ static void a_floor_grounds_and_the_offset_places_the_shape(memory::Arena *a) {
     // scale on the owner does not grow the shape: a body past x = 5 falls through
     entity::get(w, h)->local.scale = linalg::Vec3{3.0f, 3.0f, 3.0f};
     entity::end_frame(w, m, a, 0.0f);
-    r = motion::move_and_slide(w, m, linalg::Vec3{8.0f, 2.0f, 1.0f}, RADIUS,
+    r = motion::move_and_slide(w, m, ball(linalg::Vec3{8.0f, 2.0f, 1.0f}),
                                linalg::Vec3{0.0f, -5.0f, 0.0f}, entity::NONE);
     CHECK(!r.grounded);
 }
@@ -127,7 +130,7 @@ static void the_ignored_subtree_is_not_solid(memory::Arena *a) {
     entity::end_frame(w, m, a, 0.0f);
 
     // from inside its own box and through its own gun, stopped only by the wall
-    motion::Result r = motion::move_and_slide(w, m, linalg::Vec3{0.0f, 0.0f, 0.0f}, RADIUS,
+    motion::Result r = motion::move_and_slide(w, m, ball(linalg::Vec3{0.0f, 0.0f, 0.0f}),
                                               linalg::Vec3{0.0f, 0.0f, -10.0f}, body);
     CHECK(!r.depenetrated);
     CHECK(r.hit);
@@ -174,6 +177,88 @@ static void colliders_round_trip_through_a_file(memory::Arena *a) {
     entity::Handle hb = entity::spawn_from_config(w2, m, bad->first, entity::NONE);
     CHECK(test::unmute() == 1);
     CHECK(entity::collider(w2, hb)->size.x == 1.0f);
+}
+
+// a person, not a ball: an overhang at chest height stops a body tall enough to
+// reach it and lets a sphere of the same radius walk under
+static void a_capsule_meets_what_its_head_would(memory::Arena *a) {
+    asset::Manager *m = make_assets(a);
+    entity::World *w = make_world(a);
+
+    // a floor at y = 0 and a beam whose underside is at y = 1.2, across the path
+    box(w, "floor", linalg::Vec3{0.0f, -0.5f, 0.0f}, linalg::Vec3{20.0f, 1.0f, 20.0f}, 0.0f);
+    box(w, "beam", linalg::Vec3{0.0f, 1.45f, -3.0f}, linalg::Vec3{6.0f, 0.5f, 0.5f}, 0.0f);
+    entity::end_frame(w, m, a, 0.0f);
+
+    linalg::Vec3 start{0.0f, RADIUS + MOTION_SKIN, 0.0f};
+    linalg::Vec3 forward{0.0f, 0.0f, -6.0f};
+
+    motion::Body tall{start, RADIUS, 1.8f, 0.0f};
+    motion::Result r = motion::move_and_slide(w, m, tall, forward, entity::NONE);
+    CHECK(r.hit);
+    CHECK(NEAR(r.normal.z, 1.0f));
+
+    // the top sphere's centre is at y = 1.3, so its front meets the beam's near
+    // face at z = -2.75, and the body stops a radius and a skin short of it
+    CHECK(NEAR(r.position.z, -2.75f + RADIUS + MOTION_SKIN));
+
+    motion::Body short_one{start, RADIUS, 2.0f * RADIUS, 0.0f};
+    r = motion::move_and_slide(w, m, short_one, forward, entity::NONE);
+    CHECK(!r.hit);
+    CHECK(NEAR(r.position.z, -6.0f));
+
+    // a tall body dropped onto the floor stands on its bottom sphere as before
+    motion::Body dropped{linalg::Vec3{2.0f, 3.0f, 2.0f}, RADIUS, 1.8f, 0.0f};
+    r = motion::move_and_slide(w, m, dropped, linalg::Vec3{0.0f, -5.0f, 0.0f}, entity::NONE);
+    CHECK(r.grounded);
+    CHECK(NEAR(r.position.y, RADIUS + MOTION_SKIN));
+}
+
+// A step it may climb is climbed, one too tall is a wall, and one with no
+// headroom to lift into is a wall too. The body is narrow, so its bottom
+// sphere's centre sits below the risers and meets their faces rather than
+// rolling on their edges, which keeps the numbers exact.
+#define STEP_RADIUS 0.2f
+
+static void a_step_is_walked_up_within_its_height(memory::Arena *a) {
+    asset::Manager *m = make_assets(a);
+    entity::World *w = make_world(a);
+
+    box(w, "floor", linalg::Vec3{0.0f, -0.5f, 0.0f}, linalg::Vec3{20.0f, 1.0f, 20.0f}, 0.0f);
+    // a step 0.3 high with its riser at z = -2, a block 0.8 high with its face at z = -6
+    box(w, "step", linalg::Vec3{0.0f, 0.15f, -3.0f}, linalg::Vec3{4.0f, 0.3f, 2.0f}, 0.0f);
+    box(w, "block", linalg::Vec3{0.0f, 0.4f, -7.0f}, linalg::Vec3{4.0f, 0.8f, 2.0f}, 0.0f);
+    entity::end_frame(w, m, a, 0.0f);
+
+    f32 standing = STEP_RADIUS + MOTION_SKIN; // the centre's height over what it stands on
+    linalg::Vec3 start{0.0f, standing, 0.0f};
+
+    // no step allowed: stopped at the riser
+    motion::Body ballish{start, STEP_RADIUS, 1.8f, 0.0f};
+    motion::Result r = motion::move_and_slide(w, m, ballish, linalg::Vec3{0.0f, 0.0f, -3.0f},
+                                              entity::NONE);
+    CHECK(r.hit && NEAR(r.normal.z, 1.0f));
+    CHECK(NEAR(r.position.z, -2.0f + standing));
+
+    // with a 0.4 step: up onto it and on to the full move, standing on its top at y = 0.3
+    motion::Body stepper{start, STEP_RADIUS, 1.8f, 0.4f};
+    r = motion::move_and_slide(w, m, stepper, linalg::Vec3{0.0f, 0.0f, -3.0f}, entity::NONE);
+    CHECK(r.grounded);
+    CHECK(NEAR(r.position.z, -3.0f));
+    CHECK(NEAR(r.position.y, 0.3f + standing));
+
+    // the block is 0.8 high: too tall for the step, so its face stops the body
+    motion::Body on_step{linalg::Vec3{0.0f, 0.3f + standing, -3.0f}, STEP_RADIUS, 1.8f, 0.4f};
+    r = motion::move_and_slide(w, m, on_step, linalg::Vec3{0.0f, 0.0f, -4.0f}, entity::NONE);
+    CHECK(r.hit && NEAR(r.normal.z, 1.0f));
+    CHECK(NEAR(r.position.z, -6.0f + standing));
+
+    // a ceiling 0.1 above the crown: less lift than the step needs, so it is a wall again
+    box(w, "ceiling", linalg::Vec3{0.0f, 2.0f, -1.0f}, linalg::Vec3{4.0f, 0.2f, 2.0f}, 0.0f);
+    entity::end_frame(w, m, a, 0.0f);
+    r = motion::move_and_slide(w, m, stepper, linalg::Vec3{0.0f, 0.0f, -3.0f}, entity::NONE);
+    CHECK(r.hit && NEAR(r.normal.z, 1.0f));
+    CHECK(NEAR(r.position.z, -2.0f + standing));
 }
 
 // a bullet: the nearest face, exactly, whatever the box's turn, and never its own subtree
@@ -243,6 +328,8 @@ static void a_ray_hits_a_sphere_and_reports_being_inside(memory::Arena *a) {
 
 test::Suite motion_suite() {
     static const test::Case cases[] = {
+        CASE(a_capsule_meets_what_its_head_would),
+        CASE(a_step_is_walked_up_within_its_height),
         CASE(a_ray_hits_the_nearest_collider_exactly),
         CASE(a_ray_hits_a_sphere_and_reports_being_inside),
         CASE(a_rotated_box_stops_at_its_real_face),

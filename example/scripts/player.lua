@@ -93,7 +93,8 @@ function M.on_fixed_update(self, dt)
         v.y = 0
     end
 
-    local r = engine.motion.move_and_slide(pos, p.radius, motion, self.entity)
+    local body = {position = pos, radius = p.radius, height = p.height, step_height = p.step_height}
+    local r = engine.motion.move_and_slide(body, motion, self.entity)
 
     -- cancel the velocity into what stopped it, or gravity builds up against a floor
     if r.hit then

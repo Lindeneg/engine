@@ -9,14 +9,43 @@ static void set_bool(lua_State *L, const char *key, b32 v) {
     lua_setfield(L, -2, key);
 }
 
+// a number field of the table at index, or the fallback when absent
+static f32 opt_number_field(lua_State *L, i32 index, const char *key, f32 fallback) {
+    lua_getfield(L, index, key);
+    f32 v = (f32)luaL_optnumber(L, -1, (lua_Number)fallback);
+    lua_pop(L, 1);
+    return v;
+}
+
+// the Body as a table: position and radius, height (a sphere when absent)
+// and step_height (nothing when absent), by the header's names
+static motion::Body check_body(lua_State *L, i32 index) {
+    index = lua_absindex(L, index);
+    luaL_checktype(L, index, LUA_TTABLE);
+
+    motion::Body b{};
+    lua_getfield(L, index, "position");
+    b.position = bind::check_vec3(L, -1);
+    lua_pop(L, 1);
+
+    lua_getfield(L, index, "radius");
+    if (!lua_isnumber(L, -1))
+        luaL_error(L, "a body needs a radius");
+    b.radius = (f32)lua_tonumber(L, -1);
+    lua_pop(L, 1);
+
+    b.height = opt_number_field(L, index, "height", 2.0f * b.radius);
+    b.step_height = opt_number_field(L, index, "step_height", 0.0f);
+    return b;
+}
+
 static i32 move_and_slide(lua_State *L) {
     bind::Context *c = bind::context(L);
-    linalg::Vec3 position = bind::check_vec3(L, 1);
-    f32 radius = (f32)luaL_checknumber(L, 2);
-    linalg::Vec3 motion = bind::check_vec3(L, 3);
-    entity::Handle ignore = bind::check_handle(L, 4);
+    motion::Body body = check_body(L, 1);
+    linalg::Vec3 motion = bind::check_vec3(L, 2);
+    entity::Handle ignore = bind::check_handle(L, 3);
 
-    motion::Result r = motion::move_and_slide(c->world, c->assets, position, radius, motion, ignore);
+    motion::Result r = motion::move_and_slide(c->world, c->assets, body, motion, ignore);
 
     lua_createtable(L, 0, 6);
     bind::push_vec3(L, r.position);

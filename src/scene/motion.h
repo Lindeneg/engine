@@ -11,15 +11,20 @@
 // you are, how big you are and where you would like to be; it says where you
 // ended up and what stopped you.
 //
-// The body is a sphere. A capsule is the obvious next shape and is only worth
-// it alongside step handling, which is its own decision; a sphere already
-// answers walls and floors and reports enough for a caller to cancel its own
-// velocity against them.
+// The body is an upright capsule: a radius, a height, and a step it may walk
+// up. A height of twice the radius is a sphere. Its position is the bottom
+// sphere's centre, so a body of any height stands the same way on a floor.
 //
 // The world is its collider components, each swept in its own rigid frame, so
-// a rotated box is exact and a sphere stays a sphere. A level with no
-// colliders has no floor: a model is something to look at, not something to
-// stand on, and the two are declared separately on purpose.
+// a rotated box is exact and a capsule stays a capsule: in that frame a moving
+// capsule against a box is a moving sphere against the box extruded along the
+// capsule's axis, which intersect answers exactly. A level with no colliders
+// has no floor: a model is something to look at, not something to stand on,
+// and the two are declared separately on purpose.
+//
+// A step is a retry, not a shape. When a wall stops the body, it is tried
+// again lifted by up to step_height, moved the same way, and put down; if
+// that got further and landed on something to stand on, that is the move.
 
 #define MOTION_MAX_SLIDES 4
 
@@ -36,6 +41,13 @@
 #define MOTION_GROUND_NORMAL_Y 0.7f
 
 namespace motion {
+
+struct Body {
+    linalg::Vec3 position; // the bottom sphere's centre
+    f32 radius;
+    f32 height;      // feet to crown; less than twice the radius is taken as a sphere
+    f32 step_height; // the most a wall may rise and still be walked up; 0 walks up nothing
+};
 
 struct Result {
     linalg::Vec3 position;
@@ -58,12 +70,13 @@ struct Result {
     b32 stuck;
 };
 
-// Sweeps `motion` from `position`, sliding along what it meets, up to
-// MOTION_MAX_SLIDES surfaces. `ignore` and everything parented below it are not
-// colliders, which is how a body misses its own collider and the gun in its
-// hand; entity::NONE collides with everything.
-Result move_and_slide(entity::World *w, asset::Manager *m, linalg::Vec3 position, f32 radius,
-                      linalg::Vec3 motion, entity::Handle ignore);
+// Sweeps `motion` from the body's position, sliding along what it meets, up
+// to MOTION_MAX_SLIDES surfaces, stepping up where the body allows. `ignore`
+// and everything parented below it are not colliders, which is how a body
+// misses its own collider and the gun in its hand; entity::NONE collides with
+// everything.
+Result move_and_slide(entity::World *w, asset::Manager *m, Body body, linalg::Vec3 motion,
+                      entity::Handle ignore);
 
 struct RayResult {
     b32 hit;

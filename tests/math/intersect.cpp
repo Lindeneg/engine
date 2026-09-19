@@ -30,6 +30,166 @@ static f32 dist_to_box(Vec3 p, intersect::Aabb b) {
     return sqrtf(dx * dx + dy * dy + dz * dz);
 }
 
+// A capsule from c to c - d against a box is a sphere at c against the box
+// extruded by d, so the sphere's distance to the extrusion is the least
+// distance of any point of the capsule's axis to the box. Sampled finely,
+// that is an independent check on every feature the sweep can meet.
+#define AXIS_SAMPLES 2000
+#define SAMPLED_EPS 2e-3f
+
+static f32 capsule_axis_dist_to_box(Vec3 c, Vec3 d, intersect::Aabb b) {
+    f32 best = dist_to_box(c, b);
+    for (u32 i = 1; i <= AXIS_SAMPLES; i++) {
+        f32 s = (f32)i / (f32)AXIS_SAMPLES;
+        f32 dist = dist_to_box(c - d * s, b);
+        if (dist < best)
+            best = dist;
+    }
+    return best;
+}
+
+static void an_extruded_box_is_the_hull_of_both(memory::Arena *) {
+    // the unit box pushed down by one: a box twice as tall
+    intersect::Polytope p;
+    intersect::polytope_extrude_box(unit_box(), Vec3{0.0f, -1.0f, 0.0f}, &p);
+    CHECK(p.plane_count == 6); // no silhouette faces: the sides merely grow
+    CHECK(intersect::polytope_contains(&p, Vec3{0.5f, -0.5f, 0.5f}));
+    CHECK(intersect::polytope_contains(&p, Vec3{0.5f, 0.99f, 0.5f}));
+    CHECK(!intersect::polytope_contains(&p, Vec3{0.5f, 1.01f, 0.5f}));
+    CHECK(!intersect::polytope_contains(&p, Vec3{0.5f, -1.01f, 0.5f}));
+    CHECK(near_vec3(p.bounds.min, Vec3{0.0f, -1.0f, 0.0f}));
+
+    // a sweep from the side meets the grown face a radius short, at the old box's height and below it
+    intersect::Hit h{};
+    CHECK(intersect::sweep_sphere_polytope(Vec3{-3.0f, -0.5f, 0.5f}, 0.5f, Vec3{10.0f, 0.0f, 0.0f},
+                                           &p, &h));
+    CHECK(near_f32(h.t, 0.25f));
+    CHECK(near_vec3(h.normal, Vec3{-1.0f, 0.0f, 0.0f}));
+    CHECK(near_vec3(h.point, Vec3{-0.5f, -0.5f, 0.5f}));
+
+    // a diagonal push adds the faces between: six of them for a general direction
+    intersect::polytope_extrude_box(unit_box(), Vec3{0.5f, -1.0f, 0.3f}, &p);
+    CHECK(p.plane_count == 12);
+    CHECK(p.vertex_count == 16 && p.edge_count == 32);
+    CHECK(intersect::polytope_contains(&p, Vec3{0.75f, -0.5f, 0.65f})); // halfway along the push
+    CHECK(!intersect::polytope_contains(&p, Vec3{-0.1f, -0.5f, 0.5f}));
+
+    // a point outside and the nearest of the solid to it: the gap is what dist says
+    Vec3 q{-1.0f, 2.0f, 0.5f};
+    Vec3 c = intersect::polytope_closest_point(&p, q);
+    CHECK(intersect::polytope_contains(&p, c));
+    CHECK(near_f32(linalg::vec3_length(q - c),
+                   capsule_axis_dist_to_box(q, Vec3{0.5f, -1.0f, 0.3f}, unit_box())));
+}
+
+static void a_capsule_against_a_box_is_exact(memory::Arena *) {
+    Vec3 d{0.5f, -1.0f, 0.3f};
+    intersect::Polytope p;
+    intersect::polytope_extrude_box(unit_box(), d, &p);
+    f32 r = 0.4f;
+
+    // from every side, straight and askew: at contact the capsule's axis is a
+    // radius from the box, whichever feature was met
+    struct Case {
+        Vec3 from;
+        Vec3 motion;
+    };
+    static const Case CASES[] = {
+        {{-3.0f, 0.5f, 0.5f}, {6.0f, 0.0f, 0.0f}},     // a face the push does not move
+        {{0.5f, 4.0f, 0.5f}, {0.0f, -8.0f, 0.0f}},     // the top, down
+        {{0.8f, -4.0f, 0.7f}, {0.0f, 8.0f, 0.0f}},     // the pushed bottom, up
+        {{4.0f, -0.5f, 0.5f}, {-8.0f, 0.0f, 0.0f}},    // a face the push moved
+        {{3.93f, 1.84f, 0.65f}, {-5.37f, -2.68f, 0.0f}}, // a face between the two boxes
+        {{3.0f, 3.0f, 3.0f}, {-6.0f, -6.0f, -6.0f}},   // a corner
+        {{-2.0f, 2.0f, -2.0f}, {4.0f, -3.0f, 4.0f}},   // askew at an edge
+        {{-3.0f, -0.7f, 1.9f}, {6.0f, 0.4f, -1.5f}},   // low and across
+    };
+    for (u32 i = 0; i < ARRAY_COUNT(CASES); i++) {
+        intersect::Hit h{};
+        CHECK(intersect::sweep_sphere_polytope(CASES[i].from, r, CASES[i].motion, &p, &h));
+        CHECK(h.t > 0.0f && h.t < 1.0f);
+        Vec3 at = CASES[i].from + CASES[i].motion * h.t;
+        CHECK(near_vec3(at, h.point));
+        f32 gap = capsule_axis_dist_to_box(at, d, unit_box());
+        CHECK(gap > r - SAMPLED_EPS && gap < r + SAMPLED_EPS);
+
+        // the normal is unit and faces the motion
+        CHECK(near_f32(linalg::vec3_length(h.normal), 1.0f));
+        CHECK(linalg::vec3_dot(h.normal, CASES[i].motion) < 0.0f);
+
+        // and a hair before it, the sweep with that much less motion misses
+        CHECK(!intersect::sweep_sphere_polytope(CASES[i].from, r,
+                                                CASES[i].motion * (h.t - 1e-3f), &p, NULL));
+    }
+
+    // alongside, never touching
+    CHECK(!intersect::sweep_sphere_polytope(Vec3{-3.0f, 3.0f, 0.5f}, r, Vec3{10.0f, 0.0f, 0.0f}, &p,
+                                            NULL));
+}
+
+static void a_sphere_inside_a_polytope_leaves_by_the_nearest_face(memory::Arena *) {
+    intersect::Polytope p;
+    intersect::polytope_extrude_box(unit_box(), Vec3{0.0f, -1.0f, 0.0f}, &p);
+
+    // a sweep from inside has no surface to report
+    intersect::Hit h{};
+    CHECK(intersect::sweep_sphere_polytope(Vec3{0.5f, -0.5f, 0.5f}, 0.2f, Vec3{1.0f, 0.0f, 0.0f},
+                                           &p, &h));
+    CHECK(h.t == 0.0f && linalg::vec3_length_sq(h.normal) == 0.0f);
+
+    // from deep inside, out by the nearest face and clear of it
+    Vec3 n;
+    f32 depth;
+    CHECK(intersect::depenetrate_sphere_polytope(Vec3{0.1f, -0.5f, 0.5f}, 0.2f, &p, &n, &depth));
+    CHECK(near_vec3(n, Vec3{-1.0f, 0.0f, 0.0f}));
+    CHECK(near_f32(depth, 0.3f));
+
+    // from outside but overlapping, along the line to the closest point
+    CHECK(intersect::depenetrate_sphere_polytope(Vec3{1.1f, -0.5f, 0.5f}, 0.3f, &p, &n, &depth));
+    CHECK(near_vec3(n, Vec3{1.0f, 0.0f, 0.0f}));
+    CHECK(near_f32(depth, 0.2f));
+
+    // touching is not overlapping; a quarter is exact in binary, where 1.3 - 1 is a hair under 0.3
+    CHECK(!intersect::depenetrate_sphere_polytope(Vec3{1.25f, -0.5f, 0.5f}, 0.25f, &p, &n, &depth));
+}
+
+static void sphere_sweeps_and_depenetrates_against_a_capsule(memory::Arena *) {
+    Vec3 a{0.0f, 0.0f, 0.0f};
+    Vec3 b{0.0f, 2.0f, 0.0f};
+    f32 cap_r = 0.5f;
+
+    // across the middle: the cylinder, a summed radius from the axis
+    intersect::Hit h{};
+    CHECK(intersect::sweep_sphere_capsule(Vec3{-3.0f, 1.0f, 0.0f}, 0.5f, Vec3{10.0f, 0.0f, 0.0f}, a,
+                                          b, cap_r, &h));
+    CHECK(near_f32(h.t, 0.2f));
+    CHECK(near_vec3(h.normal, Vec3{-1.0f, 0.0f, 0.0f}));
+
+    // down onto the top: the end sphere
+    CHECK(intersect::sweep_sphere_capsule(Vec3{0.0f, 5.0f, 0.0f}, 0.5f, Vec3{0.0f, -10.0f, 0.0f},
+                                          a, b, cap_r, &h));
+    CHECK(near_f32(h.t, 0.2f));
+    CHECK(near_vec3(h.normal, Vec3{0.0f, 1.0f, 0.0f}));
+
+    // past the end, alongside: a miss
+    CHECK(!intersect::sweep_sphere_capsule(Vec3{-3.0f, 3.5f, 0.0f}, 0.5f, Vec3{10.0f, 0.0f, 0.0f},
+                                           a, b, cap_r, NULL));
+
+    // inside: no surface, and a push out along the line from the axis
+    CHECK(intersect::sweep_sphere_capsule(Vec3{0.3f, 1.0f, 0.0f}, 0.5f, Vec3{1.0f, 0.0f, 0.0f}, a,
+                                          b, cap_r, &h));
+    CHECK(h.t == 0.0f && linalg::vec3_length_sq(h.normal) == 0.0f);
+
+    Vec3 n;
+    f32 depth;
+    CHECK(intersect::depenetrate_sphere_capsule(Vec3{0.3f, 1.0f, 0.0f}, 0.5f, a, b, cap_r, &n,
+                                                &depth));
+    CHECK(near_vec3(n, Vec3{1.0f, 0.0f, 0.0f}));
+    CHECK(near_f32(depth, 0.7f));
+    CHECK(!intersect::depenetrate_sphere_capsule(Vec3{1.0f, 1.0f, 0.0f}, 0.5f, a, b, cap_r, &n,
+                                                 &depth));
+}
+
 static void ray_aabb_enters_the_near_face(memory::Arena *) {
     intersect::Hit h{};
     CHECK(intersect::ray_aabb(ray_to(Vec3{-2.0f, 0.5f, 0.5f}, Vec3{1.0f, 0.0f, 0.0f}), unit_box(),
@@ -431,6 +591,10 @@ static const test::Case CASES[] = {
     CASE(aabb_transform_bounds_the_rotated_box),
     CASE(aabb_helpers_agree),
     CASE(sphere_sweeps_and_depenetrates_against_a_sphere),
+    CASE(an_extruded_box_is_the_hull_of_both),
+    CASE(a_capsule_against_a_box_is_exact),
+    CASE(a_sphere_inside_a_polytope_leaves_by_the_nearest_face),
+    CASE(sphere_sweeps_and_depenetrates_against_a_capsule),
 };
 
 test::Suite intersect_suite() { return test::Suite{"intersect", CASES, ARRAY_COUNT(CASES)}; }
